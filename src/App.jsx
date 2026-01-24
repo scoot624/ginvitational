@@ -1,38 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = "https://limxknczakoydqtovvlf.supabase.co";
-const supabaseAnonKey =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpbXhrbmN6YWtveWRxdG92dmxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2Nzg2MTcsImV4cCI6MjA4NDI1NDYxN30._0XqgEMIGr2firOgxZkNOq_11QyP9YrDrqk6feYGRbQ";
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Random 6-character code like "A7K2QZ"
-function makeCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+function makeCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no confusing 0/O/1/I
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
 
-// Shuffle an array (Fisher-Yates)
-function shuffle(array) {
-  const a = [...array];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const temp = a[i];
-    a[i] = a[j];
-    a[j] = temp;
-  }
-  return a;
-}
-
-function App() {
+export default function App() {
   const [players, setPlayers] = useState([]);
+  const [foursomes, setFoursomes] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Player form
   const [name, setName] = useState("");
   const [handicap, setHandicap] = useState("");
   const [charity, setCharity] = useState("");
-  const [foursomes, setFoursomes] = useState([]);
 
+  const canAdd = useMemo(() => {
+    return name.trim().length > 0 && String(handicap).trim().length > 0;
+  }, [name, handicap]);
+
+  // -------- LOAD EVERYTHING ON START --------
   useEffect(() => {
-    loadPlayers();
+    (async () => {
+      setLoading(true);
+      await Promise.all([loadPlayers(), loadFoursomes()]);
+      setLoading(false);
+    })();
   }, []);
 
   async function loadPlayers() {
@@ -42,40 +43,74 @@ function App() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
+      console.error("loadPlayers error:", error);
+      alert("Error loading players");
       return;
     }
-
-    setPlayers(data || []);
+    setPlayers(data ?? []);
   }
 
-  async function addPlayer() {
-    if (name.trim() === "") {
-      alert("Please enter a name");
+  async function loadFoursomes() {
+    // Load foursomes with their players via join table
+    const { data, error } = await supabase
+      .from("foursomes")
+      .select(
+        `
+        id,
+        code,
+        group_name,
+        tee_time,
+        created_at,
+        foursome_players (
+          player_id,
+          players ( id, name, handicap, charity )
+        )
+      `
+      )
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("loadFoursomes error:", error);
+      alert("Error loading foursomes");
       return;
     }
 
-    const parsedHandicap =
-      handicap.trim() === "" ? null : parseInt(handicap.trim(), 10);
+    const normalized =
+      (data ?? []).map((f) => ({
+        id: f.id,
+        code: f.code,
+        groupName: f.group_name,
+        teeTime: f.tee_time ?? "",
+        players: (f.foursome_players ?? [])
+          .map((fp) => fp.players)
+          .filter(Boolean),
+      })) ?? [];
 
-    const { error } = await supabase.from("players").insert([
-      {
-        name: name.trim(),
-        handicap: parsedHandicap,
-        charity: charity.trim() === "" ? null : charity.trim(),
-      },
-    ]);
+    setFoursomes(normalized);
+  }
 
+  // -------- PLAYERS CRUD --------
+  async function addPlayer(e) {
+    e.preventDefault();
+    if (!canAdd) return;
+
+    const payload = {
+      name: name.trim(),
+      handicap: parseInt(handicap, 10),
+      charity: charity.trim() || null,
+    };
+
+    const { error } = await supabase.from("players").insert(payload);
     if (error) {
-      console.error(error);
-      alert("Failed to add player");
+      console.error("addPlayer error:", error);
+      alert("Error adding player");
       return;
     }
 
     setName("");
     setHandicap("");
     setCharity("");
-    loadPlayers();
+    await loadPlayers();
   }
 
   async function deletePlayer(id) {
@@ -83,157 +118,226 @@ function App() {
     if (!ok) return;
 
     const { error } = await supabase.from("players").delete().eq("id", id);
-
     if (error) {
-      console.error(error);
-      alert("Failed to delete player");
+      console.error("deletePlayer error:", error);
+      alert("Error deleting player");
       return;
     }
 
-    loadPlayers();
+    await Promise.all([loadPlayers(), loadFoursomes()]);
   }
 
-  function generateFoursomes() {
-    if (players.length < 2) {
-      alert("Add at least 2 players first");
+  // -------- FOURSOMES (PERSISTED) --------
+  async function generateFoursomes() {
+    if (players.length < 4) {
+      alert("Need at least 4 players");
       return;
     }
 
-    const shuffledPlayers = shuffle(players);
+    // Shuffle players
+    const shuffled = [...players].sort(() => Math.random() - 0.5);
+
+    // Build groups of up to 4
     const groups = [];
-
-    for (let i = 0; i < shuffledPlayers.length; i += 4) {
-      const groupPlayers = shuffledPlayers.slice(i, i + 4);
-
+    for (let i = 0; i < shuffled.length; i += 4) {
+      const groupPlayers = shuffled.slice(i, i + 4);
       groups.push({
-        id: Date.now().toString() + "-" + i,
-        code: makeCode(),
-        groupName: "Group " + (Math.floor(i / 4) + 1),
+        groupName: `Group ${Math.floor(i / 4) + 1}`,
+        code: makeCode(6),
         players: groupPlayers,
       });
     }
 
-    setFoursomes(groups);
+    // 1) Clear existing foursomes in DB (so regen replaces)
+    // If you prefer "append", remove this block.
+    await clearFoursomes(false);
+
+    // 2) Insert foursomes rows
+    const { data: insertedFoursomes, error: fErr } = await supabase
+      .from("foursomes")
+      .insert(
+        groups.map((g) => ({
+          code: g.code,
+          group_name: g.groupName,
+          tee_time: null,
+        }))
+      )
+      .select("id, code, group_name, tee_time, created_at");
+
+    if (fErr) {
+      console.error("insert foursomes error:", fErr);
+      alert("Error creating foursomes");
+      return;
+    }
+
+    // 3) Insert join rows into foursome_players
+    const joinRows = [];
+    for (let i = 0; i < groups.length; i++) {
+      const inserted = insertedFoursomes[i];
+      const group = groups[i];
+
+      for (const p of group.players) {
+        joinRows.push({
+          foursome_id: inserted.id,
+          player_id: p.id,
+        });
+      }
+    }
+
+    const { error: fpErr } = await supabase.from("foursome_players").insert(joinRows);
+    if (fpErr) {
+      console.error("insert foursome_players error:", fpErr);
+      alert("Error attaching players to foursomes");
+      return;
+    }
+
+    await loadFoursomes();
   }
 
-  function clearFoursomes() {
+  // If showAlert = true, show confirm. If false, silent (used by generate)
+  async function clearFoursomes(showAlert = true) {
+    if (showAlert) {
+      const ok = window.confirm("Clear all foursomes?");
+      if (!ok) return;
+    }
+
+    // Deleting foursomes will cascade delete foursome_players (because of on delete cascade)
+    const { error } = await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (error) {
+      console.error("clearFoursomes error:", error);
+      alert("Error clearing foursomes");
+      return;
+    }
     setFoursomes([]);
   }
 
+  // -------- UI --------
   return (
-    <div
-      style={{
-        padding: 20,
-        maxWidth: 900,
-        fontFamily: "sans-serif",
-        background: "#111",
-        color: "#f5f5f5",
-        minHeight: "100vh",
-      }}
-    >
-      <h1 style={{ marginBottom: 8 }}>Ginvitational 🍸🏌️</h1>
+    <div style={{ background: "#111", minHeight: "100vh", color: "#fff", padding: 24 }}>
+      <div style={{ maxWidth: 520 }}>
+        <h1 style={{ margin: 0, fontSize: 34 }}>Ginvitational 🏆🏌️‍♂️</h1>
 
-      <h2 style={{ marginTop: 20 }}>Players</h2>
+        {loading && <p>Loading…</p>}
 
-      <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
-        <input
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          style={{ padding: 10 }}
-        />
+        {/* PLAYERS */}
+        <div style={{ marginTop: 18, padding: 16, borderRadius: 12, background: "#1a1a1a" }}>
+          <h2 style={{ marginTop: 0 }}>Players</h2>
 
-        <input
-          placeholder="Handicap"
-          value={handicap}
-          onChange={(e) => setHandicap(e.target.value.replace(/[^0-9]/g, ""))}
-          style={{ padding: 10 }}
-        />
+          <form onSubmit={addPlayer} style={{ display: "grid", gap: 8 }}>
+            <input
+              placeholder="Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={inputStyle}
+            />
+            <input
+              placeholder="Handicap"
+              value={handicap}
+              onChange={(e) => setHandicap(e.target.value.replace(/[^0-9]/g, ""))}
+              style={inputStyle}
+            />
+            <input
+              placeholder="Charity (optional)"
+              value={charity}
+              onChange={(e) => setCharity(e.target.value)}
+              style={inputStyle}
+            />
 
-        <input
-          placeholder="Charity (optional)"
-          value={charity}
-          onChange={(e) => setCharity(e.target.value)}
-          style={{ padding: 10 }}
-        />
-
-        <button onClick={addPlayer} style={{ padding: "10px 14px" }}>
-          Add Player
-        </button>
-      </div>
-
-      <ul style={{ marginTop: 16, paddingLeft: 18 }}>
-        {players.map((player) => (
-          <li key={player.id} style={{ marginBottom: 8 }}>
-            <strong>{player.name}</strong> — HCP: {player.handicap ?? "-"} —{" "}
-            {player.charity ?? ""}
-            <button
-              onClick={() => deletePlayer(player.id)}
-              style={{ marginLeft: 10, padding: "4px 8px" }}
-            >
-              Delete
+            <button type="submit" disabled={!canAdd} style={buttonStyle(!canAdd)}>
+              Add Player
             </button>
-          </li>
-        ))}
-      </ul>
+          </form>
 
-      <hr style={{ margin: "24px 0", borderColor: "#333" }} />
-
-      <h2>Foursomes</h2>
-
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-        <button onClick={generateFoursomes} style={{ padding: "10px 14px" }}>
-          Generate Foursomes
-        </button>
-
-        <button onClick={clearFoursomes} style={{ padding: "10px 14px" }}>
-          Clear
-        </button>
-      </div>
-
-      {foursomes.length === 0 ? (
-        <div style={{ opacity: 0.8 }}>No foursomes yet — click Generate.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          {foursomes.map((group) => (
-            <div
-              key={group.id}
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 10,
-                padding: 12,
-                background: "#fff",
-                color: "#111", // ✅ THIS FIXES THE “BLANK” NAMES
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <strong>{group.groupName}</strong>
-                <span
-                  style={{
-                    fontFamily: "monospace",
-                    background: "#f4f4f4",
-                    padding: "4px 8px",
-                    borderRadius: 6,
-                  }}
-                >
-                  Code: {group.code}
-                </span>
-              </div>
-
-              <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-                {group.players.map((p) => (
-                  <li key={p.id} style={{ marginBottom: 4 }}>
-                    {p.name} (HCP: {p.handicap ?? "-"})
-                    {p.charity ? " — 🎗️ " + p.charity : ""}
+          <div style={{ marginTop: 12 }}>
+            {players.length === 0 ? (
+              <p style={{ opacity: 0.7 }}>No players yet</p>
+            ) : (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {players.map((p) => (
+                  <li key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <span>
+                      {p.name} — HCP: {p.handicap}
+                      {p.charity ? ` — ${p.charity}` : ""}
+                    </span>
+                    <button onClick={() => deletePlayer(p.id)} style={linkButtonStyle}>
+                      Delete
+                    </button>
                   </li>
                 ))}
               </ul>
-            </div>
-          ))}
+            )}
+          </div>
         </div>
-      )}
+
+        {/* FOURSOMES */}
+        <div style={{ marginTop: 14, padding: 16, borderRadius: 12, background: "#1a1a1a" }}>
+          <h2 style={{ marginTop: 0 }}>Foursomes</h2>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={generateFoursomes} style={buttonStyle(false)}>
+              Generate Foursomes
+            </button>
+            <button onClick={() => clearFoursomes(true)} style={buttonStyle(false)}>
+              Clear
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+            {foursomes.length === 0 ? (
+              <p style={{ opacity: 0.7 }}>No foursomes yet</p>
+            ) : (
+              foursomes.map((f) => (
+                <div key={f.id} style={{ background: "#fff", color: "#111", borderRadius: 12, padding: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <strong>{f.groupName}</strong>
+                    <span style={{ opacity: 0.7, fontSize: 12 }}>Code: {f.code}</span>
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    {f.players.length === 0 ? (
+                      <em style={{ opacity: 0.7 }}>No players in this group</em>
+                    ) : (
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {f.players.map((p) => (
+                          <li key={p.id}>
+                            {p.name} (HCP {p.handicap}){p.charity ? ` — ${p.charity}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-export default App;
+const inputStyle = {
+  padding: "10px 12px",
+  borderRadius: 8,
+  border: "1px solid #333",
+  background: "#111",
+  color: "#fff",
+};
+
+const buttonStyle = (disabled) => ({
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid #333",
+  background: disabled ? "#333" : "#222",
+  color: "#fff",
+  cursor: disabled ? "not-allowed" : "pointer",
+});
+
+const linkButtonStyle = {
+  background: "transparent",
+  border: "none",
+  color: "#8ab4ff",
+  cursor: "pointer",
+  textDecoration: "underline",
+  padding: 0,
+};
