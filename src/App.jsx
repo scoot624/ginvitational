@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ✅ Your Supabase project info
+// ✅ Supabase
 const supabaseUrl = "https://limxknczakoydqtovvlf.supabase.co";
 const supabaseAnonKey =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpbXhrbmN6YWtveWRxdG92dmxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2Nzg2MTcsImV4cCI6MjA4NDI1NDYxN30._0XqgEMIGr2firOgxZkNOq_11QyP9YrDrqk6feYGRbQ";
@@ -9,12 +9,13 @@ const supabaseAnonKey =
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function App() {
+  const [tab, setTab] = useState("players"); // players | foursomes | scores
+  const [status, setStatus] = useState("Connecting…");
+
   // ----------------------------
   // Players
   // ----------------------------
   const [players, setPlayers] = useState([]);
-  const [loadingPlayers, setLoadingPlayers] = useState(true);
-
   const [newName, setNewName] = useState("");
   const [newHandicap, setNewHandicap] = useState("");
   const [newCharity, setNewCharity] = useState("");
@@ -25,7 +26,7 @@ export default function App() {
   const [selectedPlayerId, setSelectedPlayerId] = useState("");
   const [hole, setHole] = useState(1);
   const [strokes, setStrokes] = useState("");
-  const [playerScores, setPlayerScores] = useState([]);
+  const [scores, setScores] = useState([]);
   const [loadingScores, setLoadingScores] = useState(false);
 
   const selectedPlayer = useMemo(
@@ -34,14 +35,17 @@ export default function App() {
   );
 
   // ----------------------------
-  // Load Players on startup
+  // Load Players (startup)
   // ----------------------------
   useEffect(() => {
-    loadPlayers();
+    (async () => {
+      await loadPlayers();
+      setStatus("Connected ✅");
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadPlayers() {
-    setLoadingPlayers(true);
     const { data, error } = await supabase
       .from("players")
       .select("*")
@@ -49,15 +53,15 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error loading players");
-    } else {
-      setPlayers(data || []);
-      // If nothing selected yet, auto-select first player (nice for scoring)
-      if (!selectedPlayerId && data?.length) {
-        setSelectedPlayerId(data[0].id);
-      }
+      setStatus("Error loading players");
+      return;
     }
-    setLoadingPlayers(false);
+
+    const list = data || [];
+    setPlayers(list);
+
+    // auto-pick first player for scoring
+    if (!selectedPlayerId && list.length > 0) setSelectedPlayerId(list[0].id);
   }
 
   async function addPlayer(e) {
@@ -81,12 +85,10 @@ export default function App() {
       return;
     }
 
-    // Update UI
     const inserted = data?.[0];
     setPlayers((prev) => [...prev, inserted]);
     if (!selectedPlayerId) setSelectedPlayerId(inserted.id);
 
-    // Reset form
     setNewName("");
     setNewHandicap("");
     setNewCharity("");
@@ -107,24 +109,23 @@ export default function App() {
     setPlayers((prev) => prev.filter((p) => p.id !== playerId));
     if (selectedPlayerId === playerId) {
       setSelectedPlayerId("");
-      setPlayerScores([]);
+      setScores([]);
     }
   }
 
   // ----------------------------
-  // Scores helpers
+  // Scores: load for selected player
   // ----------------------------
   useEffect(() => {
-    if (!selectedPlayerId) {
-      setPlayerScores([]);
-      return;
-    }
+    if (tab !== "scores") return;
+    if (!selectedPlayerId) return;
     loadScoresForPlayer(selectedPlayerId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPlayerId]);
+  }, [tab, selectedPlayerId]);
 
   async function loadScoresForPlayer(playerId) {
     setLoadingScores(true);
+
     const { data, error } = await supabase
       .from("scores")
       .select("*")
@@ -133,12 +134,12 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error loading scores");
+      alert("Error loading scores (check scores SELECT policy)");
       setLoadingScores(false);
       return;
     }
 
-    setPlayerScores(data || []);
+    setScores(data || []);
     setLoadingScores(false);
   }
 
@@ -159,249 +160,257 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error saving score");
+      alert("Error saving score (check scores INSERT policy)");
       return;
     }
 
-    // Add to UI and re-sort by hole
     const inserted = data?.[0];
-    setPlayerScores((prev) =>
-      [...prev, inserted].sort((a, b) => (a.hole ?? 0) - (b.hole ?? 0))
-    );
-
+    setScores((prev) => [...prev, inserted].sort((a, b) => a.hole - b.hole));
     setStrokes("");
   }
 
-  async function clearScoresForSelectedPlayer() {
-    if (!selectedPlayerId) return;
-
-    const ok = confirm("Delete ALL scores for this player?");
-    if (!ok) return;
-
-    const { error } = await supabase
-      .from("scores")
-      .delete()
-      .eq("player_id", selectedPlayerId);
-
-    if (error) {
-      console.error(error);
-      alert("Error clearing scores");
-      return;
+  // ----------------------------
+  // Leaderboard (gross total from scores table)
+  // ----------------------------
+  const leaderboard = useMemo(() => {
+    const totals = new Map(); // playerId -> gross total
+    for (const s of scores) {
+      totals.set(s.player_id, (totals.get(s.player_id) || 0) + (s.score || 0));
     }
 
-    setPlayerScores([]);
-  }
+    return players
+      .map((p) => ({ ...p, gross: totals.get(p.id) || 0 }))
+      .filter((p) => p.gross > 0)
+      .sort((a, b) => a.gross - b.gross);
+  }, [players, scores]);
 
-  // ----------------------------
-  // UI
-  // ----------------------------
   return (
-    <div style={{ display: "flex", gap: 24, padding: 24 }}>
-      <div style={{ width: 360 }}>
-        <h1 style={{ marginTop: 0 }}>Ginvitational 🏆🏌️</h1>
+    <div style={{ padding: 20, color: "white", fontFamily: "Arial, sans-serif" }}>
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <h1 style={{ marginTop: 0 }}>Ginvitational</h1>
+        <div style={{ opacity: 0.75, marginBottom: 14 }}>{status}</div>
 
-        {/* Players */}
-        <div style={cardStyle}>
-          <h2 style={{ marginTop: 0 }}>Players</h2>
-
-          <form onSubmit={addPlayer} style={{ display: "grid", gap: 10 }}>
-            <input
-              placeholder="Name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              style={inputStyle}
-            />
-            <input
-              placeholder="Handicap"
-              value={newHandicap}
-              onChange={(e) => setNewHandicap(e.target.value)}
-              style={inputStyle}
-            />
-            <input
-              placeholder="Charity (optional)"
-              value={newCharity}
-              onChange={(e) => setNewCharity(e.target.value)}
-              style={inputStyle}
-            />
-            <button style={buttonStyle}>Add Player</button>
-          </form>
-
-          <div style={{ marginTop: 14 }}>
-            {loadingPlayers ? (
-              <div>Loading...</div>
-            ) : players.length === 0 ? (
-              <div>No players yet</div>
-            ) : (
-              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                {players.map((p) => (
-                  <li
-                    key={p.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      padding: "6px 0",
-                      borderBottom: "1px solid rgba(255,255,255,0.08)",
-                    }}
-                  >
-                    <div style={{ lineHeight: 1.2 }}>
-                      <div style={{ fontWeight: 600 }}>{p.name}</div>
-                      <div style={{ opacity: 0.8, fontSize: 12 }}>
-                        HCP: {p.handicap}
-                        {p.charity ? ` — ${p.charity}` : ""}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => deletePlayer(p.id)}
-                      style={linkButtonStyle}
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+          <TabButton active={tab === "players"} onClick={() => setTab("players")}>
+            Players
+          </TabButton>
+          <TabButton active={tab === "foursomes"} onClick={() => setTab("foursomes")}>
+            Foursomes
+          </TabButton>
+          <TabButton active={tab === "scores"} onClick={() => setTab("scores")}>
+            Scores
+          </TabButton>
         </div>
 
-        {/* Scores */}
-        <div style={cardStyle}>
-          <h2 style={{ marginTop: 0 }}>Scores</h2>
+        {/* Content */}
+        {tab === "players" && (
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0 }}>Players</h2>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={labelStyle}>Player</label>
-            <select
-              value={selectedPlayerId}
-              onChange={(e) => setSelectedPlayerId(e.target.value)}
-              style={inputStyle}
-            >
-              {players.length === 0 ? (
-                <option value="">Add a player first</option>
-              ) : (
-                players.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} (HCP {p.handicap})
-                  </option>
-                ))
-              )}
-            </select>
-
-            <form onSubmit={saveScore} style={{ display: "grid", gap: 10 }}>
-              <div style={{ display: "flex", gap: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Hole</label>
-                  <select
-                    value={hole}
-                    onChange={(e) => setHole(Number(e.target.value))}
-                    style={inputStyle}
-                  >
-                    {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Strokes</label>
-                  <input
-                    value={strokes}
-                    onChange={(e) => setStrokes(e.target.value)}
-                    placeholder="e.g. 5"
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              <button style={buttonStyle} disabled={!selectedPlayerId}>
-                Save Score
-              </button>
+            <form onSubmit={addPlayer} style={{ display: "grid", gap: 10, maxWidth: 380 }}>
+              <input
+                placeholder="Name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                style={inputStyle}
+              />
+              <input
+                placeholder="Handicap"
+                value={newHandicap}
+                onChange={(e) => setNewHandicap(e.target.value)}
+                style={inputStyle}
+              />
+              <input
+                placeholder="Charity (optional)"
+                value={newCharity}
+                onChange={(e) => setNewCharity(e.target.value)}
+                style={inputStyle}
+              />
+              <button style={buttonStyle}>Add Player</button>
             </form>
 
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={() => selectedPlayerId && loadScoresForPlayer(selectedPlayerId)}
-                style={secondaryButtonStyle}
-                disabled={!selectedPlayerId}
-              >
-                Refresh
-              </button>
-              <button
-                onClick={clearScoresForSelectedPlayer}
-                style={dangerButtonStyle}
-                disabled={!selectedPlayerId}
-              >
-                Clear Player Scores
-              </button>
-            </div>
-
-            <div style={{ marginTop: 6 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                {selectedPlayer ? `Scores for ${selectedPlayer.name}` : "Scores"}
-              </div>
-
-              {loadingScores ? (
-                <div>Loading scores…</div>
-              ) : playerScores.length === 0 ? (
-                <div style={{ opacity: 0.8 }}>No scores yet</div>
+            <div style={{ marginTop: 16 }}>
+              {players.length === 0 ? (
+                <div style={{ opacity: 0.8 }}>No players yet</div>
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                  {playerScores.map((s) => (
-                    <li
-                      key={s.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        padding: "6px 0",
-                        borderBottom: "1px solid rgba(255,255,255,0.08)",
-                      }}
-                    >
-                      <span>Hole {s.hole}</span>
-                      <span style={{ fontWeight: 700 }}>{s.score}</span>
+                  {players.map((p) => (
+                    <li key={p.id} style={rowStyle}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{p.name}</div>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>
+                          HCP: {p.handicap} {p.charity ? `— ${p.charity}` : ""}
+                        </div>
+                      </div>
+                      <button onClick={() => deletePlayer(p.id)} style={linkButtonStyle}>
+                        Delete
+                      </button>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Foursomes placeholder (we’ll come back) */}
-        <div style={cardStyle}>
-          <h2 style={{ marginTop: 0 }}>Foursomes</h2>
-          <div style={{ opacity: 0.8 }}>
-            We’ll come back to this once scores are working.
+        {tab === "foursomes" && (
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0 }}>Foursomes</h2>
+            <div style={{ opacity: 0.8 }}>
+              We’ll fix foursomes later. For now, scoring is the priority.
+            </div>
           </div>
-        </div>
+        )}
+
+        {tab === "scores" && (
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0 }}>Scores</h2>
+
+            {players.length === 0 ? (
+              <div style={{ opacity: 0.8 }}>Add players first.</div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gap: 10, maxWidth: 460 }}>
+                  <label style={labelStyle}>Player</label>
+                  <select
+                    value={selectedPlayerId}
+                    onChange={(e) => setSelectedPlayerId(e.target.value)}
+                    style={inputStyle}
+                  >
+                    {players.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} (HCP {p.handicap})
+                      </option>
+                    ))}
+                  </select>
+
+                  <form onSubmit={saveScore} style={{ display: "flex", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Hole</label>
+                      <select
+                        value={hole}
+                        onChange={(e) => setHole(Number(e.target.value))}
+                        style={inputStyle}
+                      >
+                        {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => (
+                          <option key={h} value={h}>
+                            {h}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ flex: 1 }}>
+                      <label style={labelStyle}>Strokes</label>
+                      <input
+                        value={strokes}
+                        onChange={(e) => setStrokes(e.target.value)}
+                        placeholder="e.g. 5"
+                        style={inputStyle}
+                      />
+                    </div>
+
+                    <div style={{ width: 140, alignSelf: "end" }}>
+                      <button style={buttonStyle}>Save</button>
+                    </div>
+                  </form>
+
+                  <button
+                    onClick={() => selectedPlayerId && loadScoresForPlayer(selectedPlayerId)}
+                    style={secondaryButtonStyle}
+                  >
+                    Refresh Scores
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 18 }}>
+                  <h3 style={{ marginBottom: 8 }}>
+                    {selectedPlayer ? `Scores for ${selectedPlayer.name}` : "Scores"}
+                  </h3>
+
+                  {loadingScores ? (
+                    <div>Loading…</div>
+                  ) : scores.length === 0 ? (
+                    <div style={{ opacity: 0.8 }}>No scores yet</div>
+                  ) : (
+                    <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                      {scores.map((s) => (
+                        <li key={s.id} style={scoreRowStyle}>
+                          <span>Hole {s.hole}</span>
+                          <span style={{ fontWeight: 800 }}>{s.score}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 18 }}>
+                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Gross for selected player’s scores)</h3>
+                  {leaderboard.length === 0 ? (
+                    <div style={{ opacity: 0.8 }}>Enter some scores first.</div>
+                  ) : (
+                    <ol>
+                      {leaderboard.map((p) => (
+                        <li key={p.id}>
+                          <b>{p.name}</b> — {p.gross}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+                    Next step: we’ll load *all* players’ scores and compute real leaderboard + net.
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
-      <div style={{ flex: 1, opacity: 0.7 }}>
-        <h2 style={{ marginTop: 0 }}>Main Area</h2>
-        <div>
-          Later we can show leaderboard / net scoring / broadcaster updates here.
-        </div>
-      </div>
+      <div style={bgStyle} />
     </div>
   );
 }
 
-// ----------------------------
-// Simple inline styles
-// ----------------------------
+function TabButton({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "10px 14px",
+        borderRadius: 10,
+        border: "1px solid rgba(255,255,255,0.16)",
+        background: active ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.06)",
+        color: "white",
+        fontWeight: 800,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const bgStyle = {
+  position: "fixed",
+  inset: 0,
+  background: "radial-gradient(circle at top left, #463a2b, #0b0b0b 60%)",
+  zIndex: -1,
+};
+
 const cardStyle = {
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.06)",
+  border: "1px solid rgba(255,255,255,0.12)",
   borderRadius: 14,
-  padding: 14,
-  marginTop: 16,
+  padding: 16,
 };
 
 const inputStyle = {
   width: "100%",
   padding: "10px 12px",
   borderRadius: 10,
-  border: "1px solid rgba(255,255,255,0.12)",
+  border: "1px solid rgba(255,255,255,0.16)",
   background: "rgba(0,0,0,0.25)",
   color: "white",
   outline: "none",
@@ -411,30 +420,20 @@ const buttonStyle = {
   width: "100%",
   padding: "10px 12px",
   borderRadius: 10,
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(255,255,255,0.10)",
+  border: "1px solid rgba(255,255,255,0.16)",
+  background: "rgba(255,255,255,0.12)",
   color: "white",
-  fontWeight: 700,
+  fontWeight: 800,
   cursor: "pointer",
 };
 
 const secondaryButtonStyle = {
-  flex: 1,
   padding: "10px 12px",
   borderRadius: 10,
-  border: "1px solid rgba(255,255,255,0.12)",
+  border: "1px solid rgba(255,255,255,0.16)",
   background: "rgba(255,255,255,0.06)",
   color: "white",
-  cursor: "pointer",
-};
-
-const dangerButtonStyle = {
-  flex: 1,
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(255,0,0,0.20)",
-  color: "white",
+  fontWeight: 800,
   cursor: "pointer",
 };
 
@@ -443,7 +442,22 @@ const linkButtonStyle = {
   border: "none",
   color: "#7aa7ff",
   cursor: "pointer",
-  fontWeight: 700,
+  fontWeight: 800,
+};
+
+const rowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "10px 0",
+  borderBottom: "1px solid rgba(255,255,255,0.10)",
+};
+
+const scoreRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  padding: "8px 0",
+  borderBottom: "1px solid rgba(255,255,255,0.10)",
 };
 
 const labelStyle = {
