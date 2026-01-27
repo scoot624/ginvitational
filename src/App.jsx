@@ -8,30 +8,55 @@ const supabaseAnonKey =
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+// ⛳ Course (par + handicap ranking per hole; 1 = hardest)
+const COURSE = {
+  name: "Manufacturers' Golf & Country Club",
+  par: 72,
+  holes: [
+    { number: 1, par: 4, hcp: 12 },
+    { number: 2, par: 4, hcp: 10 },
+    { number: 3, par: 4, hcp: 4 },
+    { number: 4, par: 3, hcp: 14 },
+    { number: 5, par: 4, hcp: 2 },
+    { number: 6, par: 3, hcp: 8 },
+    { number: 7, par: 5, hcp: 6 },
+    { number: 8, par: 3, hcp: 18 },
+    { number: 9, par: 5, hcp: 16 },
+    { number: 10, par: 4, hcp: 9 },
+    { number: 11, par: 3, hcp: 3 },
+    { number: 12, par: 5, hcp: 17 },
+    { number: 13, par: 3, hcp: 13 },
+    { number: 14, par: 4, hcp: 5 },
+    { number: 15, par: 5, hcp: 15 },
+    { number: 16, par: 4, hcp: 1 },
+    { number: 17, par: 4, hcp: 11 },
+    { number: 18, par: 5, hcp: 7 },
+  ],
+};
+
+function toParString(n) {
+  if (n === 0) return "E";
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
 export default function App() {
   const [tab, setTab] = useState("players"); // players | foursomes | scores
   const [status, setStatus] = useState("Connecting…");
 
-  // ----------------------------
   // Players
-  // ----------------------------
   const [players, setPlayers] = useState([]);
   const [newName, setNewName] = useState("");
   const [newHandicap, setNewHandicap] = useState("");
   const [newCharity, setNewCharity] = useState("");
 
-  // ----------------------------
   // Scores (selected player view)
-  // ----------------------------
   const [selectedPlayerId, setSelectedPlayerId] = useState("");
   const [hole, setHole] = useState(1);
   const [strokes, setStrokes] = useState("");
   const [playerScores, setPlayerScores] = useState([]);
   const [loadingPlayerScores, setLoadingPlayerScores] = useState(false);
 
-  // ----------------------------
-  // Scores (ALL scores for leaderboard)
-  // ----------------------------
+  // All scores for leaderboard
   const [allScores, setAllScores] = useState([]);
   const [loadingAllScores, setLoadingAllScores] = useState(false);
 
@@ -40,9 +65,7 @@ export default function App() {
     [players, selectedPlayerId]
   );
 
-  // ----------------------------
-  // Startup: load players + all scores
-  // ----------------------------
+  // Startup
   useEffect(() => {
     (async () => {
       await loadPlayers();
@@ -130,18 +153,15 @@ export default function App() {
     }
 
     setPlayers((prev) => prev.filter((p) => p.id !== playerId));
-
-    // clean up local score lists
     setAllScores((prev) => prev.filter((s) => s.player_id !== playerId));
+
     if (selectedPlayerId === playerId) {
       setSelectedPlayerId("");
       setPlayerScores([]);
     }
   }
 
-  // ----------------------------
   // Load selected player scores when on Scores tab
-  // ----------------------------
   useEffect(() => {
     if (tab !== "scores") return;
     if (!selectedPlayerId) return;
@@ -192,59 +212,98 @@ export default function App() {
 
     const inserted = data?.[0];
 
-    // Update both local lists
     setPlayerScores((prev) => [...prev, inserted].sort((a, b) => a.hole - b.hole));
     setAllScores((prev) => [inserted, ...prev]);
 
     setStrokes("");
   }
 
-  // ----------------------------
-  // Real gross leaderboard from ALL scores
-  // ----------------------------
-  const grossLeaderboard = useMemo(() => {
-    // playerId -> { gross, holesPlayed, holesSet }
-    const map = new Map();
+  // ---- NET calc helpers ----
+  const holesByDifficulty = useMemo(() => {
+    // sort by hcp asc (1 hardest)
+    return [...COURSE.holes].sort((a, b) => a.hcp - b.hcp);
+  }, []);
 
+  function strokesOnHole(playerHandicap, holeNumber) {
+    const h = Math.max(0, Math.floor(Number(playerHandicap) || 0));
+    if (h <= 0) return 0;
+
+    // base strokes for everyone if handicap > 18 etc.
+    const base = Math.floor(h / 18); // e.g. 20 => 1 base stroke on every hole
+    const remainder = h % 18;        // extra strokes on the hardest remainder holes
+
+    // find this hole's rank among hardest holes (0-based)
+    const rankIndex = holesByDifficulty.findIndex((x) => x.number === holeNumber);
+
+    const extra = rankIndex >= 0 && rankIndex < remainder ? 1 : 0;
+    return base + extra;
+  }
+
+  // Build leaderboard from ALL scores (dedupe by player+hole, keep latest)
+  const netLeaderboard = useMemo(() => {
+    // Keep latest score per player+hole (in case someone enters twice)
+    const latest = new Map(); // key "playerId-hole" -> scoreRow
     for (const s of allScores) {
       if (!s.player_id || !s.hole || !s.score) continue;
+      const key = `${s.player_id}-${s.hole}`;
+      // created_at desc is loaded, so first time we see a key is newest
+      if (!latest.has(key)) latest.set(key, s);
+    }
 
-      const entry = map.get(s.player_id) || {
-        gross: 0,
-        holesPlayed: 0,
-        holesSet: new Set(),
-      };
-
-      // Count hole only once (protects against duplicate entries)
-      if (!entry.holesSet.has(s.hole)) {
-        entry.holesSet.add(s.hole);
-        entry.holesPlayed += 1;
-        entry.gross += Number(s.score) || 0;
-      }
-
-      map.set(s.player_id, entry);
+    // Group by player
+    const byPlayer = new Map(); // playerId -> array of {hole, score}
+    for (const s of latest.values()) {
+      const arr = byPlayer.get(s.player_id) || [];
+      arr.push({ hole: Number(s.hole), score: Number(s.score) });
+      byPlayer.set(s.player_id, arr);
     }
 
     const rows = players
       .map((p) => {
-        const entry = map.get(p.id);
+        const scoresArr = byPlayer.get(p.id) || [];
+        if (scoresArr.length === 0) return null;
+
+        // holes played
+        const holesPlayed = scoresArr.length;
+
+        // gross + parForPlayed
+        let gross = 0;
+        let parForPlayed = 0;
+        let strokesUsed = 0;
+
+        for (const sc of scoresArr) {
+          gross += sc.score;
+
+          const holeMeta = COURSE.holes.find((h) => h.number === sc.hole);
+          if (holeMeta) parForPlayed += holeMeta.par;
+
+          strokesUsed += strokesOnHole(p.handicap, sc.hole);
+        }
+
+        const net = gross - strokesUsed;
+        const toPar = net - parForPlayed;
+
         return {
           id: p.id,
           name: p.name,
           handicap: p.handicap,
           charity: p.charity,
-          gross: entry?.gross || 0,
-          holesPlayed: entry?.holesPlayed || 0,
+          holesPlayed,
+          gross,
+          net,
+          toPar,
+          parForPlayed,
         };
       })
-      .filter((p) => p.holesPlayed > 0)
+      .filter(Boolean)
       .sort((a, b) => {
-        if (a.gross === b.gross) return b.holesPlayed - a.holesPlayed; // tie-break: more holes played
-        return a.gross - b.gross;
+        // Sort by net asc, tie-break by holes played desc
+        if (a.net === b.net) return b.holesPlayed - a.holesPlayed;
+        return a.net - b.net;
       });
 
     return rows;
-  }, [players, allScores]);
+  }, [players, allScores, holesByDifficulty]);
 
   return (
     <div style={{ padding: 20, color: "white", fontFamily: "Arial, sans-serif" }}>
@@ -265,7 +324,6 @@ export default function App() {
           </TabButton>
         </div>
 
-        {/* Content */}
         {tab === "players" && (
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Players</h2>
@@ -320,7 +378,7 @@ export default function App() {
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Foursomes</h2>
             <div style={{ opacity: 0.8 }}>
-              We’ll come back to foursomes. Next we’ll add realtime + net leaderboard.
+              We’ll come back to foursomes (RLS + saving). Scoring + leaderboard first.
             </div>
           </div>
         )}
@@ -329,7 +387,6 @@ export default function App() {
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Scores</h2>
 
-            {/* Scoring entry */}
             {players.length === 0 ? (
               <div style={{ opacity: 0.8 }}>Add players first.</div>
             ) : (
@@ -392,7 +449,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Player scores list */}
                 <div style={{ marginTop: 18 }}>
                   <h3 style={{ marginBottom: 8 }}>
                     {selectedPlayer ? `Scores for ${selectedPlayer.name}` : "Scores"}
@@ -414,13 +470,12 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Real leaderboard */}
                 <div style={{ marginTop: 18 }}>
-                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Gross — all players)</h3>
+                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Net)</h3>
 
                   {loadingAllScores ? (
                     <div>Loading leaderboard…</div>
-                  ) : grossLeaderboard.length === 0 ? (
+                  ) : netLeaderboard.length === 0 ? (
                     <div style={{ opacity: 0.8 }}>Enter some scores first.</div>
                   ) : (
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -430,10 +485,12 @@ export default function App() {
                           <th style={thStyle}>Player</th>
                           <th style={thStyle}>Holes</th>
                           <th style={thStyle}>Gross</th>
+                          <th style={thStyle}>Net</th>
+                          <th style={thStyle}>To Par</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {grossLeaderboard.map((p, idx) => (
+                        {netLeaderboard.map((p, idx) => (
                           <tr key={p.id} style={{ borderTop: "1px solid rgba(255,255,255,0.12)" }}>
                             <td style={tdStyle}>{idx + 1}</td>
                             <td style={tdStyle}>
@@ -443,12 +500,18 @@ export default function App() {
                               </div>
                             </td>
                             <td style={tdStyle}>{p.holesPlayed}</td>
-                            <td style={{ ...tdStyle, fontWeight: 900 }}>{p.gross}</td>
+                            <td style={tdStyle}>{p.gross}</td>
+                            <td style={{ ...tdStyle, fontWeight: 900 }}>{p.net}</td>
+                            <td style={{ ...tdStyle, fontWeight: 900 }}>{toParString(p.toPar)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   )}
+
+                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
+                    Net = Gross − handicap strokes on hardest holes (based on hole HCP). To Par is for holes played.
+                  </div>
                 </div>
               </>
             )}
