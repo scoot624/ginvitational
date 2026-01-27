@@ -1,265 +1,260 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// ✅ Your Supabase project info
+const supabaseUrl = "https://limxknczakoydqtovvlf.supabase.co";
+const supabaseAnonKey =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpbXhrbmN6YWtveWRxdG92dmxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2Nzg2MTcsImV4cCI6MjA4NDI1NDYxN30._0XqgEMIGr2firOgxZkNOq_11QyP9YrDrqk6feYGRbQ";
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-function makeCode(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no confusing 0/O/1/I
-  let out = "";
-  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
-
 export default function App() {
+  // ----------------------------
+  // Players
+  // ----------------------------
   const [players, setPlayers] = useState([]);
-  const [foursomes, setFoursomes] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingPlayers, setLoadingPlayers] = useState(true);
 
-  // Player form
-  const [name, setName] = useState("");
-  const [handicap, setHandicap] = useState("");
-  const [charity, setCharity] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newHandicap, setNewHandicap] = useState("");
+  const [newCharity, setNewCharity] = useState("");
 
-  const canAdd = useMemo(() => {
-    return name.trim().length > 0 && String(handicap).trim().length > 0;
-  }, [name, handicap]);
+  // ----------------------------
+  // Scores
+  // ----------------------------
+  const [selectedPlayerId, setSelectedPlayerId] = useState("");
+  const [hole, setHole] = useState(1);
+  const [strokes, setStrokes] = useState("");
+  const [playerScores, setPlayerScores] = useState([]);
+  const [loadingScores, setLoadingScores] = useState(false);
 
-  // -------- LOAD EVERYTHING ON START --------
+  const selectedPlayer = useMemo(
+    () => players.find((p) => p.id === selectedPlayerId),
+    [players, selectedPlayerId]
+  );
+
+  // ----------------------------
+  // Load Players on startup
+  // ----------------------------
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      await Promise.all([loadPlayers(), loadFoursomes()]);
-      setLoading(false);
-    })();
+    loadPlayers();
   }, []);
 
   async function loadPlayers() {
+    setLoadingPlayers(true);
     const { data, error } = await supabase
       .from("players")
       .select("*")
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("loadPlayers error:", error);
+      console.error(error);
       alert("Error loading players");
-      return;
+    } else {
+      setPlayers(data || []);
+      // If nothing selected yet, auto-select first player (nice for scoring)
+      if (!selectedPlayerId && data?.length) {
+        setSelectedPlayerId(data[0].id);
+      }
     }
-    setPlayers(data ?? []);
+    setLoadingPlayers(false);
   }
 
-  async function loadFoursomes() {
-    // Load foursomes with their players via join table
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select(
-        `
-        id,
-        code,
-        group_name,
-        tee_time,
-        created_at,
-        foursome_players (
-          player_id,
-          players ( id, name, handicap, charity )
-        )
-      `
-      )
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error("loadFoursomes error:", error);
-      alert("Error loading foursomes");
-      return;
-    }
-
-    const normalized =
-      (data ?? []).map((f) => ({
-        id: f.id,
-        code: f.code,
-        groupName: f.group_name,
-        teeTime: f.tee_time ?? "",
-        players: (f.foursome_players ?? [])
-          .map((fp) => fp.players)
-          .filter(Boolean),
-      })) ?? [];
-
-    setFoursomes(normalized);
-  }
-
-  // -------- PLAYERS CRUD --------
   async function addPlayer(e) {
     e.preventDefault();
-    if (!canAdd) return;
+
+    if (!newName.trim()) return alert("Name is required");
+    if (newHandicap === "" || isNaN(Number(newHandicap)))
+      return alert("Handicap must be a number");
 
     const payload = {
-      name: name.trim(),
-      handicap: parseInt(handicap, 10),
-      charity: charity.trim() || null,
+      name: newName.trim(),
+      handicap: Number(newHandicap),
+      charity: newCharity.trim() ? newCharity.trim() : null,
     };
 
-    const { error } = await supabase.from("players").insert(payload);
+    const { data, error } = await supabase.from("players").insert(payload).select();
+
     if (error) {
-      console.error("addPlayer error:", error);
+      console.error(error);
       alert("Error adding player");
       return;
     }
 
-    setName("");
-    setHandicap("");
-    setCharity("");
-    await loadPlayers();
+    // Update UI
+    const inserted = data?.[0];
+    setPlayers((prev) => [...prev, inserted]);
+    if (!selectedPlayerId) setSelectedPlayerId(inserted.id);
+
+    // Reset form
+    setNewName("");
+    setNewHandicap("");
+    setNewCharity("");
   }
 
-  async function deletePlayer(id) {
-    const ok = window.confirm("Delete this player?");
+  async function deletePlayer(playerId) {
+    const ok = confirm("Delete this player?");
     if (!ok) return;
 
-    const { error } = await supabase.from("players").delete().eq("id", id);
+    const { error } = await supabase.from("players").delete().eq("id", playerId);
+
     if (error) {
-      console.error("deletePlayer error:", error);
+      console.error(error);
       alert("Error deleting player");
       return;
     }
 
-    await Promise.all([loadPlayers(), loadFoursomes()]);
+    setPlayers((prev) => prev.filter((p) => p.id !== playerId));
+    if (selectedPlayerId === playerId) {
+      setSelectedPlayerId("");
+      setPlayerScores([]);
+    }
   }
 
-  // -------- FOURSOMES (PERSISTED) --------
-  async function generateFoursomes() {
-    if (players.length < 4) {
-      alert("Need at least 4 players");
+  // ----------------------------
+  // Scores helpers
+  // ----------------------------
+  useEffect(() => {
+    if (!selectedPlayerId) {
+      setPlayerScores([]);
       return;
     }
+    loadScoresForPlayer(selectedPlayerId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlayerId]);
 
-    // Shuffle players
-    const shuffled = [...players].sort(() => Math.random() - 0.5);
+  async function loadScoresForPlayer(playerId) {
+    setLoadingScores(true);
+    const { data, error } = await supabase
+      .from("scores")
+      .select("*")
+      .eq("player_id", playerId)
+      .order("hole", { ascending: true });
 
-    // Build groups of up to 4
-    const groups = [];
-    for (let i = 0; i < shuffled.length; i += 4) {
-      const groupPlayers = shuffled.slice(i, i + 4);
-      groups.push({
-        groupName: `Group ${Math.floor(i / 4) + 1}`,
-        code: makeCode(6),
-        players: groupPlayers,
-      });
-    }
-
-    // 1) Clear existing foursomes in DB (so regen replaces)
-    // If you prefer "append", remove this block.
-    await clearFoursomes(false);
-
-    // 2) Insert foursomes rows
-    const { data: insertedFoursomes, error: fErr } = await supabase
-      .from("foursomes")
-      .insert(
-        groups.map((g) => ({
-          code: g.code,
-          group_name: g.groupName,
-          tee_time: null,
-        }))
-      )
-      .select("id, code, group_name, tee_time, created_at");
-
-    if (fErr) {
-      console.error("insert foursomes error:", fErr);
-      alert("Error creating foursomes");
-      return;
-    }
-
-    // 3) Insert join rows into foursome_players
-    const joinRows = [];
-    for (let i = 0; i < groups.length; i++) {
-      const inserted = insertedFoursomes[i];
-      const group = groups[i];
-
-      for (const p of group.players) {
-        joinRows.push({
-          foursome_id: inserted.id,
-          player_id: p.id,
-        });
-      }
-    }
-
-    const { error: fpErr } = await supabase.from("foursome_players").insert(joinRows);
-    if (fpErr) {
-      console.error("insert foursome_players error:", fpErr);
-      alert("Error attaching players to foursomes");
-      return;
-    }
-
-    await loadFoursomes();
-  }
-
-  // If showAlert = true, show confirm. If false, silent (used by generate)
-  async function clearFoursomes(showAlert = true) {
-    if (showAlert) {
-      const ok = window.confirm("Clear all foursomes?");
-      if (!ok) return;
-    }
-
-    // Deleting foursomes will cascade delete foursome_players (because of on delete cascade)
-    const { error } = await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
     if (error) {
-      console.error("clearFoursomes error:", error);
-      alert("Error clearing foursomes");
+      console.error(error);
+      alert("Error loading scores");
+      setLoadingScores(false);
       return;
     }
-    setFoursomes([]);
+
+    setPlayerScores(data || []);
+    setLoadingScores(false);
   }
 
-  // -------- UI --------
+  async function saveScore(e) {
+    e.preventDefault();
+
+    if (!selectedPlayerId) return alert("Pick a player first");
+    if (strokes === "" || isNaN(Number(strokes)))
+      return alert("Score must be a number");
+
+    const payload = {
+      player_id: selectedPlayerId,
+      hole: Number(hole),
+      score: Number(strokes),
+    };
+
+    const { data, error } = await supabase.from("scores").insert(payload).select();
+
+    if (error) {
+      console.error(error);
+      alert("Error saving score");
+      return;
+    }
+
+    // Add to UI and re-sort by hole
+    const inserted = data?.[0];
+    setPlayerScores((prev) =>
+      [...prev, inserted].sort((a, b) => (a.hole ?? 0) - (b.hole ?? 0))
+    );
+
+    setStrokes("");
+  }
+
+  async function clearScoresForSelectedPlayer() {
+    if (!selectedPlayerId) return;
+
+    const ok = confirm("Delete ALL scores for this player?");
+    if (!ok) return;
+
+    const { error } = await supabase
+      .from("scores")
+      .delete()
+      .eq("player_id", selectedPlayerId);
+
+    if (error) {
+      console.error(error);
+      alert("Error clearing scores");
+      return;
+    }
+
+    setPlayerScores([]);
+  }
+
+  // ----------------------------
+  // UI
+  // ----------------------------
   return (
-    <div style={{ background: "#111", minHeight: "100vh", color: "#fff", padding: 24 }}>
-      <div style={{ maxWidth: 520 }}>
-        <h1 style={{ margin: 0, fontSize: 34 }}>Ginvitational 🏆🏌️‍♂️</h1>
+    <div style={{ display: "flex", gap: 24, padding: 24 }}>
+      <div style={{ width: 360 }}>
+        <h1 style={{ marginTop: 0 }}>Ginvitational 🏆🏌️</h1>
 
-        {loading && <p>Loading…</p>}
-
-        {/* PLAYERS */}
-        <div style={{ marginTop: 18, padding: 16, borderRadius: 12, background: "#1a1a1a" }}>
+        {/* Players */}
+        <div style={cardStyle}>
           <h2 style={{ marginTop: 0 }}>Players</h2>
 
-          <form onSubmit={addPlayer} style={{ display: "grid", gap: 8 }}>
+          <form onSubmit={addPlayer} style={{ display: "grid", gap: 10 }}>
             <input
               placeholder="Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
               style={inputStyle}
             />
             <input
               placeholder="Handicap"
-              value={handicap}
-              onChange={(e) => setHandicap(e.target.value.replace(/[^0-9]/g, ""))}
+              value={newHandicap}
+              onChange={(e) => setNewHandicap(e.target.value)}
               style={inputStyle}
             />
             <input
               placeholder="Charity (optional)"
-              value={charity}
-              onChange={(e) => setCharity(e.target.value)}
+              value={newCharity}
+              onChange={(e) => setNewCharity(e.target.value)}
               style={inputStyle}
             />
-
-            <button type="submit" disabled={!canAdd} style={buttonStyle(!canAdd)}>
-              Add Player
-            </button>
+            <button style={buttonStyle}>Add Player</button>
           </form>
 
-          <div style={{ marginTop: 12 }}>
-            {players.length === 0 ? (
-              <p style={{ opacity: 0.7 }}>No players yet</p>
+          <div style={{ marginTop: 14 }}>
+            {loadingPlayers ? (
+              <div>Loading...</div>
+            ) : players.length === 0 ? (
+              <div>No players yet</div>
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
                 {players.map((p) => (
-                  <li key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <span>
-                      {p.name} — HCP: {p.handicap}
-                      {p.charity ? ` — ${p.charity}` : ""}
-                    </span>
-                    <button onClick={() => deletePlayer(p.id)} style={linkButtonStyle}>
+                  <li
+                    key={p.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "6px 0",
+                      borderBottom: "1px solid rgba(255,255,255,0.08)",
+                    }}
+                  >
+                    <div style={{ lineHeight: 1.2 }}>
+                      <div style={{ fontWeight: 600 }}>{p.name}</div>
+                      <div style={{ opacity: 0.8, fontSize: 12 }}>
+                        HCP: {p.handicap}
+                        {p.charity ? ` — ${p.charity}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => deletePlayer(p.id)}
+                      style={linkButtonStyle}
+                    >
                       Delete
                     </button>
                   </li>
@@ -269,75 +264,189 @@ export default function App() {
           </div>
         </div>
 
-        {/* FOURSOMES */}
-        <div style={{ marginTop: 14, padding: 16, borderRadius: 12, background: "#1a1a1a" }}>
-          <h2 style={{ marginTop: 0 }}>Foursomes</h2>
+        {/* Scores */}
+        <div style={cardStyle}>
+          <h2 style={{ marginTop: 0 }}>Scores</h2>
 
-          <div style={{ display: "flex", gap: 10 }}>
-            <button onClick={generateFoursomes} style={buttonStyle(false)}>
-              Generate Foursomes
-            </button>
-            <button onClick={() => clearFoursomes(true)} style={buttonStyle(false)}>
-              Clear
-            </button>
-          </div>
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={labelStyle}>Player</label>
+            <select
+              value={selectedPlayerId}
+              onChange={(e) => setSelectedPlayerId(e.target.value)}
+              style={inputStyle}
+            >
+              {players.length === 0 ? (
+                <option value="">Add a player first</option>
+              ) : (
+                players.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} (HCP {p.handicap})
+                  </option>
+                ))
+              )}
+            </select>
 
-          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-            {foursomes.length === 0 ? (
-              <p style={{ opacity: 0.7 }}>No foursomes yet</p>
-            ) : (
-              foursomes.map((f) => (
-                <div key={f.id} style={{ background: "#fff", color: "#111", borderRadius: 12, padding: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <strong>{f.groupName}</strong>
-                    <span style={{ opacity: 0.7, fontSize: 12 }}>Code: {f.code}</span>
-                  </div>
-
-                  <div style={{ marginTop: 10 }}>
-                    {f.players.length === 0 ? (
-                      <em style={{ opacity: 0.7 }}>No players in this group</em>
-                    ) : (
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {f.players.map((p) => (
-                          <li key={p.id}>
-                            {p.name} (HCP {p.handicap}){p.charity ? ` — ${p.charity}` : ""}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+            <form onSubmit={saveScore} style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>Hole</label>
+                  <select
+                    value={hole}
+                    onChange={(e) => setHole(Number(e.target.value))}
+                    style={inputStyle}
+                  >
+                    {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              ))
-            )}
+
+                <div style={{ flex: 1 }}>
+                  <label style={labelStyle}>Strokes</label>
+                  <input
+                    value={strokes}
+                    onChange={(e) => setStrokes(e.target.value)}
+                    placeholder="e.g. 5"
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <button style={buttonStyle} disabled={!selectedPlayerId}>
+                Save Score
+              </button>
+            </form>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => selectedPlayerId && loadScoresForPlayer(selectedPlayerId)}
+                style={secondaryButtonStyle}
+                disabled={!selectedPlayerId}
+              >
+                Refresh
+              </button>
+              <button
+                onClick={clearScoresForSelectedPlayer}
+                style={dangerButtonStyle}
+                disabled={!selectedPlayerId}
+              >
+                Clear Player Scores
+              </button>
+            </div>
+
+            <div style={{ marginTop: 6 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                {selectedPlayer ? `Scores for ${selectedPlayer.name}` : "Scores"}
+              </div>
+
+              {loadingScores ? (
+                <div>Loading scores…</div>
+              ) : playerScores.length === 0 ? (
+                <div style={{ opacity: 0.8 }}>No scores yet</div>
+              ) : (
+                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {playerScores.map((s) => (
+                    <li
+                      key={s.id}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        padding: "6px 0",
+                        borderBottom: "1px solid rgba(255,255,255,0.08)",
+                      }}
+                    >
+                      <span>Hole {s.hole}</span>
+                      <span style={{ fontWeight: 700 }}>{s.score}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
+        </div>
+
+        {/* Foursomes placeholder (we’ll come back) */}
+        <div style={cardStyle}>
+          <h2 style={{ marginTop: 0 }}>Foursomes</h2>
+          <div style={{ opacity: 0.8 }}>
+            We’ll come back to this once scores are working.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, opacity: 0.7 }}>
+        <h2 style={{ marginTop: 0 }}>Main Area</h2>
+        <div>
+          Later we can show leaderboard / net scoring / broadcaster updates here.
         </div>
       </div>
     </div>
   );
 }
 
-const inputStyle = {
-  padding: "10px 12px",
-  borderRadius: 8,
-  border: "1px solid #333",
-  background: "#111",
-  color: "#fff",
+// ----------------------------
+// Simple inline styles
+// ----------------------------
+const cardStyle = {
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 14,
+  padding: 14,
+  marginTop: 16,
 };
 
-const buttonStyle = (disabled) => ({
+const inputStyle = {
+  width: "100%",
   padding: "10px 12px",
   borderRadius: 10,
-  border: "1px solid #333",
-  background: disabled ? "#333" : "#222",
-  color: "#fff",
-  cursor: disabled ? "not-allowed" : "pointer",
-});
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(0,0,0,0.25)",
+  color: "white",
+  outline: "none",
+};
+
+const buttonStyle = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.10)",
+  color: "white",
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+const secondaryButtonStyle = {
+  flex: 1,
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.06)",
+  color: "white",
+  cursor: "pointer",
+};
+
+const dangerButtonStyle = {
+  flex: 1,
+  padding: "10px 12px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,0,0,0.20)",
+  color: "white",
+  cursor: "pointer",
+};
 
 const linkButtonStyle = {
   background: "transparent",
   border: "none",
-  color: "#8ab4ff",
+  color: "#7aa7ff",
   cursor: "pointer",
-  textDecoration: "underline",
-  padding: 0,
+  fontWeight: 700,
+};
+
+const labelStyle = {
+  fontSize: 12,
+  opacity: 0.8,
 };
