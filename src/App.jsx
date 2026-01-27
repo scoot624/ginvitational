@@ -21,13 +21,19 @@ export default function App() {
   const [newCharity, setNewCharity] = useState("");
 
   // ----------------------------
-  // Scores
+  // Scores (selected player view)
   // ----------------------------
   const [selectedPlayerId, setSelectedPlayerId] = useState("");
   const [hole, setHole] = useState(1);
   const [strokes, setStrokes] = useState("");
-  const [scores, setScores] = useState([]);
-  const [loadingScores, setLoadingScores] = useState(false);
+  const [playerScores, setPlayerScores] = useState([]);
+  const [loadingPlayerScores, setLoadingPlayerScores] = useState(false);
+
+  // ----------------------------
+  // Scores (ALL scores for leaderboard)
+  // ----------------------------
+  const [allScores, setAllScores] = useState([]);
+  const [loadingAllScores, setLoadingAllScores] = useState(false);
 
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId),
@@ -35,11 +41,12 @@ export default function App() {
   );
 
   // ----------------------------
-  // Load Players (startup)
+  // Startup: load players + all scores
   // ----------------------------
   useEffect(() => {
     (async () => {
       await loadPlayers();
+      await loadAllScores();
       setStatus("Connected ✅");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -59,9 +66,25 @@ export default function App() {
 
     const list = data || [];
     setPlayers(list);
-
-    // auto-pick first player for scoring
     if (!selectedPlayerId && list.length > 0) setSelectedPlayerId(list[0].id);
+  }
+
+  async function loadAllScores() {
+    setLoadingAllScores(true);
+    const { data, error } = await supabase
+      .from("scores")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error(error);
+      alert("Error loading ALL scores (check scores SELECT policy)");
+      setLoadingAllScores(false);
+      return;
+    }
+
+    setAllScores(data || []);
+    setLoadingAllScores(false);
   }
 
   async function addPlayer(e) {
@@ -107,14 +130,17 @@ export default function App() {
     }
 
     setPlayers((prev) => prev.filter((p) => p.id !== playerId));
+
+    // clean up local score lists
+    setAllScores((prev) => prev.filter((s) => s.player_id !== playerId));
     if (selectedPlayerId === playerId) {
       setSelectedPlayerId("");
-      setScores([]);
+      setPlayerScores([]);
     }
   }
 
   // ----------------------------
-  // Scores: load for selected player
+  // Load selected player scores when on Scores tab
   // ----------------------------
   useEffect(() => {
     if (tab !== "scores") return;
@@ -124,7 +150,7 @@ export default function App() {
   }, [tab, selectedPlayerId]);
 
   async function loadScoresForPlayer(playerId) {
-    setLoadingScores(true);
+    setLoadingPlayerScores(true);
 
     const { data, error } = await supabase
       .from("scores")
@@ -135,12 +161,12 @@ export default function App() {
     if (error) {
       console.error(error);
       alert("Error loading scores (check scores SELECT policy)");
-      setLoadingScores(false);
+      setLoadingPlayerScores(false);
       return;
     }
 
-    setScores(data || []);
-    setLoadingScores(false);
+    setPlayerScores(data || []);
+    setLoadingPlayerScores(false);
   }
 
   async function saveScore(e) {
@@ -165,24 +191,60 @@ export default function App() {
     }
 
     const inserted = data?.[0];
-    setScores((prev) => [...prev, inserted].sort((a, b) => a.hole - b.hole));
+
+    // Update both local lists
+    setPlayerScores((prev) => [...prev, inserted].sort((a, b) => a.hole - b.hole));
+    setAllScores((prev) => [inserted, ...prev]);
+
     setStrokes("");
   }
 
   // ----------------------------
-  // Leaderboard (gross total from scores table)
+  // Real gross leaderboard from ALL scores
   // ----------------------------
-  const leaderboard = useMemo(() => {
-    const totals = new Map(); // playerId -> gross total
-    for (const s of scores) {
-      totals.set(s.player_id, (totals.get(s.player_id) || 0) + (s.score || 0));
+  const grossLeaderboard = useMemo(() => {
+    // playerId -> { gross, holesPlayed, holesSet }
+    const map = new Map();
+
+    for (const s of allScores) {
+      if (!s.player_id || !s.hole || !s.score) continue;
+
+      const entry = map.get(s.player_id) || {
+        gross: 0,
+        holesPlayed: 0,
+        holesSet: new Set(),
+      };
+
+      // Count hole only once (protects against duplicate entries)
+      if (!entry.holesSet.has(s.hole)) {
+        entry.holesSet.add(s.hole);
+        entry.holesPlayed += 1;
+        entry.gross += Number(s.score) || 0;
+      }
+
+      map.set(s.player_id, entry);
     }
 
-    return players
-      .map((p) => ({ ...p, gross: totals.get(p.id) || 0 }))
-      .filter((p) => p.gross > 0)
-      .sort((a, b) => a.gross - b.gross);
-  }, [players, scores]);
+    const rows = players
+      .map((p) => {
+        const entry = map.get(p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          handicap: p.handicap,
+          charity: p.charity,
+          gross: entry?.gross || 0,
+          holesPlayed: entry?.holesPlayed || 0,
+        };
+      })
+      .filter((p) => p.holesPlayed > 0)
+      .sort((a, b) => {
+        if (a.gross === b.gross) return b.holesPlayed - a.holesPlayed; // tie-break: more holes played
+        return a.gross - b.gross;
+      });
+
+    return rows;
+  }, [players, allScores]);
 
   return (
     <div style={{ padding: 20, color: "white", fontFamily: "Arial, sans-serif" }}>
@@ -258,7 +320,7 @@ export default function App() {
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Foursomes</h2>
             <div style={{ opacity: 0.8 }}>
-              We’ll fix foursomes later. For now, scoring is the priority.
+              We’ll come back to foursomes. Next we’ll add realtime + net leaderboard.
             </div>
           </div>
         )}
@@ -267,11 +329,12 @@ export default function App() {
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Scores</h2>
 
+            {/* Scoring entry */}
             {players.length === 0 ? (
               <div style={{ opacity: 0.8 }}>Add players first.</div>
             ) : (
               <>
-                <div style={{ display: "grid", gap: 10, maxWidth: 460 }}>
+                <div style={{ display: "grid", gap: 10, maxWidth: 520 }}>
                   <label style={labelStyle}>Player</label>
                   <select
                     value={selectedPlayerId}
@@ -311,31 +374,37 @@ export default function App() {
                       />
                     </div>
 
-                    <div style={{ width: 140, alignSelf: "end" }}>
+                    <div style={{ width: 160, alignSelf: "end" }}>
                       <button style={buttonStyle}>Save</button>
                     </div>
                   </form>
 
-                  <button
-                    onClick={() => selectedPlayerId && loadScoresForPlayer(selectedPlayerId)}
-                    style={secondaryButtonStyle}
-                  >
-                    Refresh Scores
-                  </button>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      onClick={() => selectedPlayerId && loadScoresForPlayer(selectedPlayerId)}
+                      style={secondaryButtonStyle}
+                    >
+                      Refresh Player Scores
+                    </button>
+                    <button onClick={loadAllScores} style={secondaryButtonStyle}>
+                      Refresh Leaderboard
+                    </button>
+                  </div>
                 </div>
 
+                {/* Player scores list */}
                 <div style={{ marginTop: 18 }}>
                   <h3 style={{ marginBottom: 8 }}>
                     {selectedPlayer ? `Scores for ${selectedPlayer.name}` : "Scores"}
                   </h3>
 
-                  {loadingScores ? (
+                  {loadingPlayerScores ? (
                     <div>Loading…</div>
-                  ) : scores.length === 0 ? (
+                  ) : playerScores.length === 0 ? (
                     <div style={{ opacity: 0.8 }}>No scores yet</div>
                   ) : (
                     <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                      {scores.map((s) => (
+                      {playerScores.map((s) => (
                         <li key={s.id} style={scoreRowStyle}>
                           <span>Hole {s.hole}</span>
                           <span style={{ fontWeight: 800 }}>{s.score}</span>
@@ -345,22 +414,41 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Real leaderboard */}
                 <div style={{ marginTop: 18 }}>
-                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Gross for selected player’s scores)</h3>
-                  {leaderboard.length === 0 ? (
+                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Gross — all players)</h3>
+
+                  {loadingAllScores ? (
+                    <div>Loading leaderboard…</div>
+                  ) : grossLeaderboard.length === 0 ? (
                     <div style={{ opacity: 0.8 }}>Enter some scores first.</div>
                   ) : (
-                    <ol>
-                      {leaderboard.map((p) => (
-                        <li key={p.id}>
-                          <b>{p.name}</b> — {p.gross}
-                        </li>
-                      ))}
-                    </ol>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", opacity: 0.8 }}>
+                          <th style={thStyle}>Pos</th>
+                          <th style={thStyle}>Player</th>
+                          <th style={thStyle}>Holes</th>
+                          <th style={thStyle}>Gross</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {grossLeaderboard.map((p, idx) => (
+                          <tr key={p.id} style={{ borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+                            <td style={tdStyle}>{idx + 1}</td>
+                            <td style={tdStyle}>
+                              <div style={{ fontWeight: 800 }}>{p.name}</div>
+                              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                                HCP {p.handicap} {p.charity ? `— ${p.charity}` : ""}
+                              </div>
+                            </td>
+                            <td style={tdStyle}>{p.holesPlayed}</td>
+                            <td style={{ ...tdStyle, fontWeight: 900 }}>{p.gross}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   )}
-                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
-                    Next step: we’ll load *all* players’ scores and compute real leaderboard + net.
-                  </div>
                 </div>
               </>
             )}
@@ -428,6 +516,7 @@ const buttonStyle = {
 };
 
 const secondaryButtonStyle = {
+  flex: 1,
   padding: "10px 12px",
   borderRadius: 10,
   border: "1px solid rgba(255,255,255,0.16)",
@@ -464,3 +553,6 @@ const labelStyle = {
   fontSize: 12,
   opacity: 0.8,
 };
+
+const thStyle = { padding: "10px 8px" };
+const tdStyle = { padding: "10px 8px", verticalAlign: "top" };
