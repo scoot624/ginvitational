@@ -40,7 +40,7 @@ function toParString(n) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState("players"); // players | foursomes | scores
+  const [tab, setTab] = useState("players"); // players | foursomes | scores | leaderboard
   const [status, setStatus] = useState("Connecting…");
 
   // Players
@@ -49,14 +49,14 @@ export default function App() {
   const [newHandicap, setNewHandicap] = useState("");
   const [newCharity, setNewCharity] = useState("");
 
-  // Scores (selected player view)
+  // Scores (selected player)
   const [selectedPlayerId, setSelectedPlayerId] = useState("");
   const [hole, setHole] = useState(1);
   const [strokes, setStrokes] = useState("");
   const [playerScores, setPlayerScores] = useState([]);
   const [loadingPlayerScores, setLoadingPlayerScores] = useState(false);
 
-  // All scores for leaderboard
+  // All scores (leaderboard)
   const [allScores, setAllScores] = useState([]);
   const [loadingAllScores, setLoadingAllScores] = useState(false);
 
@@ -65,7 +65,7 @@ export default function App() {
     [players, selectedPlayerId]
   );
 
-  // Startup
+  // Startup: load players + all scores
   useEffect(() => {
     (async () => {
       await loadPlayers();
@@ -89,7 +89,10 @@ export default function App() {
 
     const list = data || [];
     setPlayers(list);
-    if (!selectedPlayerId && list.length > 0) setSelectedPlayerId(list[0].id);
+
+    if (!selectedPlayerId && list.length > 0) {
+      setSelectedPlayerId(list[0].id);
+    }
   }
 
   async function loadAllScores() {
@@ -189,6 +192,7 @@ export default function App() {
     setLoadingPlayerScores(false);
   }
 
+  // ✅ UPSERT score: update hole if already exists
   async function saveScore(e) {
     e.preventDefault();
 
@@ -202,56 +206,71 @@ export default function App() {
       score: Number(strokes),
     };
 
-    const { data, error } = await supabase.from("scores").insert(payload).select();
+    const { data, error } = await supabase
+      .from("scores")
+      .upsert(payload, { onConflict: "player_id,hole" })
+      .select();
 
     if (error) {
       console.error(error);
-      alert("Error saving score (check scores INSERT policy)");
+      alert("Error saving score");
       return;
     }
 
-    const inserted = data?.[0];
+    const saved = data?.[0];
+    if (!saved) return;
 
-    setPlayerScores((prev) => [...prev, inserted].sort((a, b) => a.hole - b.hole));
-    setAllScores((prev) => [inserted, ...prev]);
+    // Update selected player's scores list
+    setPlayerScores((prev) => {
+      const filtered = prev.filter((s) => Number(s.hole) !== Number(saved.hole));
+      return [...filtered, saved].sort((a, b) => a.hole - b.hole);
+    });
+
+    // Update all scores list used for leaderboard (replace that player+hole)
+    setAllScores((prev) => {
+      const filtered = prev.filter(
+        (s) =>
+          !(
+            s.player_id === saved.player_id &&
+            Number(s.hole) === Number(saved.hole)
+          )
+      );
+      return [saved, ...filtered];
+    });
 
     setStrokes("");
   }
 
   // ---- NET calc helpers ----
   const holesByDifficulty = useMemo(() => {
-    // sort by hcp asc (1 hardest)
-    return [...COURSE.holes].sort((a, b) => a.hcp - b.hcp);
+    return [...COURSE.holes].sort((a, b) => a.hcp - b.hcp); // 1 hardest
   }, []);
 
   function strokesOnHole(playerHandicap, holeNumber) {
     const h = Math.max(0, Math.floor(Number(playerHandicap) || 0));
     if (h <= 0) return 0;
 
-    // base strokes for everyone if handicap > 18 etc.
-    const base = Math.floor(h / 18); // e.g. 20 => 1 base stroke on every hole
-    const remainder = h % 18;        // extra strokes on the hardest remainder holes
+    const base = Math.floor(h / 18); // handicap 20 => 1 stroke each hole, plus extras on hardest 2
+    const remainder = h % 18;
 
-    // find this hole's rank among hardest holes (0-based)
     const rankIndex = holesByDifficulty.findIndex((x) => x.number === holeNumber);
-
     const extra = rankIndex >= 0 && rankIndex < remainder ? 1 : 0;
+
     return base + extra;
   }
 
-  // Build leaderboard from ALL scores (dedupe by player+hole, keep latest)
+  // Build net leaderboard from allScores
   const netLeaderboard = useMemo(() => {
-    // Keep latest score per player+hole (in case someone enters twice)
-    const latest = new Map(); // key "playerId-hole" -> scoreRow
+    // Latest score per player+hole (since we load desc, first seen wins)
+    const latest = new Map();
     for (const s of allScores) {
       if (!s.player_id || !s.hole || !s.score) continue;
       const key = `${s.player_id}-${s.hole}`;
-      // created_at desc is loaded, so first time we see a key is newest
       if (!latest.has(key)) latest.set(key, s);
     }
 
     // Group by player
-    const byPlayer = new Map(); // playerId -> array of {hole, score}
+    const byPlayer = new Map();
     for (const s of latest.values()) {
       const arr = byPlayer.get(s.player_id) || [];
       arr.push({ hole: Number(s.hole), score: Number(s.score) });
@@ -263,10 +282,6 @@ export default function App() {
         const scoresArr = byPlayer.get(p.id) || [];
         if (scoresArr.length === 0) return null;
 
-        // holes played
-        const holesPlayed = scoresArr.length;
-
-        // gross + parForPlayed
         let gross = 0;
         let parForPlayed = 0;
         let strokesUsed = 0;
@@ -288,16 +303,14 @@ export default function App() {
           name: p.name,
           handicap: p.handicap,
           charity: p.charity,
-          holesPlayed,
+          holesPlayed: scoresArr.length,
           gross,
           net,
           toPar,
-          parForPlayed,
         };
       })
       .filter(Boolean)
       .sort((a, b) => {
-        // Sort by net asc, tie-break by holes played desc
         if (a.net === b.net) return b.holesPlayed - a.holesPlayed;
         return a.net - b.net;
       });
@@ -312,7 +325,7 @@ export default function App() {
         <div style={{ opacity: 0.75, marginBottom: 14 }}>{status}</div>
 
         {/* Tabs */}
-        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
           <TabButton active={tab === "players"} onClick={() => setTab("players")}>
             Players
           </TabButton>
@@ -322,8 +335,12 @@ export default function App() {
           <TabButton active={tab === "scores"} onClick={() => setTab("scores")}>
             Scores
           </TabButton>
+          <TabButton active={tab === "leaderboard"} onClick={() => setTab("leaderboard")}>
+            Leaderboard
+          </TabButton>
         </div>
 
+        {/* Players */}
         {tab === "players" && (
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Players</h2>
@@ -374,6 +391,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Foursomes placeholder */}
         {tab === "foursomes" && (
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Foursomes</h2>
@@ -383,6 +401,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Scores */}
         {tab === "scores" && (
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Scores</h2>
@@ -444,7 +463,7 @@ export default function App() {
                       Refresh Player Scores
                     </button>
                     <button onClick={loadAllScores} style={secondaryButtonStyle}>
-                      Refresh Leaderboard
+                      Refresh Leaderboard Data
                     </button>
                   </div>
                 </div>
@@ -469,52 +488,64 @@ export default function App() {
                     </ul>
                   )}
                 </div>
-
-                <div style={{ marginTop: 18 }}>
-                  <h3 style={{ marginBottom: 8 }}>Leaderboard (Net)</h3>
-
-                  {loadingAllScores ? (
-                    <div>Loading leaderboard…</div>
-                  ) : netLeaderboard.length === 0 ? (
-                    <div style={{ opacity: 0.8 }}>Enter some scores first.</div>
-                  ) : (
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr style={{ textAlign: "left", opacity: 0.8 }}>
-                          <th style={thStyle}>Pos</th>
-                          <th style={thStyle}>Player</th>
-                          <th style={thStyle}>Holes</th>
-                          <th style={thStyle}>Gross</th>
-                          <th style={thStyle}>Net</th>
-                          <th style={thStyle}>To Par</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {netLeaderboard.map((p, idx) => (
-                          <tr key={p.id} style={{ borderTop: "1px solid rgba(255,255,255,0.12)" }}>
-                            <td style={tdStyle}>{idx + 1}</td>
-                            <td style={tdStyle}>
-                              <div style={{ fontWeight: 800 }}>{p.name}</div>
-                              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                HCP {p.handicap} {p.charity ? `— ${p.charity}` : ""}
-                              </div>
-                            </td>
-                            <td style={tdStyle}>{p.holesPlayed}</td>
-                            <td style={tdStyle}>{p.gross}</td>
-                            <td style={{ ...tdStyle, fontWeight: 900 }}>{p.net}</td>
-                            <td style={{ ...tdStyle, fontWeight: 900 }}>{toParString(p.toPar)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-
-                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
-                    Net = Gross − handicap strokes on hardest holes (based on hole HCP). To Par is for holes played.
-                  </div>
-                </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* Leaderboard */}
+        {tab === "leaderboard" && (
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0 }}>Leaderboard (Net)</h2>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              <button onClick={loadAllScores} style={secondaryButtonStyle}>
+                Refresh Leaderboard
+              </button>
+            </div>
+
+            {loadingAllScores ? (
+              <div>Loading leaderboard…</div>
+            ) : netLeaderboard.length === 0 ? (
+              <div style={{ opacity: 0.8 }}>Enter some scores first.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", opacity: 0.8 }}>
+                    <th style={thStyle}>Pos</th>
+                    <th style={thStyle}>Player</th>
+                    <th style={thStyle}>Holes</th>
+                    <th style={thStyle}>Gross</th>
+                    <th style={thStyle}>Net</th>
+                    <th style={thStyle}>To Par</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {netLeaderboard.map((p, idx) => (
+                    <tr
+                      key={p.id}
+                      style={{ borderTop: "1px solid rgba(255,255,255,0.12)" }}
+                    >
+                      <td style={tdStyle}>{idx + 1}</td>
+                      <td style={tdStyle}>
+                        <div style={{ fontWeight: 800 }}>{p.name}</div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>
+                          HCP {p.handicap} {p.charity ? `— ${p.charity}` : ""}
+                        </div>
+                      </td>
+                      <td style={tdStyle}>{p.holesPlayed}</td>
+                      <td style={tdStyle}>{p.gross}</td>
+                      <td style={{ ...tdStyle, fontWeight: 900 }}>{p.net}</td>
+                      <td style={{ ...tdStyle, fontWeight: 900 }}>{toParString(p.toPar)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
+              Net = Gross − handicap strokes on hardest holes (based on hole HCP). To Par is for holes played.
+            </div>
           </div>
         )}
       </div>
@@ -579,7 +610,6 @@ const buttonStyle = {
 };
 
 const secondaryButtonStyle = {
-  flex: 1,
   padding: "10px 12px",
   borderRadius: 10,
   border: "1px solid rgba(255,255,255,0.16)",
