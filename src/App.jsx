@@ -60,12 +60,16 @@ export default function App() {
   const [allScores, setAllScores] = useState([]);
   const [loadingAllScores, setLoadingAllScores] = useState(false);
 
+  // Leaderboard auto-refresh
+  const [autoRefreshOn, setAutoRefreshOn] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(null);
+
   const selectedPlayer = useMemo(
     () => players.find((p) => p.id === selectedPlayerId),
     [players, selectedPlayerId]
   );
 
-  // Startup: load players + all scores
+  // Startup
   useEffect(() => {
     (async () => {
       await loadPlayers();
@@ -97,6 +101,7 @@ export default function App() {
 
   async function loadAllScores() {
     setLoadingAllScores(true);
+
     const { data, error } = await supabase
       .from("scores")
       .select("*")
@@ -110,6 +115,7 @@ export default function App() {
     }
 
     setAllScores(data || []);
+    setLastUpdated(new Date());
     setLoadingAllScores(false);
   }
 
@@ -183,7 +189,7 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error loading scores (check scores SELECT policy)");
+      alert("Error loading player scores (check scores SELECT policy)");
       setLoadingPlayerScores(false);
       return;
     }
@@ -238,8 +244,25 @@ export default function App() {
       return [saved, ...filtered];
     });
 
+    setLastUpdated(new Date());
     setStrokes("");
   }
+
+  // ✅ Leaderboard auto-refresh every 60 seconds (ONLY on leaderboard tab)
+  useEffect(() => {
+    if (!autoRefreshOn) return;
+    if (tab !== "leaderboard") return;
+
+    // refresh immediately when entering leaderboard
+    loadAllScores();
+
+    const id = setInterval(() => {
+      loadAllScores();
+    }, 60000);
+
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, autoRefreshOn]);
 
   // ---- NET calc helpers ----
   const holesByDifficulty = useMemo(() => {
@@ -250,7 +273,7 @@ export default function App() {
     const h = Math.max(0, Math.floor(Number(playerHandicap) || 0));
     if (h <= 0) return 0;
 
-    const base = Math.floor(h / 18); // handicap 20 => 1 stroke each hole, plus extras on hardest 2
+    const base = Math.floor(h / 18);
     const remainder = h % 18;
 
     const rankIndex = holesByDifficulty.findIndex((x) => x.number === holeNumber);
@@ -462,9 +485,6 @@ export default function App() {
                     >
                       Refresh Player Scores
                     </button>
-                    <button onClick={loadAllScores} style={secondaryButtonStyle}>
-                      Refresh Leaderboard Data
-                    </button>
                   </div>
                 </div>
 
@@ -498,10 +518,31 @@ export default function App() {
           <div style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Leaderboard (Net)</h2>
 
-            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                marginBottom: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
               <button onClick={loadAllScores} style={secondaryButtonStyle}>
-                Refresh Leaderboard
+                Refresh Now
               </button>
+
+              <label style={{ display: "flex", gap: 8, alignItems: "center", opacity: 0.9 }}>
+                <input
+                  type="checkbox"
+                  checked={autoRefreshOn}
+                  onChange={(e) => setAutoRefreshOn(e.target.checked)}
+                />
+                Auto-refresh (every 60s)
+              </label>
+
+              <span style={{ fontSize: 12, opacity: 0.75 }}>
+                {lastUpdated ? `Last updated: ${lastUpdated.toLocaleTimeString()}` : ""}
+              </span>
             </div>
 
             {loadingAllScores ? (
