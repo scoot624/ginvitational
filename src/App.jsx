@@ -33,25 +33,12 @@ function netColorStyle(netToPar) {
   return { color: "rgba(255,255,255,0.78)" };
 }
 
-function randomCode6() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
 function ScorecardModal({ open, onClose, player, pars }) {
   if (!open || !player) return null;
 
   const holes = Array.from({ length: 18 }, (_, i) => i + 1);
-  const playedHoles = holes.filter((h) => player.scoresByHole[h] != null);
 
+  const playedHoles = holes.filter((h) => player.scoresByHole[h] != null);
   const gross = playedHoles.reduce((acc, h) => acc + player.scoresByHole[h], 0);
   const parPlayed = playedHoles.reduce((acc, h) => acc + pars[h - 1], 0);
 
@@ -75,7 +62,9 @@ function ScorecardModal({ open, onClose, player, pars }) {
               </span>
             </div>
           </div>
-          <button style={styles.smallBtn} onClick={onClose}>Close</button>
+          <button style={styles.smallBtn} onClick={onClose}>
+            Close
+          </button>
         </div>
 
         <div style={{ marginTop: 12, overflowX: "auto" }}>
@@ -119,7 +108,7 @@ function ScorecardModal({ open, onClose, player, pars }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          Net is computed as gross minus pro-rated handicap for holes played.
+          Net is computed as gross minus **pro-rated handicap** for holes played.
         </div>
       </div>
     </div>
@@ -129,15 +118,15 @@ function ScorecardModal({ open, onClose, player, pars }) {
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | scores | admin
   const [status, setStatus] = useState("Connecting...");
-
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
-  // foursomes
-  const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // join table
+  // Scores entry
+  const [selectedPlayerId, setSelectedPlayerId] = useState("");
+  const [hole, setHole] = useState("1");
+  const [strokes, setStrokes] = useState("4");
 
-  // Admin PIN
+  // Admin
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
 
@@ -146,15 +135,11 @@ export default function App() {
   const [newHandicap, setNewHandicap] = useState("");
   const [newCharity, setNewCharity] = useState("");
 
-  // Leaderboard scorecard modal
+  // Scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
 
-  // Scores UX
-  const [foursomeCodeInput, setFoursomeCodeInput] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null); // foursomes row
-  const [activeFoursomeRoster, setActiveFoursomeRoster] = useState([]); // players in that foursome
-  const [holeIndex, setHoleIndex] = useState(1); // 1..18
-  const [holeScores, setHoleScores] = useState({}); // { [playerId]: "4" }
+  // ✅ Header should show everywhere EXCEPT the landing home page
+  const showHeader = tab !== "home";
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -163,7 +148,7 @@ export default function App() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("loadPlayers error:", error);
+      console.error(error);
       return { ok: false };
     }
     setPlayers(data || []);
@@ -177,38 +162,10 @@ export default function App() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("loadScores error:", error);
+      console.error(error);
       return { ok: false };
     }
     setScores(data || []);
-    return { ok: true };
-  }
-
-  async function loadFoursomes() {
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select("id,code,group_name,created_at")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error("loadFoursomes error:", error);
-      return { ok: false };
-    }
-    setFoursomes(data || []);
-    return { ok: true };
-  }
-
-  async function loadFoursomePlayers() {
-    const { data, error } = await supabase
-      .from("foursome_players")
-      .select("id,foursome_id,player_id,position,created_at")
-      .order("position", { ascending: true });
-
-    if (error) {
-      console.error("loadFoursomePlayers error:", error);
-      return { ok: false };
-    }
-    setFoursomePlayers(data || []);
     return { ok: true };
   }
 
@@ -216,9 +173,7 @@ export default function App() {
     setStatus("Loading...");
     const a = await loadPlayers();
     const b = await loadScores();
-    const c = await loadFoursomes();
-    const d = await loadFoursomePlayers();
-    setStatus(a.ok && b.ok && c.ok && d.ok ? "Connected ✅" : "Connected, but some data failed ❗");
+    setStatus(a.ok && b.ok ? "Connected ✅" : "Connected, but some data failed ❗");
   }
 
   useEffect(() => {
@@ -226,7 +181,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ auto-refresh leaderboard every minute (only on leaderboard tab)
+  // ✅ auto-refresh leaderboard every minute (only while on leaderboard tab)
   useEffect(() => {
     if (tab !== "leaderboard") return;
 
@@ -240,9 +195,9 @@ export default function App() {
   }, [tab]);
 
   const leaderboardRows = useMemo(() => {
+    // build player -> scoresByHole (last write wins)
     const scoresByPlayer = new Map();
 
-    // last-write-wins per hole per player
     for (const s of scores) {
       const pid = s.player_id;
       const h = clampInt(s.hole, 0);
@@ -285,6 +240,7 @@ export default function App() {
       };
     });
 
+    // Sort: players w/ scores first, then netToPar, tie-breaker holesPlayed (more), then name
     rows.sort((a, b) => {
       const aHas = a.holesPlayed > 0;
       const bHas = b.holesPlayed > 0;
@@ -302,14 +258,28 @@ export default function App() {
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
 
-  function enterAdmin() {
-    if (adminPin === "112020") {
-      setAdminOn(true);
-      setAdminPin("");
-      setTab("admin");
-    } else {
-      alert("Wrong PIN");
+  async function saveScore() {
+    const pid = selectedPlayerId;
+    const h = clampInt(hole, 1);
+    const sc = clampInt(strokes, 0);
+
+    if (!pid) return alert("Pick a player first.");
+    if (h < 1 || h > 18) return alert("Hole must be 1–18.");
+    if (sc < 1 || sc > 20) return alert("Strokes looks wrong (try 1–20).");
+
+    const { error } = await supabase
+      .from("scores")
+      .upsert({ player_id: pid, hole: h, score: sc }, { onConflict: "player_id,hole" });
+
+    if (error) {
+      console.error(error);
+      alert(
+        "Error saving score. (If you haven’t added unique constraint on player_id+hole, upsert may fail.)"
+      );
+      return;
     }
+
+    await loadScores();
   }
 
   async function addPlayer() {
@@ -322,6 +292,7 @@ export default function App() {
     if (!name) return alert("Name required.");
 
     const { error } = await supabase.from("players").insert({ name, handicap, charity });
+
     if (error) {
       console.error(error);
       alert("Error adding player.");
@@ -338,10 +309,10 @@ export default function App() {
     if (!adminOn) return alert("Admin only.");
     if (!confirm("Delete this player?")) return;
 
+    // delete scores first (helps avoid FK issues later)
     await supabase.from("scores").delete().eq("player_id", id);
-    await supabase.from("foursome_players").delete().eq("player_id", id);
-
     const { error } = await supabase.from("players").delete().eq("id", id);
+
     if (error) {
       console.error(error);
       alert("Error deleting player.");
@@ -350,231 +321,30 @@ export default function App() {
 
     await loadPlayers();
     await loadScores();
-    await loadFoursomePlayers();
   }
 
-  /** ✅ ADMIN: Generate foursomes (writes to foursomes + foursome_players) */
+  function enterAdmin() {
+    if (adminPin === "112020") {
+      setAdminOn(true);
+      setAdminPin("");
+      // stay on admin tab
+    } else {
+      alert("Wrong PIN");
+    }
+  }
+
+  /** ✅ placeholder for now — we’ll fix Supabase RLS next */
   async function generateFoursomes() {
     if (!adminOn) return alert("Admin only.");
 
-    if (players.length < 4) return alert("Need at least 4 players.");
-
-    // Optional: wipe old foursomes first (comment out if you want to keep history)
-    // await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    // await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-
-    const shuffled = shuffle(players);
-    const groups = [];
-    for (let i = 0; i < shuffled.length; i += 4) {
-      const groupPlayers = shuffled.slice(i, i + 4);
-      if (groupPlayers.length === 0) continue;
-
-      groups.push({
-        groupName: `Group ${Math.floor(i / 4) + 1}`,
-        code: randomCode6(),
-        players: groupPlayers,
-      });
-    }
-
-    // Insert foursomes, capture ids
-    const foursomeRowsToInsert = groups.map((g) => ({
-      code: g.code,
-      group_name: g.groupName,
-    }));
-
-    const { data: insertedFoursomes, error: insertFoursomesError } = await supabase
-      .from("foursomes")
-      .insert(foursomeRowsToInsert)
-      .select("id,code,group_name");
-
-    if (insertFoursomesError) {
-      console.error(insertFoursomesError);
+    try {
+      // Intentionally minimal: we’ll implement correctly once your tables/policies are confirmed.
+      alert("Generate Foursomes clicked. Next step: fix Supabase insert/RLS.");
+    } catch (e) {
+      console.error(e);
       alert("Error creating foursomes (check RLS/policies).");
-      return;
     }
-
-    // Insert join rows
-    const joinRows = [];
-    insertedFoursomes.forEach((f, idx) => {
-      const roster = groups[idx].players;
-      roster.forEach((p, position) => {
-        joinRows.push({
-          foursome_id: f.id,
-          player_id: p.id,
-          position: position + 1,
-        });
-      });
-    });
-
-    const { error: joinError } = await supabase.from("foursome_players").insert(joinRows);
-    if (joinError) {
-      console.error(joinError);
-      alert("Created foursomes, but failed linking players (check RLS/policies).");
-      return;
-    }
-
-    await loadFoursomes();
-    await loadFoursomePlayers();
-    alert("Foursomes generated ✅");
   }
-
-  /** ✅ Resolve roster for a foursome */
-  const foursomesWithRoster = useMemo(() => {
-    const playersById = new Map(players.map((p) => [p.id, p]));
-    const joinsByFoursome = new Map();
-
-    for (const j of foursomePlayers) {
-      if (!joinsByFoursome.has(j.foursome_id)) joinsByFoursome.set(j.foursome_id, []);
-      joinsByFoursome.get(j.foursome_id).push(j);
-    }
-
-    return (foursomes || []).map((f) => {
-      const joins = (joinsByFoursome.get(f.id) || []).slice().sort((a, b) => a.position - b.position);
-      const roster = joins
-        .map((j) => playersById.get(j.player_id))
-        .filter(Boolean);
-      return { ...f, roster };
-    });
-  }, [players, foursomes, foursomePlayers]);
-
-  /** ✅ Enter Scores: validate code + load roster */
-  async function loadFoursomeByCode() {
-    const code = foursomeCodeInput.trim().toUpperCase();
-    if (code.length < 3) return alert("Enter the 6-letter code.");
-
-    const { data: foursomeRow, error } = await supabase
-      .from("foursomes")
-      .select("id,code,group_name,created_at")
-      .eq("code", code)
-      .maybeSingle();
-
-    if (error) {
-      console.error(error);
-      alert("Error finding foursome. Check RLS/policies.");
-      return;
-    }
-    if (!foursomeRow) {
-      alert("Invalid code.");
-      return;
-    }
-
-    // get roster via join table
-    const { data: joinRows, error: joinErr } = await supabase
-      .from("foursome_players")
-      .select("player_id,position")
-      .eq("foursome_id", foursomeRow.id)
-      .order("position", { ascending: true });
-
-    if (joinErr) {
-      console.error(joinErr);
-      alert("Error loading roster. Check RLS/policies.");
-      return;
-    }
-
-    const rosterPlayers = joinRows
-      .map((jr) => players.find((p) => p.id === jr.player_id))
-      .filter(Boolean);
-
-    if (rosterPlayers.length === 0) {
-      alert("That foursome has no players linked yet.");
-      return;
-    }
-
-    setActiveFoursome(foursomeRow);
-    setActiveFoursomeRoster(rosterPlayers);
-    setHoleIndex(1);
-    setHoleScores({});
-    setTab("scores");
-  }
-
-  /** Pull existing scores for this hole into inputs when roster/hole changes */
-  useEffect(() => {
-    if (!activeFoursomeRoster?.length) return;
-
-    const map = {};
-    for (const p of activeFoursomeRoster) {
-      const existing = scores.find((s) => s.player_id === p.id && clampInt(s.hole, 0) === holeIndex);
-      if (existing) map[p.id] = String(existing.score);
-    }
-    setHoleScores(map);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holeIndex, activeFoursomeRoster]);
-
-  /** ✅ Save current hole (upsert for every player) */
-  async function saveCurrentHole() {
-    if (!activeFoursomeRoster?.length) return;
-
-    const hole = holeIndex;
-    const payload = [];
-
-    for (const p of activeFoursomeRoster) {
-      const raw = holeScores[p.id];
-      if (raw == null || raw === "") continue;
-      const sc = clampInt(raw, 0);
-      if (sc < 1 || sc > 20) return alert(`Score looks wrong for ${p.name} (try 1–20).`);
-      payload.push({ player_id: p.id, hole, score: sc });
-    }
-
-    // It's okay if some are blank (they just won't save)
-    if (payload.length === 0) return true;
-
-    const { error } = await supabase
-      .from("scores")
-      .upsert(payload, { onConflict: "player_id,hole" });
-
-    if (error) {
-      console.error(error);
-      alert("Error saving scores. (Upsert needs unique constraint on player_id+hole.)");
-      return false;
-    }
-
-    await loadScores();
-    return true;
-  }
-
-  async function goNextHole() {
-    const ok = await saveCurrentHole();
-    if (!ok) return;
-    setHoleIndex((h) => Math.min(18, h + 1));
-  }
-
-  async function goPrevHole() {
-    const ok = await saveCurrentHole();
-    if (!ok) return;
-    setHoleIndex((h) => Math.max(1, h - 1));
-  }
-
-  const HeaderNav = () => (
-    <header style={styles.header}>
-      <div style={styles.headerTop}>
-        <div style={styles.brand}>
-          <div style={styles.brandTitle}>Ginvitational</div>
-          <div style={styles.brandSub}>{status}</div>
-        </div>
-
-        <nav style={styles.nav}>
-          <button
-            style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
-            onClick={() => setTab("leaderboard")}
-          >
-            Leaderboard
-          </button>
-          <button
-            style={tab === "scores" ? styles.navBtnActive : styles.navBtn}
-            onClick={() => setTab("scores")}
-          >
-            Enter Scores
-          </button>
-          <button
-            style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
-            onClick={() => setTab("admin")}
-          >
-            Admin
-          </button>
-        </nav>
-      </div>
-    </header>
-  );
 
   return (
     <div style={styles.page}>
@@ -586,22 +356,60 @@ export default function App() {
       />
 
       <div style={styles.shell}>
-        {/* ✅ IMPORTANT: No header nav on Home page */}
-        {tab !== "home" && <HeaderNav />}
+        {/* ✅ Header shown on Leaderboard/Scores/Admin only */}
+        {showHeader && (
+          <header style={styles.header}>
+            <div style={styles.headerTop}>
+              <div style={styles.brand}>
+                <div style={styles.brandTitle}>Ginvitational</div>
+                <div style={styles.brandSub}>{status}</div>
+              </div>
+
+              <nav style={styles.nav}>
+                <button
+                  style={tab === "home" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("home")}
+                >
+                  Home
+                </button>
+                <button
+                  style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("leaderboard")}
+                >
+                  Leaderboard
+                </button>
+                <button
+                  style={tab === "scores" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("scores")}
+                >
+                  Enter Scores
+                </button>
+                <button
+                  style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("admin")}
+                >
+                  Admin
+                </button>
+              </nav>
+            </div>
+          </header>
+        )}
 
         <main style={styles.content}>
+          {/* ✅ HOME/LANDING (no header, no status text) */}
           {tab === "home" && (
             <div style={styles.card}>
               <div style={{ textAlign: "center" }}>
                 <img
                   src="/logo.png"
                   alt="Ginvitational logo"
-                  style={{ width: 222, height: 222, objectFit: "contain" }} // ~300% bigger than 74px
+                  // ✅ 300% bigger than before (74 -> 222)
+                  style={{ width: 222, height: 222, objectFit: "contain" }}
                 />
-                <div style={{ marginTop: 10, fontSize: 28, fontWeight: 900 }}>
+                <div style={{ marginTop: 14, fontSize: 34, fontWeight: 900 }}>
                   The Ginvitational
                 </div>
-                <div style={{ marginTop: 6, opacity: 0.82, fontSize: 14 }}>
+                <div style={{ marginTop: 8, opacity: 0.82, fontSize: 14 }}>
                   Manufacturers Golf & CC • May 2026
                 </div>
               </div>
@@ -611,27 +419,18 @@ export default function App() {
                   📊 Leaderboard
                 </button>
 
-                {/* Scores entry flow starts by code */}
-                <div style={styles.subCard}>
-                  <div style={styles.subTitle}>Enter Scores</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <input
-                      style={styles.input}
-                      value={foursomeCodeInput}
-                      onChange={(e) => setFoursomeCodeInput(e.target.value.toUpperCase())}
-                      placeholder="Enter 6-letter code (ex: A1B2C3)"
-                      maxLength={6}
-                    />
-                    <button style={styles.bigBtn} onClick={loadFoursomeByCode}>
-                      ✅ Continue
-                    </button>
-                    <div style={styles.helpText}>
-                      You can only enter scores for your foursome code.
-                    </div>
-                  </div>
-                </div>
+                {/* ✅ “Enter Scores” is now a true button again (your request #2) */}
+                <button style={styles.bigBtn} onClick={() => setTab("scores")}>
+                  📝 Enter Scores
+                </button>
 
-                <button style={styles.bigBtn} onClick={() => setTab("admin")}>
+                <button
+                  style={styles.bigBtn}
+                  onClick={() => {
+                    // ✅ If already unlocked, go straight in
+                    setTab("admin");
+                  }}
+                >
                   ⚙️ Admin
                 </button>
               </div>
@@ -681,7 +480,10 @@ export default function App() {
                           <td style={styles.td}>{idx + 1}</td>
 
                           <td style={{ ...styles.td, minWidth: 180 }}>
-                            <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                            <button
+                              style={styles.playerLink}
+                              onClick={() => setScorecardPlayerId(r.id)}
+                            >
                               {r.name}
                             </button>
                             <div style={styles.playerMeta}>
@@ -716,88 +518,61 @@ export default function App() {
 
           {tab === "scores" && (
             <div style={styles.card}>
-              {!activeFoursome ? (
-                <>
-                  <div style={styles.cardTitle}>Enter Scores</div>
-                  <div style={styles.helpText}>Enter your 6-letter foursome code.</div>
-                  <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+              <div style={styles.cardTitle}>Enter Scores</div>
+
+              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                <label style={styles.label}>
+                  Player
+                  <select
+                    style={styles.input}
+                    value={selectedPlayerId}
+                    onChange={(e) => setSelectedPlayerId(e.target.value)}
+                  >
+                    <option value="">Select a player…</option>
+                    {players.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} (HCP {clampInt(p.handicap, 0)})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div style={styles.scoreGrid}>
+                  <label style={styles.label}>
+                    Hole
+                    <select
+                      style={styles.input}
+                      value={hole}
+                      onChange={(e) => setHole(e.target.value)}
+                    >
+                      {Array.from({ length: 18 }, (_, i) => (
+                        <option key={i + 1} value={String(i + 1)}>
+                          {i + 1}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={styles.label}>
+                    Strokes
                     <input
                       style={styles.input}
-                      value={foursomeCodeInput}
-                      onChange={(e) => setFoursomeCodeInput(e.target.value.toUpperCase())}
-                      placeholder="Code (ex: A1B2C3)"
-                      maxLength={6}
+                      value={strokes}
+                      onChange={(e) => setStrokes(e.target.value)}
+                      inputMode="numeric"
+                      placeholder="4"
                     />
-                    <button style={styles.bigBtn} onClick={loadFoursomeByCode}>
-                      Continue
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div style={styles.cardHeaderRow}>
-                    <div>
-                      <div style={styles.cardTitle}>
-                        {activeFoursome.group_name} • Code {activeFoursome.code}
-                      </div>
-                      <div style={styles.helpText}>
-                        Hole {holeIndex} (Par {PARS[holeIndex - 1]}). Type scores, then Next/Prev saves.
-                      </div>
-                    </div>
-                    <button
-                      style={styles.smallBtn}
-                      onClick={() => {
-                        setActiveFoursome(null);
-                        setActiveFoursomeRoster([]);
-                        setHoleIndex(1);
-                        setHoleScores({});
-                      }}
-                    >
-                      Change Code
-                    </button>
-                  </div>
+                  </label>
 
-                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                    {activeFoursomeRoster.map((p) => (
-                      <div key={p.id} style={styles.playerRow}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {p.name}
-                          </div>
-                          <div style={styles.playerMeta}>
-                            HCP {clampInt(p.handicap, 0)}
-                            {p.charity ? ` • ${p.charity}` : ""}
-                          </div>
-                        </div>
+                  <button style={styles.saveBtn} onClick={saveScore}>
+                    Save
+                  </button>
+                </div>
 
-                        <input
-                          style={{ ...styles.input, width: 90, textAlign: "center" }}
-                          inputMode="numeric"
-                          placeholder="—"
-                          value={holeScores[p.id] ?? ""}
-                          onChange={(e) => {
-                            const v = e.target.value.replace(/[^0-9]/g, "");
-                            setHoleScores((prev) => ({ ...prev, [p.id]: v }));
-                          }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <button style={styles.smallBtn} onClick={goPrevHole} disabled={holeIndex === 1}>
-                      ← Last Hole
-                    </button>
-                    <button style={styles.bigBtn} onClick={goNextHole} disabled={holeIndex === 18}>
-                      Next Hole →
-                    </button>
-                  </div>
-
-                  <div style={styles.helpText}>
-                    Tip: If someone’s blank, that player’s score won’t be saved for that hole.
-                  </div>
-                </>
-              )}
+                <div style={styles.helpText}>
+                  To edit a score: pick the same player + hole, enter the new number, hit Save again.
+                </div>
+              </div>
             </div>
           )}
 
@@ -814,7 +589,9 @@ export default function App() {
                       value={adminPin}
                       onChange={(e) => setAdminPin(e.target.value)}
                       inputMode="numeric"
-                      placeholder="112020"
+                      placeholder="Enter PIN"
+                      type="password"   // ✅ hides pin (dots)
+                      autoComplete="off"
                     />
                   </label>
 
@@ -843,8 +620,7 @@ export default function App() {
                       Reload Data
                     </button>
 
-                    {/* ✅ ADD BACK: Generate foursomes */}
-                    <button style={styles.bigBtn} onClick={generateFoursomes}>
+                    <button style={styles.smallBtn} onClick={generateFoursomes}>
                       🧩 Generate Foursomes
                     </button>
                   </div>
@@ -887,7 +663,13 @@ export default function App() {
                         {players.map((p) => (
                           <div key={p.id} style={styles.playerRow}>
                             <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis" }}>
+                              <div
+                                style={{
+                                  fontWeight: 900,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
                                 {p.name}
                               </div>
                               <div style={styles.playerMeta}>
@@ -903,42 +685,6 @@ export default function App() {
                         ))}
 
                         {players.length === 0 && <div style={styles.helpText}>No players.</div>}
-                      </div>
-                    </div>
-
-                    <div style={styles.subCard}>
-                      <div style={styles.subTitle}>Foursomes</div>
-                      <div style={styles.helpText}>
-                        After you generate, share each group’s code so they can enter scores.
-                      </div>
-
-                      <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                        {foursomesWithRoster.map((f) => (
-                          <div key={f.id} style={styles.subCard}>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                              <div style={{ fontWeight: 900 }}>{f.group_name}</div>
-                              <div style={{ fontWeight: 900, letterSpacing: 1 }}>
-                                Code: <span style={{ color: "#fde68a" }}>{f.code}</span>
-                              </div>
-                            </div>
-
-                            <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                              {f.roster?.length ? (
-                                f.roster.map((p, idx) => (
-                                  <div key={p.id} style={styles.playerMeta}>
-                                    {idx + 1}. {p.name} (HCP {clampInt(p.handicap, 0)})
-                                  </div>
-                                ))
-                              ) : (
-                                <div style={styles.helpText}>No players linked.</div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-
-                        {foursomesWithRoster.length === 0 && (
-                          <div style={styles.helpText}>No foursomes yet. Click “Generate Foursomes”.</div>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -957,13 +703,18 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background: "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
+    background:
+      "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
     color: "#fff",
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
-  shell: { maxWidth: 980, margin: "0 auto" },
-
-  header: { marginBottom: 12 },
+  shell: {
+    maxWidth: 980,
+    margin: "0 auto",
+  },
+  header: {
+    marginBottom: 12,
+  },
   headerTop: {
     display: "flex",
     alignItems: "flex-start",
@@ -971,16 +722,25 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
   },
-  brand: { minWidth: 260 },
+  brand: {
+    minWidth: 260,
+  },
   brandTitle: {
     fontSize: 34,
     fontWeight: 900,
     letterSpacing: -0.6,
     lineHeight: 1.05,
   },
-  brandSub: { marginTop: 6, opacity: 0.85, fontSize: 13 },
-
-  nav: { display: "flex", gap: 10, flexWrap: "wrap" },
+  brandSub: {
+    marginTop: 6,
+    opacity: 0.85,
+    fontSize: 13,
+  },
+  nav: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+  },
   navBtn: {
     padding: "10px 12px",
     borderRadius: 12,
@@ -999,9 +759,10 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
-
-  content: { display: "grid", gap: 12 },
-
+  content: {
+    display: "grid",
+    gap: 12,
+  },
   card: {
     background: "rgba(0,0,0,0.35)",
     border: "1px solid rgba(255,255,255,0.14)",
@@ -1010,14 +771,6 @@ const styles = {
     backdropFilter: "blur(10px)",
     boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
   },
-  subCard: {
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: 14,
-    padding: 14,
-  },
-  subTitle: { fontWeight: 900, marginBottom: 10 },
-
   cardHeaderRow: {
     display: "flex",
     alignItems: "center",
@@ -1025,10 +778,17 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  cardTitle: { fontSize: 22, fontWeight: 900, letterSpacing: -0.2 },
-
-  helpText: { marginTop: 10, fontSize: 12, opacity: 0.8, lineHeight: 1.35 },
-
+  cardTitle: {
+    fontSize: 22,
+    fontWeight: 900,
+    letterSpacing: -0.2,
+  },
+  helpText: {
+    marginTop: 10,
+    fontSize: 12,
+    opacity: 0.8,
+    lineHeight: 1.35,
+  },
   bigBtn: {
     padding: "14px 14px",
     borderRadius: 16,
@@ -1058,7 +818,13 @@ const styles = {
     fontWeight: 900,
   },
 
-  label: { display: "grid", gap: 6, fontSize: 12, opacity: 0.9 },
+  // form
+  label: {
+    display: "grid",
+    gap: 6,
+    fontSize: 12,
+    opacity: 0.9,
+  },
   input: {
     background: "rgba(0,0,0,0.35)",
     border: "1px solid rgba(255,255,255,0.18)",
@@ -1068,7 +834,24 @@ const styles = {
     outline: "none",
     fontSize: 14,
   },
+  scoreGrid: {
+    display: "grid",
+    gap: 10,
+    gridTemplateColumns: "1fr 1fr",
+  },
+  saveBtn: {
+    gridColumn: "1 / -1",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.18)",
+    border: "1px solid rgba(255,255,255,0.28)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+    fontSize: 15,
+  },
 
+  // table
   tableWrap: {
     marginTop: 12,
     overflowX: "auto",
@@ -1125,11 +908,22 @@ const styles = {
     fontSize: 12,
   },
 
+  // admin layout
   adminGrid: {
     marginTop: 14,
     display: "grid",
     gap: 12,
     gridTemplateColumns: "1fr",
+  },
+  subCard: {
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 14,
+    padding: 14,
+  },
+  subTitle: {
+    fontWeight: 900,
+    marginBottom: 10,
   },
   playerRow: {
     display: "flex",
@@ -1142,6 +936,7 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.10)",
   },
 
+  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1168,12 +963,24 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  modalTitle: { fontSize: 18, fontWeight: 900, lineHeight: 1.1 },
-  modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    lineHeight: 1.1,
+  },
+  modalSub: {
+    marginTop: 6,
+    fontSize: 13,
+    opacity: 0.85,
+  },
 };
 
-// desktop tweaks
+/** Phone-friendly tweak: score grid becomes 3 columns on larger screens, and admin becomes 2 columns */
 const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 720px)") : null;
 if (media && media.matches) {
+  styles.scoreGrid.gridTemplateColumns = "1fr 1fr auto";
+  styles.saveBtn.gridColumn = "auto";
+  styles.saveBtn.height = 46;
+
   styles.adminGrid.gridTemplateColumns = "1fr 1fr";
 }
