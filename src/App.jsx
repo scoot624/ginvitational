@@ -7,10 +7,13 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 /**
- * ⛳ PARS (match your course)
+ * ⛳ PARS (set these to match your course)
  * index 0 = hole 1 par ... index 17 = hole 18 par
  */
-const PARS = [4, 4, 4, 3, 4, 3, 5, 3, 5, 4, 3, 5, 3, 4, 5, 4, 4, 5];
+const PARS = [
+  4, 4, 4, 3, 4, 3, 5, 3, 5,
+  4, 3, 5, 3, 4, 5, 4, 4, 5,
+];
 
 function clampInt(v, fallback = 0) {
   const n = Number(v);
@@ -21,7 +24,7 @@ function clampInt(v, fallback = 0) {
 function formatToPar(n) {
   if (n === 0) return "E";
   if (n > 0) return `+${n}`;
-  return `${n}`;
+  return `${n}`; // negative already has -
 }
 
 function netColorStyle(netToPar) {
@@ -30,27 +33,13 @@ function netColorStyle(netToPar) {
   return { color: "rgba(255,255,255,0.78)" }; // neutral
 }
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function makeCode(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // avoid confusing I/O/1/0
-  let out = "";
-  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
-
+/** Modal: player scorecard (tap player on leaderboard) */
 function ScorecardModal({ open, onClose, player, pars }) {
   if (!open || !player) return null;
 
   const holes = Array.from({ length: 18 }, (_, i) => i + 1);
   const playedHoles = holes.filter((h) => player.scoresByHole[h] != null);
+
   const gross = playedHoles.reduce((acc, h) => acc + player.scoresByHole[h], 0);
   const parPlayed = playedHoles.reduce((acc, h) => acc + pars[h - 1], 0);
 
@@ -65,11 +54,14 @@ function ScorecardModal({ open, onClose, player, pars }) {
         <div style={styles.modalHeader}>
           <div style={{ minWidth: 0 }}>
             <div style={styles.modalTitle}>
-              {player.name} <span style={{ opacity: 0.7 }}>(HCP {handicap})</span>
+              {player.name}{" "}
+              <span style={{ opacity: 0.7 }}>(HCP {handicap})</span>
             </div>
             <div style={styles.modalSub}>
               Holes: {playedHoles.length} • Net vs Par:{" "}
-              <span style={{ fontWeight: 900, ...netColorStyle(netToPar) }}>{formatToPar(netToPar)}</span>
+              <span style={{ fontWeight: 900, ...netColorStyle(netToPar) }}>
+                {formatToPar(netToPar)}
+              </span>
             </div>
           </div>
           <button style={styles.smallBtn} onClick={onClose}>
@@ -97,17 +89,19 @@ function ScorecardModal({ open, onClose, player, pars }) {
                   diff == null
                     ? {}
                     : diff < 0
-                    ? { color: "#16a34a", fontWeight: 800 }
-                    : diff > 0
-                    ? { color: "#dc2626", fontWeight: 800 }
-                    : { opacity: 0.9, fontWeight: 800 };
+                      ? { color: "#16a34a", fontWeight: 800 }
+                      : diff > 0
+                        ? { color: "#dc2626", fontWeight: 800 }
+                        : { opacity: 0.9, fontWeight: 800 };
 
                 return (
                   <tr key={h}>
                     <td style={styles.td}>{h}</td>
                     <td style={styles.td}>{par}</td>
                     <td style={styles.td}>{sc != null ? sc : "—"}</td>
-                    <td style={{ ...styles.td, ...diffStyle }}>{diff == null ? "—" : formatToPar(diff)}</td>
+                    <td style={{ ...styles.td, ...diffStyle }}>
+                      {diff == null ? "—" : formatToPar(diff)}
+                    </td>
                   </tr>
                 );
               })}
@@ -116,7 +110,7 @@ function ScorecardModal({ open, onClose, player, pars }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          Net is computed as gross minus **pro-rated handicap** for holes played.
+          Net is computed as gross minus <b>pro-rated handicap</b> for holes played.
         </div>
       </div>
     </div>
@@ -125,29 +119,28 @@ function ScorecardModal({ open, onClose, player, pars }) {
 
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | scores | admin
+  const [status, setStatus] = useState("Connecting...");
+
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
-  // foursomes
-  const [foursomes, setFoursomes] = useState([]); // [{id, code, name, created_at}]
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // join rows
+  // Admin
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
-
-  // Admin: add player
   const [newName, setNewName] = useState("");
   const [newHandicap, setNewHandicap] = useState("");
   const [newCharity, setNewCharity] = useState("");
 
-  // Scores entry (foursome-gated)
-  const [foursomeCodeInput, setFoursomeCodeInput] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null); // {id, code, name}
-  const [selectedPlayerId, setSelectedPlayerId] = useState("");
-  const [hole, setHole] = useState("1");
-  const [strokes, setStrokes] = useState("4");
-
-  // scorecard modal
+  // Scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
+
+  // ✅ Enter Scores UX (foursome-code gated)
+  const [foursomeCode, setFoursomeCode] = useState("");
+  const [activeFoursome, setActiveFoursome] = useState(null); // { id, code, group_name }
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // [{id,name,handicap,charity,slot}]
+  const [holeIndex, setHoleIndex] = useState(1); // 1-18
+  const [holeInputs, setHoleInputs] = useState({}); // { [playerId]: "4" }
+  const [savingHole, setSavingHole] = useState(false);
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -156,11 +149,11 @@ export default function App() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("loadPlayers error:", error);
-      return false;
+      console.error(error);
+      return { ok: false };
     }
     setPlayers(data || []);
-    return true;
+    return { ok: true };
   }
 
   async function loadScores() {
@@ -170,46 +163,18 @@ export default function App() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("loadScores error:", error);
-      return false;
+      console.error(error);
+      return { ok: false };
     }
     setScores(data || []);
-    return true;
-  }
-
-  async function loadFoursomes() {
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select("id,code,name,created_at")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error("loadFoursomes error:", error);
-      return false;
-    }
-    setFoursomes(data || []);
-    return true;
-  }
-
-  async function loadFoursomePlayers() {
-    const { data, error } = await supabase
-      .from("foursome_players")
-      .select("id,foursome_id,player_id,position,created_at")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error("loadFoursomePlayers error:", error);
-      return false;
-    }
-    setFoursomePlayers(data || []);
-    return true;
+    return { ok: true };
   }
 
   async function initialLoad() {
-    await loadPlayers();
-    await loadScores();
-    await loadFoursomes();
-    await loadFoursomePlayers();
+    setStatus("Loading...");
+    const a = await loadPlayers();
+    const b = await loadScores();
+    setStatus(a.ok && b.ok ? "Connected ✅" : "Connected, but some data failed ❗");
   }
 
   useEffect(() => {
@@ -217,20 +182,24 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ auto-refresh leaderboard every minute (only while on leaderboard)
+  // ✅ auto-refresh leaderboard every minute (only while on leaderboard tab)
   useEffect(() => {
     if (tab !== "leaderboard") return;
-    const id = setInterval(async () => {
-      await loadPlayers();
-      await loadScores();
+
+    const id = setInterval(() => {
+      loadPlayers();
+      loadScores();
     }, 60_000);
+
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  /** Build leaderboard rows */
   const leaderboardRows = useMemo(() => {
     // build player -> scoresByHole (last write wins)
     const scoresByPlayer = new Map();
+
     for (const s of scores) {
       const pid = s.player_id;
       const h = clampInt(s.hole, 0);
@@ -273,6 +242,7 @@ export default function App() {
       };
     });
 
+    // Sort: players w/ scores first, then netToPar, tie-breaker holesPlayed (more), then name
     rows.sort((a, b) => {
       const aHas = a.holesPlayed > 0;
       const bHas = b.holesPlayed > 0;
@@ -290,33 +260,18 @@ export default function App() {
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
 
-  /** ---------- Scores (upsert) ---------- */
-  async function saveScore() {
-    const pid = selectedPlayerId;
-    const h = clampInt(hole, 1);
-    const sc = clampInt(strokes, 0);
-
-    if (!activeFoursome) return alert("Enter your foursome code first.");
-    if (!pid) return alert("Pick a player first.");
-    if (h < 1 || h > 18) return alert("Hole must be 1–18.");
-    if (sc < 1 || sc > 20) return alert("Strokes looks wrong (try 1–20).");
-
-    const { error } = await supabase
-      .from("scores")
-      .upsert({ player_id: pid, hole: h, score: sc }, { onConflict: "player_id,hole" });
-
-    if (error) {
-      console.error(error);
-      alert(
-        "Error saving score. If upsert fails, your scores table may not have a unique constraint on (player_id, hole)."
-      );
-      return;
+  /** Admin login */
+  function enterAdmin() {
+    if (adminPin === "112020") {
+      setAdminOn(true);
+      setAdminPin("");
+      setTab("admin");
+    } else {
+      alert("Wrong PIN");
     }
-
-    await loadScores();
   }
 
-  /** ---------- Admin: Players ---------- */
+  /** Admin: add player */
   async function addPlayer() {
     if (!adminOn) return alert("Admin only.");
 
@@ -327,7 +282,6 @@ export default function App() {
     if (!name) return alert("Name required.");
 
     const { error } = await supabase.from("players").insert({ name, handicap, charity });
-
     if (error) {
       console.error(error);
       alert("Error adding player.");
@@ -345,179 +299,186 @@ export default function App() {
     if (!confirm("Delete this player?")) return;
 
     await supabase.from("scores").delete().eq("player_id", id);
-    await supabase.from("foursome_players").delete().eq("player_id", id);
     const { error } = await supabase.from("players").delete().eq("id", id);
-
     if (error) {
       console.error(error);
       alert("Error deleting player.");
       return;
     }
-
-    await initialLoad();
+    await loadPlayers();
+    await loadScores();
   }
 
-  function enterAdmin() {
-    if (adminPin === "112020") {
-      setAdminOn(true);
-      setAdminPin("");
-      setTab("admin");
-    } else {
-      alert("Wrong PIN");
+  /** -------------------------------------------
+   * ✅ Enter Scores (Foursome code gated)
+   * ------------------------------------------*/
+  const scoresMap = useMemo(() => {
+    // last-write-wins map: `${pid}-${hole}` => score
+    const map = new Map();
+    for (const s of scores) {
+      const pid = s.player_id;
+      const h = clampInt(s.hole, 0);
+      const sc = clampInt(s.score, 0);
+      if (!pid || h < 1 || h > 18) continue;
+      map.set(`${pid}-${h}`, sc);
     }
+    return map;
+  }, [scores]);
+
+  function hydrateHoleInputs(h) {
+    const next = {};
+    for (const p of foursomePlayers) {
+      const key = `${p.id}-${h}`;
+      const val = scoresMap.get(key);
+      next[p.id] = val != null ? String(val) : "";
+    }
+    setHoleInputs(next);
   }
 
-  /** ---------- Admin: Foursomes ---------- */
-  const foursomeMembers = useMemo(() => {
-    // map foursome_id -> [players]
-    const byFoursome = new Map();
-    const playerById = new Map(players.map((p) => [p.id, p]));
-    for (const fp of foursomePlayers) {
-      const fId = fp.foursome_id;
-      const p = playerById.get(fp.player_id);
-      if (!p) continue;
-      if (!byFoursome.has(fId)) byFoursome.set(fId, []);
-      byFoursome.get(fId).push({
-        ...p,
-        position: fp.position ?? null,
-      });
-    }
-    // sort by position if present, otherwise name
-    for (const [k, arr] of byFoursome.entries()) {
-      arr.sort((a, b) => {
-        const ap = a.position ?? 999;
-        const bp = b.position ?? 999;
-        if (ap !== bp) return ap - bp;
-        return a.name.localeCompare(b.name);
-      });
-      byFoursome.set(k, arr);
-    }
-    return byFoursome;
-  }, [players, foursomePlayers]);
+  // When foursomePlayers change or hole changes, prefill inputs
+  useEffect(() => {
+    if (tab !== "scores") return;
+    if (!activeFoursome) return;
+    if (foursomePlayers.length === 0) return;
+    hydrateHoleInputs(holeIndex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, activeFoursome, foursomePlayers, holeIndex, scoresMap]);
 
-  async function clearFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (!confirm("This will delete ALL foursomes and memberships. Continue?")) return;
+  async function connectFoursomeByCode() {
+    const code = foursomeCode.trim().toUpperCase();
+    if (!code) return alert("Enter your group code.");
 
-    // delete memberships first, then foursomes
-    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all
-    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all
-
-    await loadFoursomes();
-    await loadFoursomePlayers();
-    setActiveFoursome(null);
-    setFoursomeCodeInput("");
-    setSelectedPlayerId("");
-  }
-
-  async function generateFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (players.length < 2) return alert("Add players first.");
-    if (!confirm("Generate random foursomes? This will clear existing foursomes first.")) return;
-
-    await clearFoursomes();
-
-    const shuffledPlayers = shuffle(players);
-    const groups = [];
-    for (let i = 0; i < shuffledPlayers.length; i += 4) {
-      groups.push(shuffledPlayers.slice(i, i + 4));
-    }
-
-    // Insert one foursome per group, then insert join rows
-    for (let g = 0; g < groups.length; g++) {
-      const groupPlayers = groups[g];
-      if (groupPlayers.length === 0) continue;
-
-      // Ensure unique code (retry a few times if collision)
-      let code = makeCode(6);
-      for (let tries = 0; tries < 5; tries++) {
-        const exists = await supabase.from("foursomes").select("id").eq("code", code).maybeSingle();
-        if (!exists?.data) break;
-        code = makeCode(6);
-      }
-
-      const groupName = `Group ${g + 1}`;
-
-      const { data: created, error: fErr } = await supabase
-        .from("foursomes")
-        .insert({ code, name: groupName })
-        .select("id,code,name")
-        .single();
-
-      if (fErr) {
-        console.error("create foursome error:", fErr);
-        alert("Error creating a foursome. Check console.");
-        return;
-      }
-
-      const rows = groupPlayers.map((p, idx) => ({
-        foursome_id: created.id,
-        player_id: p.id,
-        position: idx + 1,
-      }));
-
-      const { error: fpErr } = await supabase.from("foursome_players").insert(rows);
-      if (fpErr) {
-        console.error("create foursome_players error:", fpErr);
-        alert("Error assigning players to foursome. Check console.");
-        return;
-      }
-    }
-
-    await loadFoursomes();
-    await loadFoursomePlayers();
-    alert("Foursomes generated ✅");
-  }
-
-  /** ---------- Scores: foursome code gate ---------- */
-  const myFoursomePlayers = useMemo(() => {
-    if (!activeFoursome) return [];
-    const list = foursomeMembers.get(activeFoursome.id) || [];
-    return list;
-  }, [activeFoursome, foursomeMembers]);
-
-  async function useFoursomeCode() {
-    const code = foursomeCodeInput.trim().toUpperCase();
-    if (!code) return alert("Enter a code.");
-
-    const { data, error } = await supabase
+    // 1) fetch foursome
+    const { data: f, error: fErr } = await supabase
       .from("foursomes")
-      .select("id,code,name")
+      .select("id,code,group_name")
       .eq("code", code)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) {
-      console.error(error);
-      alert("Invalid code (or database blocked). Double-check the code.");
+    if (fErr) {
+      console.error(fErr);
+      alert("Could not look up that code.");
+      return;
+    }
+    if (!f) {
+      alert("Invalid code.");
       return;
     }
 
-    setActiveFoursome(data);
-    setSelectedPlayerId("");
+    // 2) fetch foursome_players joined to players
+    const { data: fp, error: fpErr } = await supabase
+      .from("foursome_players")
+      .select("slot, player_id, players:player_id(id,name,handicap,charity)")
+      .eq("foursome_id", f.id)
+      .order("slot", { ascending: true });
+
+    if (fpErr) {
+      console.error(fpErr);
+      alert("Found the foursome, but could not load its players.");
+      return;
+    }
+
+    const normalized = (fp || [])
+      .filter((row) => row.players)
+      .map((row) => ({
+        id: row.players.id,
+        name: row.players.name,
+        handicap: row.players.handicap,
+        charity: row.players.charity,
+        slot: row.slot,
+      }));
+
+    if (normalized.length === 0) {
+      alert("This foursome has no players assigned yet.");
+      return;
+    }
+
+    setActiveFoursome({ id: f.id, code: f.code, groupName: f.group_name || "Your Group" });
+    setFoursomePlayers(normalized);
+    setHoleIndex(1);
+    setFoursomeCode("");
+    await loadScores(); // ensure freshest scores
   }
 
-  /** ---------- UI helpers ---------- */
-  function HeaderNav() {
-    return (
-      <nav style={styles.nav}>
-        <button style={tab === "home" ? styles.navBtnActive : styles.navBtn} onClick={() => setTab("home")}>
-          Home
-        </button>
-        <button
-          style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
-          onClick={() => setTab("leaderboard")}
-        >
-          Leaderboard
-        </button>
-        <button style={tab === "scores" ? styles.navBtnActive : styles.navBtn} onClick={() => setTab("scores")}>
-          Enter Scores
-        </button>
-        <button style={tab === "admin" ? styles.navBtnActive : styles.navBtn} onClick={() => setTab("admin")}>
-          Admin
-        </button>
-      </nav>
-    );
+  function setInputScore(pid, val) {
+    const cleaned = String(val).replace(/[^0-9]/g, "");
+    // Allow empty while typing; final validation happens on Next/Last
+    if (cleaned.length > 2) return;
+    setHoleInputs((prev) => ({ ...prev, [pid]: cleaned }));
   }
+
+  function validateAllFilled() {
+    // Requirement: must fill every player before Next/Last
+    for (const p of foursomePlayers) {
+      const raw = holeInputs[p.id];
+      const n = clampInt(raw, 0);
+      if (!raw || n < 1 || n > 20) {
+        return {
+          ok: false,
+          message: `Enter a valid score (1–20) for ${p.name} on Hole ${holeIndex}.`,
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  async function saveCurrentHole() {
+    const check = validateAllFilled();
+    if (!check.ok) {
+      alert(check.message);
+      return false;
+    }
+
+    setSavingHole(true);
+    try {
+      const payload = foursomePlayers.map((p) => ({
+        player_id: p.id,
+        hole: holeIndex,
+        score: clampInt(holeInputs[p.id], 0),
+      }));
+
+      const { error } = await supabase
+        .from("scores")
+        .upsert(payload, { onConflict: "player_id,hole" });
+
+      if (error) {
+        console.error(error);
+        alert(
+          "Error saving scores. (If upsert fails, you may need a UNIQUE constraint on scores(player_id, hole).)"
+        );
+        return false;
+      }
+
+      await loadScores();
+      return true;
+    } finally {
+      setSavingHole(false);
+    }
+  }
+
+  async function goNextHole() {
+    const ok = await saveCurrentHole();
+    if (!ok) return;
+    setHoleIndex((h) => Math.min(18, h + 1));
+  }
+
+  async function goPrevHole() {
+    const ok = await saveCurrentHole();
+    if (!ok) return;
+    setHoleIndex((h) => Math.max(1, h - 1));
+  }
+
+  function exitFoursomeScoring() {
+    setActiveFoursome(null);
+    setFoursomePlayers([]);
+    setHoleIndex(1);
+    setHoleInputs({});
+  }
+
+  /** -------------------------------------------
+   * Render
+   * ------------------------------------------*/
+  const showHeaderNav = tab !== "home";
 
   return (
     <div style={styles.page}>
@@ -529,26 +490,60 @@ export default function App() {
       />
 
       <div style={styles.shell}>
-        <header style={styles.header}>
-          <div style={styles.headerTop}>
-            <div style={styles.brand}>
-              <div style={styles.brandTitle}>Ginvitational</div>
-              <div style={styles.brandSub}>Manufacturers Golf & CC • May 2026</div>
+        {showHeaderNav && (
+          <header style={styles.header}>
+            <div style={styles.headerTop}>
+              <div style={styles.brand}>
+                <div style={styles.brandTitleSmall}>Ginvitational</div>
+                <div style={styles.brandSubSmall}>{status}</div>
+              </div>
+
+              <nav style={styles.nav}>
+                <button
+                  style={tab === "home" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("home")}
+                >
+                  Home
+                </button>
+                <button
+                  style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("leaderboard")}
+                >
+                  Leaderboard
+                </button>
+                <button
+                  style={tab === "scores" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("scores")}
+                >
+                  Enter Scores
+                </button>
+                <button
+                  style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("admin")}
+                >
+                  Admin
+                </button>
+              </nav>
             </div>
-            <HeaderNav />
-          </div>
-        </header>
+          </header>
+        )}
 
         <main style={styles.content}>
+          {/* HOME */}
           {tab === "home" && (
             <div style={styles.card}>
               <div style={{ textAlign: "center" }}>
                 <img
                   src="/logo.png"
                   alt="Ginvitational logo"
-                  style={{ width: 220, height: 220, objectFit: "contain" }} // ~300% bigger vs old 74
+                  style={{ width: 222, height: 222, objectFit: "contain" }} // ✅ 300% bigger than 74
                 />
-                <div style={{ marginTop: 10, fontSize: 30, fontWeight: 900 }}>The Ginvitational</div>
+                <div style={{ marginTop: 12, fontSize: 32, fontWeight: 900 }}>
+                  The Ginvitational
+                </div>
+                <div style={{ marginTop: 8, opacity: 0.82, fontSize: 14 }}>
+                  Manufacturers Golf & CC • May 2026
+                </div>
               </div>
 
               <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
@@ -565,6 +560,7 @@ export default function App() {
             </div>
           )}
 
+          {/* LEADERBOARD */}
           {tab === "leaderboard" && (
             <div style={styles.card}>
               <div style={styles.cardHeaderRow}>
@@ -580,7 +576,9 @@ export default function App() {
                 </button>
               </div>
 
-              <div style={styles.helpText}>Tap a player name to view their scorecard. Auto-refreshes every minute.</div>
+              <div style={styles.helpText}>
+                Tap a player name to view their scorecard. Leaderboard auto-refreshes every minute.
+              </div>
 
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
@@ -597,14 +595,19 @@ export default function App() {
                     {leaderboardRows.map((r, idx) => {
                       const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
                       const netStyle =
-                        r.holesPlayed === 0 ? { opacity: 0.6 } : { fontWeight: 900, ...netColorStyle(r.netToPar) };
+                        r.holesPlayed === 0
+                          ? { opacity: 0.6 }
+                          : { fontWeight: 900, ...netColorStyle(r.netToPar) };
 
                       return (
                         <tr key={r.id}>
                           <td style={styles.td}>{idx + 1}</td>
 
                           <td style={{ ...styles.td, minWidth: 180 }}>
-                            <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                            <button
+                              style={styles.playerLink}
+                              onClick={() => setScorecardPlayerId(r.id)}
+                            >
                               {r.name}
                             </button>
                             <div style={styles.playerMeta}>
@@ -637,103 +640,119 @@ export default function App() {
             </div>
           )}
 
+          {/* ENTER SCORES (NEW UX) */}
           {tab === "scores" && (
             <div style={styles.card}>
-              <div style={styles.cardTitle}>Enter Scores</div>
+              <div style={styles.cardHeaderRow}>
+                <div style={styles.cardTitle}>Enter Scores</div>
+                {activeFoursome && (
+                  <button style={styles.smallBtn} onClick={exitFoursomeScoring}>
+                    Change Code
+                  </button>
+                )}
+              </div>
 
-              {/* Step 1: foursome code */}
               {!activeFoursome ? (
-                <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 520 }}>
-                  <div style={styles.helpText}>Enter your group code to unlock your foursome’s players.</div>
+                <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
+                  <div style={styles.helpText}>
+                    Enter your <b>group code</b> to load your foursome.
+                  </div>
 
                   <label style={styles.label}>
-                    Foursome Code
+                    Group Code
                     <input
                       style={styles.input}
-                      value={foursomeCodeInput}
-                      onChange={(e) => setFoursomeCodeInput(e.target.value.toUpperCase())}
+                      value={foursomeCode}
+                      onChange={(e) => setFoursomeCode(e.target.value.toUpperCase())}
                       placeholder="ABC123"
                       autoCapitalize="characters"
                     />
                   </label>
 
-                  <button style={styles.bigBtn} onClick={useFoursomeCode}>
-                    Use Code
+                  <button style={styles.bigBtn} onClick={connectFoursomeByCode}>
+                    Load Foursome
                   </button>
+
+                  <div style={styles.helpText}>
+                    If your code is valid but players don’t load, it usually means the foursome hasn’t been assigned
+                    players yet.
+                  </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>
-                      Group: {activeFoursome.name || "Foursome"} • Code:{" "}
-                      <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-                        {activeFoursome.code}
-                      </span>
-                    </div>
-                    <button
-                      style={styles.smallBtn}
-                      onClick={() => {
-                        setActiveFoursome(null);
-                        setFoursomeCodeInput("");
-                        setSelectedPlayerId("");
-                      }}
-                    >
-                      Change Code
-                    </button>
+                <>
+                  <div style={{ marginTop: 10, ...styles.helpText }}>
+                    <b>{activeFoursome.groupName}</b> • Code: <b>{activeFoursome.code}</b>
                   </div>
 
-                  <label style={styles.label}>
-                    Player
-                    <select
-                      style={styles.input}
-                      value={selectedPlayerId}
-                      onChange={(e) => setSelectedPlayerId(e.target.value)}
-                    >
-                      <option value="">Select a player…</option>
-                      {myFoursomePlayers.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} (HCP {clampInt(p.handicap, 0)})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div style={styles.holeHeader}>
+                    <div>
+                      <div style={styles.holeTitle}>
+                        Hole {holeIndex} <span style={{ opacity: 0.75 }}>• Par {PARS[holeIndex - 1]}</span>
+                      </div>
+                      <div style={styles.holeSub}>
+                        Enter everyone’s score, then use Next/Last. It saves automatically.
+                      </div>
+                    </div>
 
-                  <div style={styles.scoreGrid}>
-                    <label style={styles.label}>
-                      Hole
-                      <select style={styles.input} value={hole} onChange={(e) => setHole(e.target.value)}>
-                        {Array.from({ length: 18 }, (_, i) => (
-                          <option key={i + 1} value={String(i + 1)}>
-                            {i + 1}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <div style={styles.holeNav}>
+                      <button
+                        style={styles.smallBtn}
+                        onClick={goPrevHole}
+                        disabled={savingHole || holeIndex === 1}
+                      >
+                        ◀ Last Hole
+                      </button>
+                      <button
+                        style={styles.smallBtn}
+                        onClick={goNextHole}
+                        disabled={savingHole || holeIndex === 18}
+                      >
+                        Next Hole ▶
+                      </button>
+                    </div>
+                  </div>
 
-                    <label style={styles.label}>
-                      Strokes
-                      <input
-                        style={styles.input}
-                        value={strokes}
-                        onChange={(e) => setStrokes(e.target.value)}
-                        inputMode="numeric"
-                        placeholder="4"
-                      />
-                    </label>
+                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                    {foursomePlayers.map((p) => (
+                      <div key={p.id} style={styles.scoreRow}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 900, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {p.name}
+                          </div>
+                          <div style={styles.playerMeta}>
+                            HCP {clampInt(p.handicap, 0)}
+                            {p.charity ? ` • ${p.charity}` : ""}
+                          </div>
+                        </div>
 
-                    <button style={styles.saveBtn} onClick={saveScore}>
-                      Save
-                    </button>
+                        <input
+                          style={styles.scoreInput}
+                          value={holeInputs[p.id] ?? ""}
+                          onChange={(e) => setInputScore(p.id, e.target.value)}
+                          inputMode="numeric"
+                          placeholder="4"
+                        />
+                      </div>
+                    ))}
                   </div>
 
                   <div style={styles.helpText}>
-                    To edit a score: pick the same player + hole, enter the new number, hit Save again.
+                    <b>Required:</b> you must enter a score for every player before moving holes.
+                    <br />
+                    Tip: to edit, go back to the hole, change the number, then hit Next/Last again.
                   </div>
-                </div>
+
+                  {savingHole && (
+                    <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9 }}>
+                      Saving…
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
 
+          {/* ADMIN */}
           {tab === "admin" && (
             <div style={styles.card}>
               <div style={styles.cardTitle}>Admin</div>
@@ -755,7 +774,9 @@ export default function App() {
                     Unlock Admin
                   </button>
 
-                  <div style={styles.helpText}>This is a simple front-end PIN gate. We can harden security later.</div>
+                  <div style={styles.helpText}>
+                    This is a simple front-end PIN gate. We can harden security later.
+                  </div>
                 </div>
               ) : (
                 <>
@@ -772,14 +793,6 @@ export default function App() {
 
                     <button style={styles.smallBtn} onClick={() => initialLoad()}>
                       Reload Data
-                    </button>
-
-                    <button style={styles.dangerBtn} onClick={clearFoursomes}>
-                      Clear Foursomes
-                    </button>
-
-                    <button style={styles.bigBtn} onClick={generateFoursomes}>
-                      Generate Foursomes
                     </button>
                   </div>
 
@@ -839,46 +852,6 @@ export default function App() {
                         {players.length === 0 && <div style={styles.helpText}>No players.</div>}
                       </div>
                     </div>
-
-                    <div style={styles.subCard}>
-                      <div style={styles.subTitle}>Foursomes</div>
-
-                      {foursomes.length === 0 ? (
-                        <div style={styles.helpText}>No foursomes yet. Click “Generate Foursomes”.</div>
-                      ) : (
-                        <div style={{ display: "grid", gap: 10 }}>
-                          {foursomes.map((f) => {
-                            const members = foursomeMembers.get(f.id) || [];
-                            return (
-                              <div key={f.id} style={styles.foursomeCard}>
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                                  <div style={{ fontWeight: 900 }}>
-                                    {f.name || "Foursome"} •{" "}
-                                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-                                      {f.code}
-                                    </span>
-                                  </div>
-                                  <div style={{ opacity: 0.8, fontSize: 12 }}>{members.length} players</div>
-                                </div>
-
-                                <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                                  {members.map((m) => (
-                                    <div key={m.id} style={styles.memberRow}>
-                                      <div style={{ fontWeight: 800 }}>
-                                        {m.position ? `${m.position}. ` : ""}
-                                        {m.name}
-                                      </div>
-                                      <div style={{ opacity: 0.8, fontSize: 12 }}>HCP {clampInt(m.handicap, 0)}</div>
-                                    </div>
-                                  ))}
-                                  {members.length === 0 && <div style={styles.helpText}>No members yet.</div>}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
                   </div>
                 </>
               )}
@@ -895,11 +868,16 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background: "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
+    background:
+      "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
     color: "#fff",
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
-  shell: { maxWidth: 980, margin: "0 auto" },
+  shell: {
+    maxWidth: 980,
+    margin: "0 auto",
+  },
+
   header: { marginBottom: 12 },
   headerTop: {
     display: "flex",
@@ -908,9 +886,10 @@ const styles = {
     gap: 12,
     flexWrap: "wrap",
   },
-  brand: { minWidth: 260 },
-  brandTitle: { fontSize: 34, fontWeight: 900, letterSpacing: -0.6, lineHeight: 1.05 },
-  brandSub: { marginTop: 6, opacity: 0.85, fontSize: 13 },
+  brand: { minWidth: 220 },
+  brandTitleSmall: { fontSize: 20, fontWeight: 900, letterSpacing: -0.2 },
+  brandSubSmall: { marginTop: 4, opacity: 0.8, fontSize: 12 },
+
   nav: { display: "flex", gap: 10, flexWrap: "wrap" },
   navBtn: {
     padding: "10px 12px",
@@ -930,7 +909,9 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
+
   content: { display: "grid", gap: 12 },
+
   card: {
     background: "rgba(0,0,0,0.35)",
     border: "1px solid rgba(255,255,255,0.14)",
@@ -939,9 +920,22 @@ const styles = {
     backdropFilter: "blur(10px)",
     boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
   },
-  cardHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  cardHeaderRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
   cardTitle: { fontSize: 22, fontWeight: 900, letterSpacing: -0.2 },
-  helpText: { marginTop: 10, fontSize: 12, opacity: 0.8, lineHeight: 1.35 },
+
+  helpText: {
+    marginTop: 10,
+    fontSize: 12,
+    opacity: 0.8,
+    lineHeight: 1.35,
+  },
+
   bigBtn: {
     padding: "14px 14px",
     borderRadius: 16,
@@ -970,6 +964,7 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
+
   label: { display: "grid", gap: 6, fontSize: 12, opacity: 0.9 },
   input: {
     background: "rgba(0,0,0,0.35)",
@@ -980,25 +975,19 @@ const styles = {
     outline: "none",
     fontSize: 14,
   },
-  scoreGrid: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" },
-  saveBtn: {
-    gridColumn: "1 / -1",
-    padding: "12px 14px",
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.18)",
-    border: "1px solid rgba(255,255,255,0.28)",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: 900,
-    fontSize: 15,
-  },
+
   tableWrap: {
     marginTop: 12,
     overflowX: "auto",
     borderRadius: 14,
     border: "1px solid rgba(255,255,255,0.12)",
   },
-  table: { width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 520 },
+  table: {
+    width: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    minWidth: 520,
+  },
   th: {
     textAlign: "left",
     padding: "10px 10px",
@@ -1026,7 +1015,12 @@ const styles = {
     fontSize: 15,
     textAlign: "left",
   },
-  playerMeta: { marginTop: 4, fontSize: 12, opacity: 0.75, whiteSpace: "normal" },
+  playerMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    opacity: 0.75,
+    whiteSpace: "normal",
+  },
   pill: {
     display: "inline-block",
     minWidth: 28,
@@ -1037,7 +1031,13 @@ const styles = {
     fontWeight: 900,
     fontSize: 12,
   },
-  adminGrid: { marginTop: 14, display: "grid", gap: 12, gridTemplateColumns: "1fr" },
+
+  adminGrid: {
+    marginTop: 14,
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "1fr",
+  },
   subCard: {
     background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.12)",
@@ -1055,21 +1055,47 @@ const styles = {
     background: "rgba(0,0,0,0.18)",
     border: "1px solid rgba(255,255,255,0.10)",
   },
-  foursomeCard: {
+
+  // ✅ new enter-scores styles
+  holeHeader: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  holeTitle: { fontSize: 20, fontWeight: 900, letterSpacing: -0.2 },
+  holeSub: { marginTop: 4, fontSize: 12, opacity: 0.8 },
+  holeNav: { display: "flex", gap: 10, flexWrap: "wrap" },
+  scoreRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
     padding: 12,
     borderRadius: 14,
     background: "rgba(0,0,0,0.18)",
-    border: "1px solid rgba(255,255,255,0.12)",
-  },
-  memberRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    padding: "8px 10px",
-    borderRadius: 12,
-    background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.10)",
   },
+  scoreInput: {
+    width: 84,
+    textAlign: "center",
+    fontSize: 20,
+    fontWeight: 900,
+    padding: "10px 10px",
+    borderRadius: 14,
+    background: "rgba(0,0,0,0.35)",
+    border: "1px solid rgba(255,255,255,0.18)",
+    color: "#fff",
+    outline: "none",
+  },
+
+  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1089,16 +1115,21 @@ const styles = {
     padding: 14,
     boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
   },
-  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+    flexWrap: "wrap",
+  },
   modalTitle: { fontSize: 18, fontWeight: 900, lineHeight: 1.1 },
   modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
 };
 
-// Wider-screen tweaks
-const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 720px)") : null;
-if (media && media.matches) {
-  styles.scoreGrid.gridTemplateColumns = "1fr 1fr auto";
-  styles.saveBtn.gridColumn = "auto";
-  styles.saveBtn.height = 46;
-  styles.adminGrid.gridTemplateColumns = "1fr 1fr";
+// simple responsive tweak
+if (typeof window !== "undefined") {
+  const media = window.matchMedia("(min-width: 720px)");
+  if (media && media.matches) {
+    styles.adminGrid.gridTemplateColumns = "1fr 1fr";
+  }
 }
