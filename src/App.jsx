@@ -333,18 +333,86 @@ export default function App() {
     }
   }
 
-  /** ✅ placeholder for now — we’ll fix Supabase RLS next */
   async function generateFoursomes() {
-    if (!adminOn) return alert("Admin only.");
+  if (!adminOn) return alert("Admin only.");
 
-    try {
-      // Intentionally minimal: we’ll implement correctly once your tables/policies are confirmed.
-      alert("Generate Foursomes clicked. Next step: fix Supabase insert/RLS.");
-    } catch (e) {
-      console.error(e);
-      alert("Error creating foursomes (check RLS/policies).");
+  try {
+    // 1) Get players
+    const { data: playersData, error: playersErr } = await supabase
+      .from("players")
+      .select("id,name")
+      .order("created_at", { ascending: true });
+
+    if (playersErr) throw playersErr;
+    if (!playersData || playersData.length < 2) {
+      return alert("Need at least 2 players to generate foursomes.");
     }
+
+    // 2) Clear existing foursomes (so regenerate works)
+    // Important: delete join table first, then parent table
+    const { error: delJoinErr } = await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (delJoinErr) throw delJoinErr;
+
+    const { error: delParentErr } = await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (delParentErr) throw delParentErr;
+
+    // 3) Shuffle players
+    const shuffled = [...playersData];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // 4) Group into foursomes (last group can be 2-3-4 players)
+    const groups = [];
+    for (let i = 0; i < shuffled.length; i += 4) {
+      groups.push(shuffled.slice(i, i + 4));
+    }
+
+    // 5) Create foursomes rows
+    const makeCode = () => {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let out = "";
+      for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+      return out;
+    };
+
+    const foursomesToInsert = groups.map((g, idx) => ({
+      group_name: `Group ${idx + 1}`,
+      code: makeCode(),
+    }));
+
+    const { data: foursomesInserted, error: insFoursomesErr } = await supabase
+      .from("foursomes")
+      .insert(foursomesToInsert)
+      .select("id,code,group_name");
+
+    if (insFoursomesErr) throw insFoursomesErr;
+    if (!foursomesInserted?.length) throw new Error("No foursomes returned from insert.");
+
+    // 6) Create foursome_players rows
+    const joinRows = [];
+    for (let gi = 0; gi < groups.length; gi++) {
+      const foursomeId = foursomesInserted[gi].id;
+      const groupPlayers = groups[gi];
+      groupPlayers.forEach((p, index) => {
+        joinRows.push({
+          foursome_id: foursomeId,
+          player_id: p.id,
+          seat: index + 1, // 1..4
+        });
+      });
+    }
+
+    const { error: insJoinErr } = await supabase.from("foursome_players").insert(joinRows);
+    if (insJoinErr) throw insJoinErr;
+
+    alert("Foursomes created ✅");
+  } catch (e) {
+    console.error("Generate foursomes error:", e);
+    alert(`Error creating foursomes: ${e?.message || "Unknown error"}`);
   }
+}
 
   return (
     <div style={styles.page}>
