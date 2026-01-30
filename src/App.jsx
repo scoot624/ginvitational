@@ -87,10 +87,10 @@ function ScorecardModal({ open, onClose, player, pars }) {
                   diff == null
                     ? {}
                     : diff < 0
-                    ? { color: "#16a34a", fontWeight: 800 }
-                    : diff > 0
-                    ? { color: "#dc2626", fontWeight: 800 }
-                    : { opacity: 0.9, fontWeight: 800 };
+                      ? { color: "#16a34a", fontWeight: 800 }
+                      : diff > 0
+                        ? { color: "#dc2626", fontWeight: 800 }
+                        : { opacity: 0.9, fontWeight: 800 };
 
                 return (
                   <tr key={h}>
@@ -108,7 +108,7 @@ function ScorecardModal({ open, onClose, player, pars }) {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          Net is computed as gross minus <b>pro-rated handicap</b> for holes played.
+          Net is computed as gross minus **pro-rated handicap** for holes played.
         </div>
       </div>
     </div>
@@ -117,8 +117,7 @@ function ScorecardModal({ open, onClose, player, pars }) {
 
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | scores | admin
-
-  // ✅ REMOVED: status state (no more connected check shown on UI)
+  const [status, setStatus] = useState("Connecting...");
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
@@ -138,6 +137,8 @@ export default function App() {
 
   // Scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
+
+  const showHeaderNav = tab !== "home"; // ✅ nav on every page EXCEPT home
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -168,8 +169,10 @@ export default function App() {
   }
 
   async function initialLoad() {
-    await loadPlayers();
-    await loadScores();
+    setStatus("Loading...");
+    const a = await loadPlayers();
+    const b = await loadScores();
+    setStatus(a.ok && b.ok ? "Connected ✅" : "Connected, but some data failed ❗");
   }
 
   useEffect(() => {
@@ -191,7 +194,6 @@ export default function App() {
   }, [tab]);
 
   const leaderboardRows = useMemo(() => {
-    // build player -> scoresByHole (last write wins)
     const scoresByPlayer = new Map();
 
     for (const s of scores) {
@@ -236,7 +238,6 @@ export default function App() {
       };
     });
 
-    // Sort: players w/ scores first, then netToPar, tie-breaker holesPlayed (more), then name
     rows.sort((a, b) => {
       const aHas = a.holesPlayed > 0;
       const bHas = b.holesPlayed > 0;
@@ -305,7 +306,6 @@ export default function App() {
     if (!adminOn) return alert("Admin only.");
     if (!confirm("Delete this player?")) return;
 
-    // delete scores first (helps avoid FK issues later)
     await supabase.from("scores").delete().eq("player_id", id);
     const { error } = await supabase.from("players").delete().eq("id", id);
 
@@ -339,25 +339,72 @@ export default function App() {
       />
 
       <div style={styles.shell}>
-        {/* ✅ NEW: Clean centered header (NO status, NO nav buttons) */}
-        <div style={styles.topHero}>
-          <img
-            src="/logo.png"
-            alt="Ginvitational logo"
-            style={styles.topLogo}
-            onError={(e) => {
-              // If logo missing, hide it instead of breaking layout
-              e.currentTarget.style.display = "none";
-            }}
-          />
-          <div style={styles.topTitle}>The Ginvitational</div>
-          <div style={styles.topSub}>Manufacturers Golf &amp; CC • May 2026</div>
-        </div>
+        {/* ✅ Header appears ONLY off-home */}
+        {showHeaderNav && (
+          <header style={styles.header}>
+            <div style={styles.headerTop}>
+              <div style={styles.brand}>
+                <div style={styles.brandTitle}>Ginvitational</div>
+                {/* ✅ status only off-home */}
+                <div style={styles.brandSub}>{status}</div>
+              </div>
+
+              <nav style={styles.nav}>
+                <button
+                  style={tab === "home" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("home")}
+                >
+                  Home
+                </button>
+                <button
+                  style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("leaderboard")}
+                >
+                  Leaderboard
+                </button>
+                <button
+                  style={tab === "scores" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("scores")}
+                >
+                  Enter Scores
+                </button>
+                <button
+                  style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("admin")}
+                >
+                  Admin
+                </button>
+              </nav>
+            </div>
+          </header>
+        )}
 
         <main style={styles.content}>
           {tab === "home" && (
             <div style={styles.card}>
-              <div style={{ marginTop: 6, display: "grid", gap: 12 }}>
+              <div style={{ textAlign: "center" }}>
+                {/* ✅ 300% bigger logo */}
+                <img
+                  src="/logo.png"
+                  alt="Ginvitational logo"
+                  style={{
+                    width: 222,
+                    height: 222,
+                    objectFit: "contain",
+                    display: "block",
+                    margin: "0 auto",
+                  }}
+                />
+
+                <div style={{ marginTop: 14, fontSize: 34, fontWeight: 900 }}>
+                  The Ginvitational
+                </div>
+                <div style={{ marginTop: 8, opacity: 0.82, fontSize: 14 }}>
+                  Manufacturers Golf & CC • May 2026
+                </div>
+              </div>
+
+              <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
                 <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
                   📊 Leaderboard
                 </button>
@@ -368,19 +415,6 @@ export default function App() {
                   ⚙️ Admin
                 </button>
               </div>
-
-              <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  style={styles.smallBtn}
-                  onClick={async () => {
-                    await loadPlayers();
-                    await loadScores();
-                    alert("Refreshed ✅");
-                  }}
-                >
-                  Refresh Data
-                </button>
-              </div>
             </div>
           )}
 
@@ -388,20 +422,15 @@ export default function App() {
             <div style={styles.card}>
               <div style={styles.cardHeaderRow}>
                 <div style={styles.cardTitle}>Leaderboard</div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button style={styles.smallBtn} onClick={() => setTab("home")}>
-                    Home
-                  </button>
-                  <button
-                    style={styles.smallBtn}
-                    onClick={async () => {
-                      await loadPlayers();
-                      await loadScores();
-                    }}
-                  >
-                    Refresh
-                  </button>
-                </div>
+                <button
+                  style={styles.smallBtn}
+                  onClick={async () => {
+                    await loadPlayers();
+                    await loadScores();
+                  }}
+                >
+                  Refresh
+                </button>
               </div>
 
               <div style={styles.helpText}>
@@ -432,7 +461,10 @@ export default function App() {
                           <td style={styles.td}>{idx + 1}</td>
 
                           <td style={{ ...styles.td, minWidth: 180 }}>
-                            <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                            <button
+                              style={styles.playerLink}
+                              onClick={() => setScorecardPlayerId(r.id)}
+                            >
                               {r.name}
                             </button>
                             <div style={styles.playerMeta}>
@@ -467,12 +499,7 @@ export default function App() {
 
           {tab === "scores" && (
             <div style={styles.card}>
-              <div style={styles.cardHeaderRow}>
-                <div style={styles.cardTitle}>Enter Scores</div>
-                <button style={styles.smallBtn} onClick={() => setTab("home")}>
-                  Home
-                </button>
-              </div>
+              <div style={styles.cardTitle}>Enter Scores</div>
 
               <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
                 <label style={styles.label}>
@@ -528,12 +555,7 @@ export default function App() {
 
           {tab === "admin" && (
             <div style={styles.card}>
-              <div style={styles.cardHeaderRow}>
-                <div style={styles.cardTitle}>Admin</div>
-                <button style={styles.smallBtn} onClick={() => setTab("home")}>
-                  Home
-                </button>
-              </div>
+              <div style={styles.cardTitle}>Admin</div>
 
               {!adminOn ? (
                 <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
@@ -612,7 +634,13 @@ export default function App() {
                         {players.map((p) => (
                           <div key={p.id} style={styles.playerRow}>
                             <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis" }}>
+                              <div
+                                style={{
+                                  fontWeight: 900,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
                                 {p.name}
                               </div>
                               <div style={styles.playerMeta}>
@@ -646,44 +674,48 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background: "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
+    background:
+      "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
     color: "#fff",
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
-  shell: {
-    maxWidth: 980,
-    margin: "0 auto",
+  shell: { maxWidth: 980, margin: "0 auto" },
+  header: { marginBottom: 12 },
+  headerTop: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
   },
-
-  /** ✅ NEW clean top header */
-  topHero: {
-    textAlign: "center",
-    padding: "22px 10px 10px",
-  },
-  topLogo: {
-    width: 92,
-    height: 92,
-    objectFit: "contain",
-    margin: "0 auto 10px",
-    display: "block",
-    filter: "drop-shadow(0 10px 18px rgba(0,0,0,0.25))",
-  },
-  topTitle: {
-    fontSize: 38,
-    fontWeight: 950,
-    letterSpacing: -0.8,
+  brand: { minWidth: 260 },
+  brandTitle: {
+    fontSize: 34,
+    fontWeight: 900,
+    letterSpacing: -0.6,
     lineHeight: 1.05,
   },
-  topSub: {
-    marginTop: 8,
-    opacity: 0.82,
-    fontSize: 14,
+  brandSub: { marginTop: 6, opacity: 0.85, fontSize: 13 },
+  nav: { display: "flex", gap: 10, flexWrap: "wrap" },
+  navBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.18)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
   },
-
-  content: {
-    display: "grid",
-    gap: 12,
+  navBtnActive: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.18)",
+    border: "1px solid rgba(255,255,255,0.3)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
   },
+  content: { display: "grid", gap: 12 },
   card: {
     background: "rgba(0,0,0,0.35)",
     border: "1px solid rgba(255,255,255,0.14)",
@@ -699,17 +731,8 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  cardTitle: {
-    fontSize: 22,
-    fontWeight: 900,
-    letterSpacing: -0.2,
-  },
-  helpText: {
-    marginTop: 10,
-    fontSize: 12,
-    opacity: 0.8,
-    lineHeight: 1.35,
-  },
+  cardTitle: { fontSize: 22, fontWeight: 900, letterSpacing: -0.2 },
+  helpText: { marginTop: 10, fontSize: 12, opacity: 0.8, lineHeight: 1.35 },
   bigBtn: {
     padding: "14px 14px",
     borderRadius: 16,
@@ -739,13 +762,7 @@ const styles = {
     fontWeight: 900,
   },
 
-  // form
-  label: {
-    display: "grid",
-    gap: 6,
-    fontSize: 12,
-    opacity: 0.9,
-  },
+  label: { display: "grid", gap: 6, fontSize: 12, opacity: 0.9 },
   input: {
     background: "rgba(0,0,0,0.35)",
     border: "1px solid rgba(255,255,255,0.18)",
@@ -755,11 +772,7 @@ const styles = {
     outline: "none",
     fontSize: 14,
   },
-  scoreGrid: {
-    display: "grid",
-    gap: 10,
-    gridTemplateColumns: "1fr 1fr",
-  },
+  scoreGrid: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" },
   saveBtn: {
     gridColumn: "1 / -1",
     padding: "12px 14px",
@@ -772,7 +785,6 @@ const styles = {
     fontSize: 15,
   },
 
-  // table
   tableWrap: {
     marginTop: 12,
     overflowX: "auto",
@@ -829,7 +841,6 @@ const styles = {
     fontSize: 12,
   },
 
-  // admin layout
   adminGrid: {
     marginTop: 14,
     display: "grid",
@@ -842,10 +853,7 @@ const styles = {
     borderRadius: 14,
     padding: 14,
   },
-  subTitle: {
-    fontWeight: 900,
-    marginBottom: 10,
-  },
+  subTitle: { fontWeight: 900, marginBottom: 10 },
   playerRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -857,7 +865,6 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.10)",
   },
 
-  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -884,24 +891,15 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 900,
-    lineHeight: 1.1,
-  },
-  modalSub: {
-    marginTop: 6,
-    fontSize: 13,
-    opacity: 0.85,
-  },
+  modalTitle: { fontSize: 18, fontWeight: 900, lineHeight: 1.1 },
+  modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
 };
 
-/** Phone-friendly tweak: scoreGrid 3 wide on larger screens */
+/** Responsive tweaks */
 const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 720px)") : null;
 if (media && media.matches) {
   styles.scoreGrid.gridTemplateColumns = "1fr 1fr auto";
   styles.saveBtn.gridColumn = "auto";
   styles.saveBtn.height = 46;
-
   styles.adminGrid.gridTemplateColumns = "1fr 1fr";
 }
