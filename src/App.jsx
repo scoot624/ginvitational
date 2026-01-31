@@ -548,37 +548,35 @@ export default function App() {
       <div style={styles.shell}>
         {/* HOME (no top nav) */}
         {tab === "home" && (
-          <div style={styles.homeCard}>
-            <div style={{ textAlign: "center" }}>
-              <img
-                src="/logo.png"
-                alt="Ginvitational logo"
-                style={{ width: 220, height: 220, objectFit: "contain" }} // ✅ bigger logo
-              />
-              <div style={{ marginTop: 12, fontSize: 34, fontWeight: 950, letterSpacing: -0.5 }}>
-                The Ginvitational
-              </div>
-              <div style={{ marginTop: 8, opacity: 0.82, fontSize: 14 }}>
-                Manufacturers Golf & CC • May 2026
-              </div>
-            </div>
+  <div style={styles.homeWrap}>
+    <div style={styles.holder}>
+      <div style={styles.holderTop}>
+        <img
+          src="/logo.png"
+          alt="Ginvitational logo"
+          style={styles.homeLogo}
+        />
+      </div>
 
-            <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
-              <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
-                📊 Leaderboard
-              </button>
+      <div style={styles.holderInner}>
+        <button style={styles.leatherBtn} onClick={() => setTab("leaderboard")}>
+          Leaderboard
+        </button>
 
-              {/* ✅ Enter Scores is a button again */}
-              <button style={styles.bigBtn} onClick={() => setTab("code")}>
-                📝 Enter Scores
-              </button>
+        <button style={styles.leatherBtn} onClick={() => setTab("scores")}>
+          Enter Scores
+        </button>
 
-              <button style={styles.bigBtn} onClick={() => setTab("admin")}>
-                ⚙️ Admin
-              </button>
-            </div>
-          </div>
-        )}
+        <button style={styles.leatherBtn} onClick={() => setTab("admin")}>
+          Admin
+        </button>
+      </div>
+
+      <div style={styles.holderBottom}>GINVITATIONAL</div>
+    </div>
+  </div>
+)}
+
 
         {/* CODE GATE SCREEN (enter scores) */}
         {tab === "code" && (
@@ -617,36 +615,44 @@ export default function App() {
 
         {/* TOP NAV (all non-home pages) */}
         {tab !== "home" && tab !== "code" && (
-          <header style={styles.header}>
-            <div style={styles.headerTop}>
-              <div style={styles.brand}>
-                <div style={styles.brandTitle}>Ginvitational</div>
-                <div style={styles.brandSub}>{status}</div>
-              </div>
+          {tab !== "home" && (
+  <header style={styles.header}>
+    <div style={styles.headerTop}>
+      <div style={styles.brand}>
+        <div style={styles.brandTitle}>Ginvitational</div>
+        <div style={styles.brandSub}>{status}</div>
+      </div>
 
-              <nav style={styles.nav}>
-                <button style={styles.navBtn} onClick={() => setTab("home")}>
-                  Home
-                </button>
-                <button
-                  style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
-                  onClick={() => setTab("leaderboard")}
-                >
-                  Leaderboard
-                </button>
-                <button style={styles.navBtn} onClick={() => setTab("code")}>
-                  Enter Scores
-                </button>
-                <button
-                  style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
-                  onClick={() => setTab("admin")}
-                >
-                  Admin
-                </button>
-              </nav>
-            </div>
-          </header>
-        )}
+      <nav style={styles.nav}>
+        <button
+          style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
+          onClick={() => setTab("leaderboard")}
+        >
+          Leaderboard
+        </button>
+        <button
+          style={tab === "scores" ? styles.navBtnActive : styles.navBtn}
+          onClick={() => setTab("scores")}
+        >
+          Enter Scores
+        </button>
+        <button
+          style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
+          onClick={() => setTab("admin")}
+        >
+          Admin
+        </button>
+        <button
+          style={styles.navBtn}
+          onClick={() => setTab("home")}
+        >
+          Home
+        </button>
+      </nav>
+    </div>
+  </header>
+)}
+
 
         {/* LEADERBOARD */}
         {tab === "leaderboard" && (
@@ -1309,6 +1315,74 @@ const styles = {
   },
   modalTitle: { fontSize: 18, fontWeight: 950, lineHeight: 1.1 },
   modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
+  homeWrap: {
+  minHeight: "calc(100vh - 28px)",
+  display: "grid",
+  placeItems: "center",
+  padding: 10,
+},
+
+holder: {
+  width: "min(420px, 92vw)",
+  borderRadius: 26,
+  padding: 18,
+  background:
+    "linear-gradient(180deg, rgba(120,72,38,0.95) 0%, rgba(75,40,18,0.98) 55%, rgba(55,28,12,0.98) 100%)",
+  border: "1px solid rgba(0,0,0,0.35)",
+  boxShadow:
+    "0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.12)",
+  position: "relative",
+},
+
+holderTop: {
+  display: "grid",
+  placeItems: "center",
+  paddingTop: 6,
+  paddingBottom: 14,
+},
+
+homeLogo: {
+  width: 210,        // ~300% bigger than 74
+  height: 210,
+  objectFit: "contain",
+  filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.45))",
+},
+
+holderInner: {
+  background:
+    "linear-gradient(180deg, rgba(244,232,210,0.92) 0%, rgba(230,212,185,0.92) 100%)",
+  borderRadius: 18,
+  padding: 16,
+  border: "1px solid rgba(0,0,0,0.18)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.35)",
+  display: "grid",
+  gap: 14,
+},
+
+leatherBtn: {
+  width: "100%",
+  padding: "16px 16px",
+  borderRadius: 14,
+  background:
+    "linear-gradient(180deg, rgba(125,72,36,0.98) 0%, rgba(88,48,22,0.98) 100%)",
+  border: "1px solid rgba(0,0,0,0.35)",
+  color: "rgba(255,240,210,0.95)",
+  fontWeight: 900,
+  fontSize: 18,
+  letterSpacing: 0.2,
+  cursor: "pointer",
+  boxShadow:
+    "0 10px 22px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.10)",
+},
+
+holderBottom: {
+  marginTop: 14,
+  textAlign: "center",
+  fontWeight: 900,
+  letterSpacing: 2,
+  color: "rgba(255,224,170,0.85)",
+  textShadow: "0 2px 10px rgba(0,0,0,0.45)",
+},
 };
 
 // Wider screens
