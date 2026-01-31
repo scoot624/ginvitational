@@ -614,8 +614,7 @@ export default function App() {
         )}
 
         {/* TOP NAV (all non-home pages) */}
-        {tab !== "home" && tab !== "code" && (
-          {tab !== "home" && (
+                  {tab !== "home" && (
   <header style={styles.header}>
     <div style={styles.headerTop}>
       <div style={styles.brand}>
