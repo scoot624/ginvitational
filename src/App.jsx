@@ -7,10 +7,19 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (edit these for your course) */
+/** ⛳ PARS (Blue tees, Par 72) — you said this is correct */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
+];
+
+/** 🧠 STROKE INDEX (Men’s Handicap row from your scorecard)
+ *  1 = hardest hole, 18 = easiest
+ *  Index corresponds to hole number (array index 0 => hole 1)
+ */
+const STROKE_INDEX = [
+  12, 10, 4, 14, 2, 8, 6, 18, 16,
+  9, 3, 17, 13, 5, 15, 1, 11, 7,
 ];
 
 function clampInt(v, fallback = 0) {
@@ -55,6 +64,26 @@ function parseHandicap(v) {
   const n = Number(s);
   if (!Number.isFinite(n)) return { value: 0, missing: false, invalid: true };
   return { value: Math.trunc(n), missing: false, invalid: false };
+}
+
+/** True stroke index allocation:
+ *  - base strokes per hole = floor(H/18)
+ *  - remainder strokes go to the hardest holes first (SI 1..rem)
+ */
+function strokesForHole(handicap, strokeIndex) {
+  const h = Math.max(0, clampInt(handicap, 0));
+  const si = clampInt(strokeIndex, 18);
+  const base = Math.floor(h / 18);
+  const rem = h % 18;
+  const extra = si <= rem ? 1 : 0;
+  return base + extra;
+}
+
+function strokesUsedForPlayedHoles(handicap, playedHoles) {
+  return playedHoles.reduce((acc, holeNum) => {
+    const si = STROKE_INDEX[holeNum - 1];
+    return acc + strokesForHole(handicap, si);
+  }, 0);
 }
 
 async function readExcelFile(file) {
@@ -125,7 +154,6 @@ export default function App() {
   }
 
   async function loadFoursomes() {
-    // tee_time_text is optional; we try selecting it and fall back if it doesn't exist
     try {
       const { data, error } = await supabase
         .from("foursomes")
@@ -149,7 +177,6 @@ export default function App() {
   }
 
   async function loadFoursomePlayers() {
-    // seat is optional; try selecting it and fall back
     try {
       const { data, error } = await supabase
         .from("foursome_players")
@@ -226,8 +253,9 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      const proratedHandicap = (handicap * holesPlayed) / 18;
-      const netGross = gross - proratedHandicap;
+      // ✅ True SI allocation (not prorated)
+      const strokesUsed = strokesUsedForPlayedHoles(handicap, playedHoles);
+      const netGross = gross - strokesUsed;
       const netToPar = holesPlayed === 0 ? 9999 : Math.round(netGross - parPlayed);
 
       return {
@@ -238,6 +266,7 @@ export default function App() {
         holesPlayed,
         netToPar,
         scoresByHole,
+        strokesUsed,
       };
     });
 
@@ -569,7 +598,6 @@ export default function App() {
       await initialLoad();
       setUploadMsg("Applied ✅");
       alert("Tournament setup applied ✅");
-
       setUploadPreview(null);
     } catch (err) {
       console.error(err);
@@ -580,17 +608,19 @@ export default function App() {
     }
   }
 
-  // Prefill inputs when hole changes
-  useEffect(() => {
-    if (!activeFoursome) return;
-    const obj = {};
-    for (const p of activePlayers) {
-      const existing = getExistingScore(p.id, hole);
-      obj[p.id] = existing != null ? String(existing) : "";
-    }
-    setHoleInputs(obj);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFoursome?.id, hole]);
+  // Derive strokes used for scorecard player (based on the holes they’ve actually entered)
+  const scorecardPlayedHoles = useMemo(() => {
+    if (!scorecardPlayer) return [];
+    return Object.keys(scorecardPlayer.scoresByHole || {})
+      .map((x) => clampInt(x, 0))
+      .filter((h) => h >= 1 && h <= 18)
+      .sort((a, b) => a - b);
+  }, [scorecardPlayer]);
+
+  const scorecardStrokesUsed = useMemo(() => {
+    if (!scorecardPlayer) return 0;
+    return strokesUsedForPlayedHoles(scorecardPlayer.handicap, scorecardPlayedHoles);
+  }, [scorecardPlayer, scorecardPlayedHoles]);
 
   return (
     <div style={styles.page}>
@@ -604,8 +634,11 @@ export default function App() {
                   {scorecardPlayer.name}{" "}
                   <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
                 </div>
+
                 <div style={styles.modalSub}>
-                  Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
+                  Holes: {scorecardPlayer.holesPlayed}
+                  {" • "}HCP strokes used: <b>{scorecardStrokesUsed}</b>
+                  {" • "}Net vs Par:{" "}
                   {scorecardPlayer.holesPlayed === 0 ? (
                     <span style={{ opacity: 0.7 }}>—</span>
                   ) : (
@@ -615,6 +648,7 @@ export default function App() {
                   )}
                 </div>
               </div>
+
               <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
                 Close
               </button>
@@ -626,31 +660,55 @@ export default function App() {
                   <tr>
                     <th style={styles.th}>Hole</th>
                     <th style={styles.th}>Par</th>
-                    <th style={styles.th}>Score</th>
-                    <th style={styles.th}>+/-</th>
+                    <th style={styles.th}>SI</th>
+                    <th style={styles.th}>HCP</th>
+                    <th style={styles.th}>Gross</th>
+                    <th style={styles.th}>Net</th>
+                    <th style={styles.th}>Net +/-</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
-                    const sc = scorecardPlayer.scoresByHole[h];
-                    const diff = sc != null ? sc - par : null;
-                    const diffStyle =
-                      diff == null
+                    const si = STROKE_INDEX[h - 1];
+
+                    const sc = scorecardPlayer.scoresByHole[h]; // gross
+                    const hcpStrokes = strokesForHole(scorecardPlayer.handicap, si);
+
+                    const netSc = sc != null ? sc - hcpStrokes : null;
+                    const netDiff = netSc != null ? netSc - par : null;
+
+                    const netDiffStyle =
+                      netDiff == null
                         ? {}
-                        : diff < 0
+                        : netDiff < 0
                         ? { color: "#16a34a", fontWeight: 800 }
-                        : diff > 0
+                        : netDiff > 0
                         ? { color: "#dc2626", fontWeight: 800 }
                         : { opacity: 0.9, fontWeight: 800 };
 
+                    // ✅ Mark holes where the player gets strokes
+                    const getsStrokes = hcpStrokes > 0;
+                    const rowStyle = getsStrokes
+                      ? {
+                          background: "rgba(245, 230, 200, 0.08)",
+                          boxShadow: "inset 3px 0 0 rgba(245, 230, 200, 0.55)",
+                        }
+                      : {};
+
                     return (
-                      <tr key={h}>
-                        <td style={styles.td}>{h}</td>
+                      <tr key={h} style={rowStyle}>
+                        <td style={styles.td}>
+                          {h} {getsStrokes ? <span style={{ opacity: 0.9 }}>★</span> : null}
+                        </td>
                         <td style={styles.td}>{par}</td>
+                        <td style={styles.td}>{si}</td>
+                        <td style={styles.td}>{hcpStrokes}</td>
                         <td style={styles.td}>{sc != null ? sc : "—"}</td>
-                        <td style={{ ...styles.td, ...diffStyle }}>
-                          {diff == null ? "—" : formatToPar(diff)}
+                        <td style={styles.td}>{netSc != null ? netSc : "—"}</td>
+                        <td style={{ ...styles.td, ...netDiffStyle }}>
+                          {netDiff == null ? "—" : formatToPar(netDiff)}
                         </td>
                       </tr>
                     );
@@ -660,7 +718,7 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-              Net is computed as gross minus pro-rated handicap for holes played.
+              Handicap is allocated by Stroke Index (SI). ★ indicates holes where handicap strokes apply.
             </div>
           </div>
         </div>
@@ -776,7 +834,9 @@ export default function App() {
               </button>
             </div>
 
-            <div style={styles.helpText}>Tap a player name to view their scorecard. Auto-refreshes every minute.</div>
+            <div style={styles.helpText}>
+              Tap a player name to view their scorecard. Handicap uses true Stroke Index allocation.
+            </div>
 
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -808,6 +868,7 @@ export default function App() {
                           <div style={styles.playerMeta}>
                             HCP {r.handicap}
                             {r.charity ? ` • ${r.charity}` : ""}
+                            {r.holesPlayed > 0 ? ` • Strokes used: ${r.strokesUsed}` : ""}
                           </div>
                         </td>
 
@@ -1130,7 +1191,7 @@ export default function App() {
   );
 }
 
-/** Styles: phone-first */
+/** Styles */
 const styles = {
   page: {
     minHeight: "100vh",
