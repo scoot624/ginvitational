@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import * as XLSX from "xlsx";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -30,26 +31,43 @@ function netColorStyle(netToPar) {
   return { color: "rgba(255,255,255,0.85)" };
 }
 
-function makeCode() {
+function makeCode(len = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
-  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+function normalizeName(s) {
+  return (s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function safeStr(v) {
+  return (v ?? "").toString().trim();
+}
+
+function parseHandicap(v) {
+  const s = safeStr(v);
+  if (s === "") return { value: 0, missing: true, invalid: false };
+  const n = Number(s);
+  if (!Number.isFinite(n)) return { value: 0, missing: false, invalid: true };
+  return { value: Math.trunc(n), missing: false, invalid: false };
+}
+
+async function readExcelFile(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: "" });
 }
 
 export default function App() {
-  const [tab, setTab] = useState("home"); // home | leaderboard | enter | admin
-
+  const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin
   const [status, setStatus] = useState("Loading...");
+
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
@@ -60,29 +78,23 @@ export default function App() {
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
 
-  // Admin: add player
-  const [newName, setNewName] = useState("");
-  const [newHandicap, setNewHandicap] = useState("");
-  const [newCharity, setNewCharity] = useState("");
+  // Admin: Excel upload
+  const [uploadPreview, setUploadPreview] = useState(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [replaceAssignments, setReplaceAssignments] = useState(true);
+  const [regenCodes, setRegenCodes] = useState(false);
 
-  // Foursomes data (admin + enter scores)
+  // Foursomes data
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id, seat?
 
-  // Admin: manual foursome
-  const [manualGroupName, setManualGroupName] = useState("");
-  const [manualCode, setManualCode] = useState("");
-
-  // Admin: assign
-  const [assignFoursomeId, setAssignFoursomeId] = useState("");
-  const [assignPlayerId, setAssignPlayerId] = useState("");
-
-  // Enter Scores: foursome code gate
+  // Enter Scores: code gate
   const [entryCode, setEntryCode] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null); // {id, group_name, code}
-  const [activePlayers, setActivePlayers] = useState([]); // players in the foursome
+  const [activeFoursome, setActiveFoursome] = useState(null);
+  const [activePlayers, setActivePlayers] = useState([]);
 
-  // Enter Scores: hole-by-hole typing UI
+  // Enter Scores: hole-by-hole UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
 
@@ -113,29 +125,51 @@ export default function App() {
   }
 
   async function loadFoursomes() {
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select("id,group_name,code,created_at")
-      .order("created_at", { ascending: true });
-    if (error) {
-      console.error(error);
-      return { ok: false };
+    // tee_time_text is optional; we try selecting it and fall back if it doesn't exist
+    try {
+      const { data, error } = await supabase
+        .from("foursomes")
+        .select("id,group_name,code,tee_time_text,created_at")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      setFoursomes(data || []);
+      return { ok: true };
+    } catch (e) {
+      const { data, error } = await supabase
+        .from("foursomes")
+        .select("id,group_name,code,created_at")
+        .order("created_at", { ascending: true });
+      if (error) {
+        console.error(error);
+        return { ok: false };
+      }
+      setFoursomes(data || []);
+      return { ok: true };
     }
-    setFoursomes(data || []);
-    return { ok: true };
   }
 
   async function loadFoursomePlayers() {
-    const { data, error } = await supabase
-      .from("foursome_players")
-      .select("id,foursome_id,player_id,created_at")
-      .order("created_at", { ascending: true });
-    if (error) {
-      console.error(error);
-      return { ok: false };
+    // seat is optional; try selecting it and fall back
+    try {
+      const { data, error } = await supabase
+        .from("foursome_players")
+        .select("id,foursome_id,player_id,seat,created_at")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      setFoursomePlayers(data || []);
+      return { ok: true };
+    } catch (e) {
+      const { data, error } = await supabase
+        .from("foursome_players")
+        .select("id,foursome_id,player_id,created_at")
+        .order("created_at", { ascending: true });
+      if (error) {
+        console.error(error);
+        return { ok: false };
+      }
+      setFoursomePlayers(data || []);
+      return { ok: true };
     }
-    setFoursomePlayers(data || []);
-    return { ok: true };
   }
 
   async function initialLoad() {
@@ -164,7 +198,7 @@ export default function App() {
   }, [tab]);
 
   const leaderboardRows = useMemo(() => {
-    // build last-write-wins map for scores by player/hole
+    // last-write-wins by player/hole
     const scoresByPlayer = new Map();
     for (const s of scores) {
       const pid = s.player_id;
@@ -207,7 +241,6 @@ export default function App() {
       };
     });
 
-    // Sort: scored first, then netToPar, then holesPlayed desc, then name
     rows.sort((a, b) => {
       const aHas = a.holesPlayed > 0;
       const bHas = b.holesPlayed > 0;
@@ -235,159 +268,6 @@ export default function App() {
     }
   }
 
-  async function addPlayer() {
-    if (!adminOn) return alert("Admin only.");
-    const name = newName.trim();
-    const handicap = clampInt(newHandicap, 0);
-    const charity = newCharity.trim() || null;
-    if (!name) return alert("Name required.");
-
-    const { error } = await supabase.from("players").insert({ name, handicap, charity });
-    if (error) {
-      console.error(error);
-      alert("Error adding player.");
-      return;
-    }
-    setNewName("");
-    setNewHandicap("");
-    setNewCharity("");
-    await loadPlayers();
-  }
-
-  async function deletePlayer(id) {
-    if (!adminOn) return alert("Admin only.");
-    if (!confirm("Delete this player? This will also delete their scores and foursome assignment.")) return;
-
-    // delete scores
-    await supabase.from("scores").delete().eq("player_id", id);
-    // delete foursome_players
-    await supabase.from("foursome_players").delete().eq("player_id", id);
-    // delete player
-    const { error } = await supabase.from("players").delete().eq("id", id);
-    if (error) {
-      console.error(error);
-      alert("Error deleting player.");
-      return;
-    }
-    await loadPlayers();
-    await loadScores();
-    await loadFoursomes();
-    await loadFoursomePlayers();
-  }
-
-  function playersInFoursome(fid) {
-    const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
-    return players.filter((p) => pids.includes(p.id));
-  }
-
-  async function createManualFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    const group_name = manualGroupName.trim() || "Group";
-    const code = (manualCode.trim() || makeCode()).toUpperCase();
-
-    if (code.length !== 6) return alert("Code must be exactly 6 characters.");
-
-    const { error } = await supabase.from("foursomes").insert({ group_name, code });
-    if (error) {
-      console.error(error);
-      alert("Error creating foursome (code may already exist).");
-      return;
-    }
-    setManualGroupName("");
-    setManualCode("");
-    await loadFoursomes();
-  }
-
-  async function assignPlayerToFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    if (!assignFoursomeId) return alert("Pick a foursome.");
-    if (!assignPlayerId) return alert("Pick a player.");
-
-    const { error } = await supabase.from("foursome_players").insert({
-      foursome_id: assignFoursomeId,
-      player_id: assignPlayerId,
-    });
-
-    if (error) {
-      console.error(error);
-      alert("Error assigning player (maybe already assigned?).");
-      return;
-    }
-
-    setAssignPlayerId("");
-    await loadFoursomePlayers();
-  }
-
-  async function removePlayerFromFoursome(fpRowId) {
-    if (!adminOn) return alert("Admin only.");
-    const { error } = await supabase.from("foursome_players").delete().eq("id", fpRowId);
-    if (error) {
-      console.error(error);
-      alert("Error removing player.");
-      return;
-    }
-    await loadFoursomePlayers();
-  }
-
-  async function clearFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
-
-    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-
-    await loadFoursomes();
-    await loadFoursomePlayers();
-  }
-
-  async function generateRandomFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (players.length < 2) return alert("Need at least 2 players.");
-
-    // wipe old foursomes
-    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-
-    const shuffled = shuffle(players);
-    const groups = [];
-    for (let i = 0; i < shuffled.length; i += 4) {
-      groups.push(shuffled.slice(i, i + 4));
-    }
-
-    // create foursomes and assignments
-    for (let i = 0; i < groups.length; i++) {
-      const groupPlayers = groups[i];
-      const group_name = `Group ${i + 1}`;
-      const code = makeCode();
-
-      const { data: fData, error: fErr } = await supabase
-        .from("foursomes")
-        .insert({ group_name, code })
-        .select("id")
-        .single();
-
-      if (fErr) {
-        console.error(fErr);
-        alert("Error creating foursomes (check RLS/policies).");
-        return;
-      }
-
-      const fid = fData.id;
-      const inserts = groupPlayers.map((p) => ({ foursome_id: fid, player_id: p.id }));
-      const { error: fpErr } = await supabase.from("foursome_players").insert(inserts);
-
-      if (fpErr) {
-        console.error(fpErr);
-        alert("Error assigning players (check RLS/policies).");
-        return;
-      }
-    }
-
-    await loadFoursomes();
-    await loadFoursomePlayers();
-    alert("Foursomes generated ✅");
-  }
-
   async function enterWithCode() {
     const code = entryCode.trim().toUpperCase();
     if (code.length !== 6) return alert("Enter a 6-character code.");
@@ -403,10 +283,7 @@ export default function App() {
       alert("Error checking code.");
       return;
     }
-    if (!f) {
-      alert("Code not found.");
-      return;
-    }
+    if (!f) return alert("Code not found.");
 
     const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
     const memberIds = memberRows.map((x) => x.player_id);
@@ -425,12 +302,10 @@ export default function App() {
   }
 
   function getExistingScore(pid, holeNum) {
-    // last-write-wins is already in scores state, but easiest: find newest matching row
     const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
     return row ? clampInt(row.score, 0) : null;
   }
 
-  // When active foursome / hole changes, prefill inputs from existing scores
   useEffect(() => {
     if (!activeFoursome) return;
     const obj = {};
@@ -444,10 +319,10 @@ export default function App() {
 
   async function saveHoleThenNavigate(nextHole) {
     if (!activeFoursome) return;
-    // validate + upsert each player's score for current hole
+
     for (const p of activePlayers) {
       const raw = (holeInputs[p.id] ?? "").trim();
-      if (!raw) continue; // allow blanks
+      if (!raw) continue;
       const sc = clampInt(raw, 0);
       if (sc < 1 || sc > 20) {
         alert(`Score for ${p.name} looks wrong (1–20).`);
@@ -456,10 +331,7 @@ export default function App() {
 
       const { error } = await supabase
         .from("scores")
-        .upsert(
-          { player_id: p.id, hole, score: sc },
-          { onConflict: "player_id,hole" }
-        );
+        .upsert({ player_id: p.id, hole, score: sc }, { onConflict: "player_id,hole" });
 
       if (error) {
         console.error(error);
@@ -472,16 +344,265 @@ export default function App() {
     setHole(nextHole);
   }
 
+  // ------------------------
+  // ADMIN: Excel Preview/Apply
+  // Excel headers required:
+  // first_name | last_name | handicap | charity | group_name | tee_time
+  // ------------------------
+
+  function buildTournamentPreview(rows) {
+    const errors = [];
+    const warnings = [];
+    const cleaned = [];
+    const groups = new Map(); // group_name -> { tee_time_text, members: [] }
+    const nameCounts = new Map();
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || {};
+      const first = safeStr(r.first_name);
+      const last = safeStr(r.last_name);
+      const group = safeStr(r.group_name);
+      const tee = safeStr(r.tee_time);
+      const charity = safeStr(r.charity) || null;
+
+      if (!first || !last) {
+        errors.push(`Row ${i + 2}: first_name and last_name are required.`);
+        continue;
+      }
+      if (!group) {
+        errors.push(`Row ${i + 2}: group_name is required.`);
+        continue;
+      }
+
+      const fullName = `${first} ${last}`.trim();
+      const norm = normalizeName(fullName);
+
+      const hc = parseHandicap(r.handicap);
+      if (hc.invalid) errors.push(`Row ${i + 2}: handicap is not a number for "${fullName}".`);
+      if (hc.missing) warnings.push(`Row ${i + 2}: handicap missing for "${fullName}" (defaults to 0).`);
+
+      nameCounts.set(norm, (nameCounts.get(norm) || 0) + 1);
+
+      cleaned.push({
+        name: fullName,
+        name_norm: norm,
+        handicap: hc.value,
+        charity,
+        group_name: group,
+        tee_time_text: tee || null,
+        rowIndex: i,
+      });
+
+      if (!groups.has(group)) groups.set(group, { tee_time_text: tee || null, members: [] });
+      const g = groups.get(group);
+      if (!g.tee_time_text && tee) g.tee_time_text = tee;
+      g.members.push(fullName);
+    }
+
+    for (const [norm, count] of nameCounts.entries()) {
+      if (count > 1) warnings.push(`Duplicate player in upload: "${norm}" appears ${count} times.`);
+    }
+
+    for (const [gname, g] of groups.entries()) {
+      if (g.members.length > 4) warnings.push(`Group "${gname}" has ${g.members.length} players (more than 4).`);
+      if (!g.tee_time_text) warnings.push(`Group "${gname}" missing tee_time (optional).`);
+    }
+
+    const existingPlayerMap = new Map(players.map((p) => [normalizeName(p.name), p]));
+    const newPlayers = cleaned.filter((x) => !existingPlayerMap.has(x.name_norm));
+    const existingCount = cleaned.length - newPlayers.length;
+
+    const existingGroupMap = new Map(foursomes.map((f) => [safeStr(f.group_name), f]));
+    const newGroups = Array.from(groups.keys()).filter((g) => !existingGroupMap.has(g));
+
+    return {
+      ok: errors.length === 0,
+      counts: {
+        rows: rows.length,
+        validRows: cleaned.length,
+        players: cleaned.length,
+        existingPlayers: existingCount,
+        newPlayers: newPlayers.length,
+        groups: groups.size,
+        newGroups: newGroups.length,
+      },
+      groups: Array.from(groups.entries()).map(([group_name, v]) => ({
+        group_name,
+        tee_time_text: v.tee_time_text,
+        members: v.members,
+      })),
+      cleaned,
+      errors,
+      warnings,
+    };
+  }
+
+  async function applyTournamentSetup(preview) {
+    if (!adminOn) return alert("Admin only.");
+    if (!preview?.ok) return alert("Fix upload errors before applying.");
+
+    setUploadBusy(true);
+    setUploadMsg("Applying tournament setup…");
+
+    try {
+      // fresh players
+      const { data: pData, error: pErr } = await supabase
+        .from("players")
+        .select("id,name,handicap,charity,created_at");
+      if (pErr) throw pErr;
+
+      const playerByNorm = new Map((pData || []).map((p) => [normalizeName(p.name), p]));
+
+      // upsert players by name
+      for (const row of preview.cleaned) {
+        const existing = playerByNorm.get(row.name_norm);
+        if (existing) {
+          const { error } = await supabase
+            .from("players")
+            .update({ handicap: row.handicap, charity: row.charity })
+            .eq("id", existing.id);
+          if (error) throw error;
+        } else {
+          const { data: ins, error } = await supabase
+            .from("players")
+            .insert({ name: row.name, handicap: row.handicap, charity: row.charity })
+            .select("id,name,handicap,charity")
+            .single();
+          if (error) throw error;
+          playerByNorm.set(row.name_norm, ins);
+        }
+      }
+
+      // fresh foursomes
+      let foursomesNow = [];
+      let hasTeeTime = false;
+
+      try {
+        const { data, error } = await supabase
+          .from("foursomes")
+          .select("id,group_name,code,tee_time_text,created_at");
+        if (error) throw error;
+        foursomesNow = data || [];
+        hasTeeTime = true;
+      } catch {
+        const { data, error } = await supabase
+          .from("foursomes")
+          .select("id,group_name,code,created_at");
+        if (error) throw error;
+        foursomesNow = data || [];
+        hasTeeTime = false;
+      }
+
+      const foursomeByName = new Map(foursomesNow.map((f) => [safeStr(f.group_name), f]));
+
+      // upsert groups
+      for (const g of preview.groups) {
+        const existing = foursomeByName.get(g.group_name);
+
+        if (existing) {
+          const patch = {
+            ...(regenCodes ? { code: makeCode(6) } : {}),
+            ...(hasTeeTime ? { tee_time_text: g.tee_time_text || null } : {}),
+          };
+
+          const { error } = await supabase
+            .from("foursomes")
+            .update(patch)
+            .eq("id", existing.id);
+          if (error) throw error;
+        } else {
+          const base = { group_name: g.group_name, code: makeCode(6) };
+
+          if (hasTeeTime) {
+            const { data: ins, error } = await supabase
+              .from("foursomes")
+              .insert({ ...base, tee_time_text: g.tee_time_text || null })
+              .select("id,group_name,code,tee_time_text")
+              .single();
+            if (error) throw error;
+            foursomeByName.set(g.group_name, ins);
+          } else {
+            const { data: ins, error } = await supabase
+              .from("foursomes")
+              .insert(base)
+              .select("id,group_name,code")
+              .single();
+            if (error) throw error;
+            foursomeByName.set(g.group_name, ins);
+          }
+        }
+      }
+
+      // replace assignments
+      if (replaceAssignments) {
+        const { error } = await supabase
+          .from("foursome_players")
+          .delete()
+          .neq("id", "00000000-0000-0000-0000-000000000000");
+        if (error) throw error;
+      }
+
+      // insert assignments (seat based on file order within group)
+      const groupSeat = new Map();
+      const inserts = [];
+
+      for (const row of preview.cleaned) {
+        const f = foursomeByName.get(row.group_name);
+        const p = playerByNorm.get(row.name_norm);
+        if (!f || !p) continue;
+
+        const nextSeat = (groupSeat.get(row.group_name) || 0) + 1;
+        groupSeat.set(row.group_name, nextSeat);
+
+        inserts.push({
+          foursome_id: f.id,
+          player_id: p.id,
+          seat: nextSeat,
+        });
+      }
+
+      if (inserts.length) {
+        const { error } = await supabase.from("foursome_players").insert(inserts);
+        if (error) throw error;
+      }
+
+      await initialLoad();
+      setUploadMsg("Applied ✅");
+      alert("Tournament setup applied ✅");
+
+      setUploadPreview(null);
+    } catch (err) {
+      console.error(err);
+      setUploadMsg("Apply failed ❌");
+      alert("Apply failed. Open DevTools Console for the exact error.");
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
+  // Prefill inputs when hole changes
+  useEffect(() => {
+    if (!activeFoursome) return;
+    const obj = {};
+    for (const p of activePlayers) {
+      const existing = getExistingScore(p.id, hole);
+      obj[p.id] = existing != null ? String(existing) : "";
+    }
+    setHoleInputs(obj);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFoursome?.id, hole]);
+
   return (
     <div style={styles.page}>
-      {/* Scorecard modal (leaderboard) */}
+      {/* Scorecard modal */}
       {scorecardPlayer && (
         <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
-                  {scorecardPlayer.name} <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
+                  {scorecardPlayer.name}{" "}
+                  <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
                 </div>
                 <div style={styles.modalSub}>
                   Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
@@ -539,21 +660,21 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-              Net is computed as gross minus **pro-rated handicap** for holes played.
+              Net is computed as gross minus pro-rated handicap for holes played.
             </div>
           </div>
         </div>
       )}
 
       <div style={styles.shell}>
-        {/* HOME (no top nav) */}
+        {/* HOME */}
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
               <img
                 src="/logo.png"
                 alt="Ginvitational logo"
-                style={{ width: 220, height: 220, objectFit: "contain" }} // ✅ bigger logo
+                style={{ width: 220, height: 220, objectFit: "contain" }}
               />
               <div style={{ marginTop: 12, fontSize: 34, fontWeight: 950, letterSpacing: -0.5 }}>
                 The Ginvitational
@@ -567,12 +688,9 @@ export default function App() {
               <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
                 📊 Leaderboard
               </button>
-
-              {/* ✅ Enter Scores is a button again */}
               <button style={styles.bigBtn} onClick={() => setTab("code")}>
                 📝 Enter Scores
               </button>
-
               <button style={styles.bigBtn} onClick={() => setTab("admin")}>
                 ⚙️ Admin
               </button>
@@ -580,7 +698,7 @@ export default function App() {
           </div>
         )}
 
-        {/* CODE GATE SCREEN (enter scores) */}
+        {/* CODE GATE */}
         {tab === "code" && (
           <div style={styles.card}>
             <div style={styles.headerRow}>
@@ -615,7 +733,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TOP NAV (all non-home pages) */}
+        {/* TOP NAV */}
         {tab !== "home" && tab !== "code" && (
           <header style={styles.header}>
             <div style={styles.headerTop}>
@@ -653,20 +771,12 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
               <div style={styles.cardTitle}>Leaderboard</div>
-              <button
-                style={styles.smallBtn}
-                onClick={async () => {
-                  await loadPlayers();
-                  await loadScores();
-                }}
-              >
+              <button style={styles.smallBtn} onClick={async () => { await loadPlayers(); await loadScores(); }}>
                 Refresh
               </button>
             </div>
 
-            <div style={styles.helpText}>
-              Tap a player name to view their scorecard. Auto-refreshes every minute.
-            </div>
+            <div style={styles.helpText}>Tap a player name to view their scorecard. Auto-refreshes every minute.</div>
 
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -725,7 +835,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ENTER SCORES (foursome hole-by-hole) */}
+        {/* ENTER SCORES */}
         {tab === "enter" && (
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
@@ -768,43 +878,34 @@ export default function App() {
                       inputMode="numeric"
                       placeholder="—"
                       value={holeInputs[p.id] ?? ""}
-                      onChange={(e) =>
-                        setHoleInputs((prev) => ({ ...prev, [p.id]: e.target.value }))
-                      }
+                      onChange={(e) => setHoleInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
                     />
                   </div>
                 ))}
               </div>
 
               <div style={styles.navRow}>
-                <button
-                  style={styles.smallBtn}
-                  disabled={hole === 1}
-                  onClick={() => saveHoleThenNavigate(hole - 1)}
-                >
+                <button style={styles.smallBtn} disabled={hole === 1} onClick={() => saveHoleThenNavigate(hole - 1)}>
                   ← Last Hole
                 </button>
 
-                <button
-                  style={styles.bigBtn}
-                  onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}
-                >
+                <button style={styles.bigBtn} onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}>
                   Save & Next →
                 </button>
               </div>
 
               <div style={styles.helpText}>
-                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with <b>Last Hole</b>.
-                Leaving a box blank means “no score yet” for that hole.
+                Type scores for your foursome, then hit <b>Save & Next</b>. Leaving a box blank means “no score yet”.
               </div>
             </div>
           </div>
         )}
 
-        {/* ADMIN */}
+        {/* ADMIN (Excel Upload) */}
         {tab === "admin" && (
           <div style={styles.card}>
             <div style={styles.cardTitle}>Admin</div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>ADMIN BUILD: EXCEL-UPLOAD v1</div>
 
             {!adminOn ? (
               <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
@@ -824,13 +925,11 @@ export default function App() {
                   Unlock Admin
                 </button>
 
-                <div style={styles.helpText}>
-                  Simple front-end PIN gate. We can harden security later.
-                </div>
+                <div style={styles.helpText}>Upload an Excel file to set up players + groups + tee times.</div>
               </div>
             ) : (
-              <>
-                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <button
                     style={styles.smallBtn}
                     onClick={() => {
@@ -844,207 +943,186 @@ export default function App() {
                   <button style={styles.smallBtn} onClick={() => initialLoad()}>
                     Reload Data
                   </button>
-
-                  <button style={styles.dangerBtn} onClick={clearFoursomes}>
-                    Clear Foursomes
-                  </button>
                 </div>
 
-                <div style={styles.adminGrid}>
-                  {/* Foursomes */}
-                  <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Foursomes</div>
-
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <button style={styles.bigBtn} onClick={generateRandomFoursomes}>
-                        🧩 Generate Foursomes (Random)
-                      </button>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontWeight: 900, opacity: 0.9 }}>Manual create</div>
-                        <input
-                          style={styles.input}
-                          placeholder='Group name (ex: "Group A")'
-                          value={manualGroupName}
-                          onChange={(e) => setManualGroupName(e.target.value)}
-                        />
-                        <input
-                          style={styles.input}
-                          placeholder="Code (6 chars) — leave blank to auto-generate"
-                          value={manualCode}
-                          onChange={(e) => setManualCode(e.target.value.toUpperCase())}
-                          maxLength={6}
-                        />
-                        <button style={styles.smallBtn} onClick={createManualFoursome}>
-                          Create Foursome
-                        </button>
-                      </div>
-
-                      <div style={{ height: 1, background: "rgba(255,255,255,0.10)", margin: "6px 0" }} />
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ fontWeight: 900, opacity: 0.9 }}>Assign player to foursome</div>
-
-                        <select
-                          style={styles.input}
-                          value={assignFoursomeId}
-                          onChange={(e) => setAssignFoursomeId(e.target.value)}
-                        >
-                          <option value="">Select foursome…</option>
-                          {foursomes.map((f) => (
-                            <option key={f.id} value={f.id}>
-                              {f.group_name} — {f.code}
-                            </option>
-                          ))}
-                        </select>
-
-                        <select
-                          style={styles.input}
-                          value={assignPlayerId}
-                          onChange={(e) => setAssignPlayerId(e.target.value)}
-                        >
-                          <option value="">Select player…</option>
-                          {players.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} (HCP {clampInt(p.handicap, 0)})
-                            </option>
-                          ))}
-                        </select>
-
-                        <button style={styles.smallBtn} onClick={assignPlayerToFoursome}>
-                          Add Player to Foursome
-                        </button>
-                      </div>
-
-                      <div style={{ height: 1, background: "rgba(255,255,255,0.10)", margin: "6px 0" }} />
-
-                      <div style={{ fontWeight: 950 }}>View codes + members</div>
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {foursomes.map((f) => {
-                          const members = playersInFoursome(f.id);
-                          const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
-                          return (
-                            <div key={f.id} style={styles.foursomeCard}>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950 }}>
-                                    {f.group_name}{" "}
-                                    <span style={{ opacity: 0.75, fontWeight: 800 }}>
-                                      (Code: {f.code})
-                                    </span>
-                                  </div>
-                                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                    Members: {members.length}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                                {memberRows.map((fp) => {
-                                  const p = players.find((x) => x.id === fp.player_id);
-                                  return (
-                                    <div key={fp.id} style={styles.playerRow}>
-                                      <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 950 }}>
-                                          {p ? p.name : fp.player_id}
-                                        </div>
-                                        {p && (
-                                          <div style={styles.playerMeta}>
-                                            HCP {clampInt(p.handicap, 0)}
-                                            {p.charity ? ` • ${p.charity}` : ""}
-                                          </div>
-                                        )}
-                                      </div>
-                                      <button
-                                        style={styles.dangerBtn}
-                                        onClick={() => removePlayerFromFoursome(fp.id)}
-                                      >
-                                        Remove
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                                {memberRows.length === 0 && (
-                                  <div style={styles.helpText}>No players assigned.</div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
-                      </div>
-                    </div>
+                <div style={styles.subCard}>
+                  <div style={styles.subTitle}>Tournament Setup Upload</div>
+                  <div style={styles.helpText}>
+                    Required headers: <b>first_name</b>, <b>last_name</b>, <b>handicap</b>, <b>charity</b>,{" "}
+                    <b>group_name</b>, <b>tee_time</b>.
                   </div>
 
-                  {/* Players */}
-                  <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Players</div>
+                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      disabled={uploadBusy}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
 
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <div style={{ fontWeight: 950 }}>Add Player</div>
-                      <input
-                        style={styles.input}
-                        placeholder="Name"
-                        value={newName}
-                        onChange={(e) => setNewName(e.target.value)}
-                      />
-                      <input
-                        style={styles.input}
-                        placeholder="Handicap"
-                        value={newHandicap}
-                        onChange={(e) => setNewHandicap(e.target.value)}
-                        inputMode="numeric"
-                      />
-                      <input
-                        style={styles.input}
-                        placeholder="Charity (optional)"
-                        value={newCharity}
-                        onChange={(e) => setNewCharity(e.target.value)}
-                      />
-                      <button style={styles.bigBtn} onClick={addPlayer}>
-                        Add Player
-                      </button>
-                    </div>
+                        setUploadMsg("");
+                        setUploadPreview(null);
 
-                    <div style={{ height: 1, background: "rgba(255,255,255,0.10)", margin: "12px 0" }} />
+                        try {
+                          const rows = await readExcelFile(file);
+                          const prev = buildTournamentPreview(rows);
+                          setUploadPreview(prev);
+                        } catch (err) {
+                          console.error(err);
+                          alert("Could not read Excel file.");
+                        }
+                      }}
+                    />
 
-                    <div style={{ fontWeight: 950 }}>Player List</div>
-                    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                      {players.map((p) => (
-                        <div key={p.id} style={styles.playerRow}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {p.name}
-                            </div>
-                            <div style={styles.playerMeta}>
-                              HCP {clampInt(p.handicap, 0)}
-                              {p.charity ? ` • ${p.charity}` : ""}
+                    <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="checkbox"
+                        checked={replaceAssignments}
+                        onChange={(e) => setReplaceAssignments(e.target.checked)}
+                        disabled={uploadBusy}
+                      />
+                      <div style={{ fontSize: 13, opacity: 0.9 }}>
+                        Replace all foursome assignments from this file (recommended)
+                      </div>
+                    </label>
+
+                    <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        type="checkbox"
+                        checked={regenCodes}
+                        onChange={(e) => setRegenCodes(e.target.checked)}
+                        disabled={uploadBusy}
+                      />
+                      <div style={{ fontSize: 13, opacity: 0.9 }}>
+                        Regenerate all foursome codes (OFF by default)
+                      </div>
+                    </label>
+
+                    {uploadPreview ? (
+                      <div style={{ marginTop: 6, display: "grid", gap: 10 }}>
+                        <div style={{ fontWeight: 950 }}>Preview</div>
+
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13, opacity: 0.9 }}>
+                          <span style={styles.pill}>Rows: {uploadPreview.counts.rows}</span>
+                          <span style={styles.pill}>Players: {uploadPreview.counts.players}</span>
+                          <span style={styles.pill}>Groups: {uploadPreview.counts.groups}</span>
+                          <span style={styles.pill}>New Players: {uploadPreview.counts.newPlayers}</span>
+                          <span style={styles.pill}>New Groups: {uploadPreview.counts.newGroups}</span>
+                        </div>
+
+                        {uploadPreview.errors.length > 0 && (
+                          <div
+                            style={{
+                              padding: 10,
+                              borderRadius: 12,
+                              border: "1px solid rgba(220,38,38,0.35)",
+                              background: "rgba(220,38,38,0.10)",
+                            }}
+                          >
+                            <div style={{ fontWeight: 950, marginBottom: 6 }}>Errors (fix before applying)</div>
+                            <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.95 }}>
+                              {uploadPreview.errors.slice(0, 15).map((x, i) => (
+                                <div key={i}>• {x}</div>
+                              ))}
+                              {uploadPreview.errors.length > 15 && <div>…and more</div>}
                             </div>
                           </div>
+                        )}
 
-                          <button style={styles.dangerBtn} onClick={() => deletePlayer(p.id)}>
-                            Delete
+                        {uploadPreview.warnings.length > 0 && (
+                          <div
+                            style={{
+                              padding: 10,
+                              borderRadius: 12,
+                              border: "1px solid rgba(255,255,255,0.18)",
+                              background: "rgba(255,255,255,0.06)",
+                            }}
+                          >
+                            <div style={{ fontWeight: 950, marginBottom: 6 }}>Warnings</div>
+                            <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.9 }}>
+                              {uploadPreview.warnings.slice(0, 15).map((x, i) => (
+                                <div key={i}>• {x}</div>
+                              ))}
+                              {uploadPreview.warnings.length > 15 && <div>…and more</div>}
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                          <button
+                            style={styles.bigBtn}
+                            disabled={uploadBusy || !uploadPreview.ok}
+                            onClick={() => applyTournamentSetup(uploadPreview)}
+                          >
+                            {uploadBusy ? "Applying…" : "✅ Apply Tournament Setup"}
+                          </button>
+
+                          <button
+                            style={styles.smallBtn}
+                            disabled={uploadBusy}
+                            onClick={() => {
+                              setUploadPreview(null);
+                              setUploadMsg("");
+                            }}
+                          >
+                            Clear Upload
                           </button>
                         </div>
-                      ))}
-                      {players.length === 0 && <div style={styles.helpText}>No players.</div>}
-                    </div>
+
+                        {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>}
+
+                        <div style={{ marginTop: 6 }}>
+                          <div style={{ fontWeight: 900, opacity: 0.9, marginBottom: 6 }}>Groups (from upload)</div>
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {uploadPreview.groups.slice(0, 12).map((g) => (
+                              <div key={g.group_name} style={styles.foursomeCard}>
+                                <div style={{ fontWeight: 950 }}>
+                                  {g.group_name}
+                                  {g.tee_time_text ? <span style={{ opacity: 0.75 }}> • {g.tee_time_text}</span> : null}
+                                </div>
+                                <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+                                  {g.members.join(", ")}
+                                </div>
+                              </div>
+                            ))}
+                            {uploadPreview.groups.length > 12 && (
+                              <div style={styles.helpText}>…and {uploadPreview.groups.length - 12} more groups</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={styles.helpText}>
+                        Upload a file to see a preview. Nothing writes until you click <b>Apply</b>.
+                      </div>
+                    )}
                   </div>
                 </div>
-              </>
-            )}
-          </div>
-        )}
 
-        {/* Router: if code validated, jump to enter */}
-        {tab === "enter" && !activeFoursome && (
-          <div style={styles.card}>
-            <div style={styles.cardTitle}>Enter Scores</div>
-            <div style={styles.helpText}>No foursome loaded. Go back and enter your code.</div>
-            <button style={styles.smallBtn} onClick={() => setTab("code")}>
-              Back to Code
-            </button>
+                <div style={styles.subCard}>
+                  <div style={styles.subTitle}>Current Foursome Codes</div>
+                  <div style={styles.helpText}>Players enter scores using their group’s 6-character code.</div>
+
+                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                    {foursomes.map((f) => (
+                      <div key={f.id} style={styles.foursomeCard}>
+                        <div style={{ fontWeight: 950 }}>
+                          {f.group_name}{" "}
+                          <span style={{ opacity: 0.75, fontWeight: 800 }}>(Code: {f.code})</span>
+                        </div>
+                        {typeof f.tee_time_text !== "undefined" && f.tee_time_text ? (
+                          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+                            Tee time: {f.tee_time_text}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                    {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1057,8 +1135,7 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background:
-      "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
+    background: "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
     color: "#fff",
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
@@ -1158,15 +1235,6 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
-  dangerBtn: {
-    padding: "10px 12px",
-    borderRadius: 12,
-    background: "rgba(220,38,38,0.18)",
-    border: "1px solid rgba(220,38,38,0.35)",
-    color: "#fff",
-    cursor: "pointer",
-    fontWeight: 950,
-  },
 
   label: { display: "grid", gap: 6, fontSize: 12, opacity: 0.9 },
   input: {
@@ -1179,7 +1247,6 @@ const styles = {
     fontSize: 14,
   },
 
-  // table
   tableWrap: {
     marginTop: 12,
     overflowX: "auto",
@@ -1231,12 +1298,6 @@ const styles = {
     fontSize: 12,
   },
 
-  adminGrid: {
-    marginTop: 14,
-    display: "grid",
-    gap: 12,
-    gridTemplateColumns: "1fr",
-  },
   subCard: {
     background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.12)",
@@ -1244,17 +1305,6 @@ const styles = {
     padding: 14,
   },
   subTitle: { fontWeight: 950, marginBottom: 10, fontSize: 16 },
-
-  playerRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    padding: "10px 10px",
-    borderRadius: 12,
-    background: "rgba(0,0,0,0.18)",
-    border: "1px solid rgba(255,255,255,0.10)",
-  },
 
   foursomeCard: {
     padding: 12,
@@ -1280,7 +1330,6 @@ const styles = {
     gridTemplateColumns: "1fr 1fr",
   },
 
-  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1310,9 +1359,3 @@ const styles = {
   modalTitle: { fontSize: 18, fontWeight: 950, lineHeight: 1.1 },
   modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
 };
-
-// Wider screens
-const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
-if (media && media.matches) {
-  styles.adminGrid.gridTemplateColumns = "1fr 1fr";
-}
