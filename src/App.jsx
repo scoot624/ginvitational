@@ -7,7 +7,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blue tees, Par 72) — you said this is correct */
+/** ⛳ PARS (Blue tees, Par 72) — confirmed */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
@@ -15,7 +15,6 @@ const PARS = [
 
 /** 🧠 STROKE INDEX (Men’s Handicap row from your scorecard)
  *  1 = hardest hole, 18 = easiest
- *  Index corresponds to hole number (array index 0 => hole 1)
  */
 const STROKE_INDEX = [
   12, 10, 4, 14, 2, 8, 6, 18, 16,
@@ -47,15 +46,12 @@ function makeCode(len = 6) {
   return out;
 }
 
-function normalizeName(s) {
-  return (s || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
-
 function safeStr(v) {
   return (v ?? "").toString().trim();
+}
+
+function normalizeName(s) {
+  return (s || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function parseHandicap(v) {
@@ -67,8 +63,8 @@ function parseHandicap(v) {
 }
 
 /** True stroke index allocation:
- *  - base strokes per hole = floor(H/18)
- *  - remainder strokes go to the hardest holes first (SI 1..rem)
+ *  base strokes per hole = floor(H/18)
+ *  remainder strokes go to hardest holes first (SI 1..rem)
  */
 function strokesForHole(handicap, strokeIndex) {
   const h = Math.max(0, clampInt(handicap, 0));
@@ -100,12 +96,25 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
-  // Leaderboard scorecard modal
+  // Scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
 
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
+
+  // Foursomes
+  const [foursomes, setFoursomes] = useState([]);
+  const [foursomePlayers, setFoursomePlayers] = useState([]);
+
+  // Enter scores gate
+  const [entryCode, setEntryCode] = useState("");
+  const [activeFoursome, setActiveFoursome] = useState(null);
+  const [activePlayers, setActivePlayers] = useState([]);
+
+  // Hole entry
+  const [hole, setHole] = useState(1);
+  const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
 
   // Admin: Excel upload
   const [uploadPreview, setUploadPreview] = useState(null);
@@ -114,24 +123,12 @@ export default function App() {
   const [replaceAssignments, setReplaceAssignments] = useState(true);
   const [regenCodes, setRegenCodes] = useState(false);
 
-  // Foursomes data
-  const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id, seat?
-
-  // Enter Scores: code gate
-  const [entryCode, setEntryCode] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null);
-  const [activePlayers, setActivePlayers] = useState([]);
-
-  // Enter Scores: hole-by-hole UI
-  const [hole, setHole] = useState(1);
-  const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
-
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
       .select("id,name,handicap,charity,created_at")
       .order("created_at", { ascending: true });
+
     if (error) {
       console.error(error);
       return { ok: false };
@@ -145,6 +142,7 @@ export default function App() {
       .from("scores")
       .select("id,player_id,hole,score,created_at")
       .order("created_at", { ascending: false });
+
     if (error) {
       console.error(error);
       return { ok: false };
@@ -154,6 +152,7 @@ export default function App() {
   }
 
   async function loadFoursomes() {
+    // tee_time_text might not exist in your schema — handle both cases
     try {
       const { data, error } = await supabase
         .from("foursomes")
@@ -162,7 +161,7 @@ export default function App() {
       if (error) throw error;
       setFoursomes(data || []);
       return { ok: true };
-    } catch (e) {
+    } catch {
       const { data, error } = await supabase
         .from("foursomes")
         .select("id,group_name,code,created_at")
@@ -177,6 +176,7 @@ export default function App() {
   }
 
   async function loadFoursomePlayers() {
+    // seat might not exist in your schema — handle both cases
     try {
       const { data, error } = await supabase
         .from("foursome_players")
@@ -185,7 +185,7 @@ export default function App() {
       if (error) throw error;
       setFoursomePlayers(data || []);
       return { ok: true };
-    } catch (e) {
+    } catch {
       const { data, error } = await supabase
         .from("foursome_players")
         .select("id,foursome_id,player_id,created_at")
@@ -213,7 +213,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Leaderboard auto-refresh every minute while on leaderboard tab
+  // Leaderboard refresh while on leaderboard
   useEffect(() => {
     if (tab !== "leaderboard") return;
     const id = setInterval(async () => {
@@ -225,7 +225,7 @@ export default function App() {
   }, [tab]);
 
   const leaderboardRows = useMemo(() => {
-    // last-write-wins by player/hole
+    // last-write-wins map for scores
     const scoresByPlayer = new Map();
     for (const s of scores) {
       const pid = s.player_id;
@@ -253,7 +253,7 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      // ✅ True SI allocation (not prorated)
+      // ✅ True SI allocation
       const strokesUsed = strokesUsedForPlayedHoles(handicap, playedHoles);
       const netGross = gross - strokesUsed;
       const netToPar = holesPlayed === 0 ? 9999 : Math.round(netGross - parPlayed);
@@ -286,6 +286,39 @@ export default function App() {
     if (!scorecardPlayerId) return null;
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
+
+  const scorecardPlayedHoles = useMemo(() => {
+    if (!scorecardPlayer) return [];
+    return Object.keys(scorecardPlayer.scoresByHole || {})
+      .map((x) => clampInt(x, 0))
+      .filter((h) => h >= 1 && h <= 18)
+      .sort((a, b) => a - b);
+  }, [scorecardPlayer]);
+
+  const scorecardStrokesUsed = useMemo(() => {
+    if (!scorecardPlayer) return 0;
+    return strokesUsedForPlayedHoles(scorecardPlayer.handicap, scorecardPlayedHoles);
+  }, [scorecardPlayer, scorecardPlayedHoles]);
+
+  // Aggregated net +/- (Out / In / Total) for scorecard modal
+  const scorecardNetAgg = useMemo(() => {
+    if (!scorecardPlayer) return { out: 0, in: 0, total: 0 };
+
+    const diffs = Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
+      const par = PARS[h - 1];
+      const si = STROKE_INDEX[h - 1];
+      const sc = scorecardPlayer.scoresByHole?.[h];
+      if (sc == null) return null;
+
+      const hcpStrokes = strokesForHole(scorecardPlayer.handicap, si);
+      const netSc = sc - hcpStrokes;
+      return netSc - par;
+    });
+
+    const out = diffs.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
+    const inn = diffs.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
+    return { out, in: inn, total: out + inn };
+  }, [scorecardPlayer]);
 
   function enterAdmin() {
     if (adminPin === "112020") {
@@ -374,8 +407,8 @@ export default function App() {
   }
 
   // ------------------------
-  // ADMIN: Excel Preview/Apply
-  // Excel headers required:
+  // Admin: Excel upload preview/apply
+  // Headers expected:
   // first_name | last_name | handicap | charity | group_name | tee_time
   // ------------------------
 
@@ -419,7 +452,6 @@ export default function App() {
         charity,
         group_name: group,
         tee_time_text: tee || null,
-        rowIndex: i,
       });
 
       if (!groups.has(group)) groups.set(group, { tee_time_text: tee || null, members: [] });
@@ -474,7 +506,7 @@ export default function App() {
     setUploadMsg("Applying tournament setup…");
 
     try {
-      // fresh players
+      // Pull current players
       const { data: pData, error: pErr } = await supabase
         .from("players")
         .select("id,name,handicap,charity,created_at");
@@ -482,7 +514,7 @@ export default function App() {
 
       const playerByNorm = new Map((pData || []).map((p) => [normalizeName(p.name), p]));
 
-      // upsert players by name
+      // Upsert players by name (update handicap/charity if exists)
       for (const row of preview.cleaned) {
         const existing = playerByNorm.get(row.name_norm);
         if (existing) {
@@ -502,7 +534,7 @@ export default function App() {
         }
       }
 
-      // fresh foursomes
+      // Pull current foursomes (tee_time_text optional)
       let foursomesNow = [];
       let hasTeeTime = false;
 
@@ -524,7 +556,7 @@ export default function App() {
 
       const foursomeByName = new Map(foursomesNow.map((f) => [safeStr(f.group_name), f]));
 
-      // upsert groups
+      // Upsert groups (create if missing; optionally regen codes; optionally tee_time_text)
       for (const g of preview.groups) {
         const existing = foursomeByName.get(g.group_name);
 
@@ -533,7 +565,6 @@ export default function App() {
             ...(regenCodes ? { code: makeCode(6) } : {}),
             ...(hasTeeTime ? { tee_time_text: g.tee_time_text || null } : {}),
           };
-
           const { error } = await supabase
             .from("foursomes")
             .update(patch)
@@ -562,7 +593,7 @@ export default function App() {
         }
       }
 
-      // replace assignments
+      // Replace assignments if requested
       if (replaceAssignments) {
         const { error } = await supabase
           .from("foursome_players")
@@ -571,7 +602,7 @@ export default function App() {
         if (error) throw error;
       }
 
-      // insert assignments (seat based on file order within group)
+      // Assign players to groups, seats based on upload order in each group
       const groupSeat = new Map();
       const inserts = [];
 
@@ -607,20 +638,6 @@ export default function App() {
       setUploadBusy(false);
     }
   }
-
-  // Derive strokes used for scorecard player (based on the holes they’ve actually entered)
-  const scorecardPlayedHoles = useMemo(() => {
-    if (!scorecardPlayer) return [];
-    return Object.keys(scorecardPlayer.scoresByHole || {})
-      .map((x) => clampInt(x, 0))
-      .filter((h) => h >= 1 && h <= 18)
-      .sort((a, b) => a - b);
-  }, [scorecardPlayer]);
-
-  const scorecardStrokesUsed = useMemo(() => {
-    if (!scorecardPlayer) return 0;
-    return strokesUsedForPlayedHoles(scorecardPlayer.handicap, scorecardPlayedHoles);
-  }, [scorecardPlayer, scorecardPlayedHoles]);
 
   return (
     <div style={styles.page}>
@@ -660,8 +677,6 @@ export default function App() {
                   <tr>
                     <th style={styles.th}>Hole</th>
                     <th style={styles.th}>Par</th>
-                    <th style={styles.th}>SI</th>
-                    <th style={styles.th}>HCP</th>
                     <th style={styles.th}>Gross</th>
                     <th style={styles.th}>Net</th>
                     <th style={styles.th}>Net +/-</th>
@@ -672,12 +687,13 @@ export default function App() {
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
                     const si = STROKE_INDEX[h - 1];
+                    const gross = scorecardPlayer.scoresByHole[h];
 
-                    const sc = scorecardPlayer.scoresByHole[h]; // gross
                     const hcpStrokes = strokesForHole(scorecardPlayer.handicap, si);
+                    const getsStrokes = hcpStrokes > 0;
 
-                    const netSc = sc != null ? sc - hcpStrokes : null;
-                    const netDiff = netSc != null ? netSc - par : null;
+                    const net = gross != null ? gross - hcpStrokes : null;
+                    const netDiff = net != null ? net - par : null;
 
                     const netDiffStyle =
                       netDiff == null
@@ -688,8 +704,6 @@ export default function App() {
                         ? { color: "#dc2626", fontWeight: 800 }
                         : { opacity: 0.9, fontWeight: 800 };
 
-                    // ✅ Mark holes where the player gets strokes
-                    const getsStrokes = hcpStrokes > 0;
                     const rowStyle = getsStrokes
                       ? {
                           background: "rgba(245, 230, 200, 0.08)",
@@ -703,22 +717,34 @@ export default function App() {
                           {h} {getsStrokes ? <span style={{ opacity: 0.9 }}>★</span> : null}
                         </td>
                         <td style={styles.td}>{par}</td>
-                        <td style={styles.td}>{si}</td>
-                        <td style={styles.td}>{hcpStrokes}</td>
-                        <td style={styles.td}>{sc != null ? sc : "—"}</td>
-                        <td style={styles.td}>{netSc != null ? netSc : "—"}</td>
+                        <td style={styles.td}>{gross != null ? gross : "—"}</td>
+                        <td style={styles.td}>{net != null ? net : "—"}</td>
                         <td style={{ ...styles.td, ...netDiffStyle }}>
                           {netDiff == null ? "—" : formatToPar(netDiff)}
                         </td>
                       </tr>
                     );
                   })}
+
+                  {/* ✅ Totals row (Out / In / Total) */}
+                  <tr>
+                    <td style={{ ...styles.td, fontWeight: 950 }} colSpan={4}>
+                      Totals
+                      <span style={{ opacity: 0.7, fontWeight: 800 }}>
+                        {" "}
+                        (Out {formatToPar(scorecardNetAgg.out)} • In {formatToPar(scorecardNetAgg.in)})
+                      </span>
+                    </td>
+                    <td style={{ ...styles.td, fontWeight: 950 }}>
+                      <span style={netColorStyle(scorecardNetAgg.total)}>{formatToPar(scorecardNetAgg.total)}</span>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-              Handicap is allocated by Stroke Index (SI). ★ indicates holes where handicap strokes apply.
+              ★ indicates holes where handicap strokes apply (Stroke Index allocation).
             </div>
           </div>
         </div>
@@ -835,7 +861,7 @@ export default function App() {
             </div>
 
             <div style={styles.helpText}>
-              Tap a player name to view their scorecard. Handicap uses true Stroke Index allocation.
+              Tap a player name to view their scorecard. Handicap uses Stroke Index allocation.
             </div>
 
             <div style={styles.tableWrap}>
@@ -885,9 +911,7 @@ export default function App() {
 
                   {leaderboardRows.length === 0 && (
                     <tr>
-                      <td style={styles.td} colSpan={4}>
-                        No players yet.
-                      </td>
+                      <td style={styles.td} colSpan={4}>No players yet.</td>
                     </tr>
                   )}
                 </tbody>
@@ -931,7 +955,9 @@ export default function App() {
                       <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
                         {p.name}
                       </div>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>HCP {clampInt(p.handicap, 0)}</div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>
+                        HCP {clampInt(p.handicap, 0)}
+                      </div>
                     </div>
 
                     <input
@@ -962,11 +988,11 @@ export default function App() {
           </div>
         )}
 
-        {/* ADMIN (Excel Upload) */}
+        {/* ADMIN */}
         {tab === "admin" && (
           <div style={styles.card}>
             <div style={styles.cardTitle}>Admin</div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>ADMIN BUILD: EXCEL-UPLOAD v1</div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>EXCEL SETUP + TRUE HANDICAP v2</div>
 
             {!adminOn ? (
               <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
@@ -1131,7 +1157,9 @@ export default function App() {
                           </button>
                         </div>
 
-                        {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>}
+                        {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>
+
+                        }
 
                         <div style={{ marginTop: 6 }}>
                           <div style={{ fontWeight: 900, opacity: 0.9, marginBottom: 6 }}>Groups (from upload)</div>
@@ -1186,12 +1214,21 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* Guard */}
+        {tab === "enter" && !activeFoursome && (
+          <div style={styles.card}>
+            <div style={styles.cardTitle}>Enter Scores</div>
+            <div style={styles.helpText}>No foursome loaded. Go back and enter your code.</div>
+            <button style={styles.smallBtn} onClick={() => setTab("code")}>Back to Code</button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-/** Styles */
+/** Styles: phone-first */
 const styles = {
   page: {
     minHeight: "100vh",
@@ -1420,3 +1457,9 @@ const styles = {
   modalTitle: { fontSize: 18, fontWeight: 950, lineHeight: 1.1 },
   modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
 };
+
+// Wider screens
+const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
+if (media && media.matches) {
+  // keep simple grid feel on desktop
+}
