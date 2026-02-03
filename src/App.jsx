@@ -1,28 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import * as XLSX from "xlsx";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blue tees, Par 72; hole 18 is par 5) */
+/** ⛳ PARS (Blues, Par 72 — hole 18 is Par 5 per your note) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
-  4, 3, 5, 3, 4, 5, 4, 4, 5,
-];
-
-/** 🧠 STROKE INDEX (Men’s Handicap row from your scorecard) */
-const STROKE_INDEX = [
-  12, 10, 4, 14, 2, 8, 6, 18, 16,
-  9, 3, 17, 13, 5, 15, 1, 11, 7,
-];
-
-/** 🟦 BLUE tee yardages (hole 18 uses the bigger number = 491) */
-const BLUE_YARDS = [
-  371, 368, 453, 163, 412, 193, 491, 114, 460,
-  414, 193, 493, 220, 400, 513, 416, 369, 491,
+  4, 3, 5, 3, 4, 5, 4, 4, 5
 ];
 
 function clampInt(v, fallback = 0) {
@@ -31,24 +18,64 @@ function clampInt(v, fallback = 0) {
   return Math.trunc(n);
 }
 
-function safeStr(v) {
-  return (v ?? "").toString().trim();
-}
-
-function normalizeName(s) {
-  return (s || "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
 function formatToPar(n) {
   if (n === 0) return "E";
   if (n > 0) return `+${n}`;
   return `${n}`;
 }
 
+/** --- Brand palette from your style guide --- */
+const PALETTE = {
+  // Primary
+  fairwayGreen: "#1E3D34",
+  deepMeadow: "#071F13",
+  black: "#000000",
+  white: "#FFFFFF",
+
+  // Secondary
+  sandstone: "#F2EBDD",
+  teeSand: "#CBBD97",
+  puttingGreen: "#8E998B",
+  juniperLeaf: "#385230",
+  oliveGrove: "#46492B",
+
+  // Accent
+  whickerBasket: "#9F7750",
+  salmonRose: "#994B3E",
+  admiralBlue: "#243144",
+};
+
+const THEME = {
+  bg: PALETTE.sandstone,
+  ink: PALETTE.deepMeadow,
+
+  // Dark “club” surface
+  surface: "rgba(7, 31, 19, 0.86)",
+  surfaceSoft: "rgba(30, 61, 52, 0.44)",
+  surfaceUltraSoft: "rgba(30, 61, 52, 0.26)",
+
+  border: "rgba(30, 61, 52, 0.26)",
+  borderStrong: "rgba(30, 61, 52, 0.46)",
+
+  text: "rgba(242, 235, 221, 0.98)",
+  textMuted: "rgba(242, 235, 221, 0.78)",
+  textFaint: "rgba(242, 235, 221, 0.60)",
+
+  btn: "rgba(203, 189, 151, 0.14)",
+  btnBorder: "rgba(242, 235, 221, 0.30)",
+  btnStrong: "rgba(203, 189, 151, 0.20)",
+
+  accent: PALETTE.whickerBasket,
+  danger: PALETTE.salmonRose,
+
+  good: "#2F8F62",
+  bad: PALETTE.salmonRose,
+};
+
 function netColorStyle(netToPar) {
-  if (netToPar < 0) return { color: "#16a34a" };
-  if (netToPar > 0) return { color: "#dc2626" };
-  return { color: "rgba(255,255,255,0.85)" };
+  if (netToPar < 0) return { color: THEME.good };
+  if (netToPar > 0) return { color: THEME.bad };
+  return { color: THEME.textMuted };
 }
 
 function makeCode(len = 6) {
@@ -58,39 +85,13 @@ function makeCode(len = 6) {
   return out;
 }
 
-/** True stroke index allocation:
- *  base strokes per hole = floor(H/18)
- *  remainder strokes go to hardest holes first (SI 1..rem)
- */
-function strokesForHole(handicap, strokeIndex) {
-  const h = Math.max(0, clampInt(handicap, 0));
-  const si = clampInt(strokeIndex, 18);
-  const base = Math.floor(h / 18);
-  const rem = h % 18;
-  const extra = si <= rem ? 1 : 0;
-  return base + extra;
-}
-
-function strokesUsedForPlayedHoles(handicap, playedHoles) {
-  return playedHoles.reduce((acc, holeNum) => {
-    const si = STROKE_INDEX[holeNum - 1];
-    return acc + strokesForHole(handicap, si);
-  }, 0);
-}
-
-async function readExcelFile(file) {
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: "array" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { defval: "" });
-}
-
-function parseHandicap(v) {
-  const s = safeStr(v);
-  if (s === "") return { value: 0, missing: true, invalid: false };
-  const n = Number(s);
-  if (!Number.isFinite(n)) return { value: 0, missing: false, invalid: true };
-  return { value: Math.trunc(n), missing: false, invalid: false };
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 export default function App() {
@@ -100,16 +101,29 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
-  // Scorecard modal
+  // Leaderboard scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
 
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
 
-  // Foursomes data
+  // Admin: add player
+  const [newName, setNewName] = useState("");
+  const [newHandicap, setNewHandicap] = useState("");
+  const [newCharity, setNewCharity] = useState("");
+
+  // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with id, foursome_id, player_id, seat?
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id
+
+  // Admin: manual foursome
+  const [manualGroupName, setManualGroupName] = useState("");
+  const [manualCode, setManualCode] = useState("");
+
+  // Admin: assign
+  const [assignFoursomeId, setAssignFoursomeId] = useState("");
+  const [assignPlayerId, setAssignPlayerId] = useState("");
 
   // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
@@ -119,17 +133,6 @@ export default function App() {
   // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
-
-  // Admin: Excel upload
-  const [uploadPreview, setUploadPreview] = useState(null);
-  const [uploadBusy, setUploadBusy] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState("");
-  const [replaceAssignments, setReplaceAssignments] = useState(true);
-  const [regenCodes, setRegenCodes] = useState(false);
-
-  // Print scorecards
-  const [printOpen, setPrintOpen] = useState(false);
-  const [printFoursomeIds, setPrintFoursomeIds] = useState([]);
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -160,51 +163,31 @@ export default function App() {
   }
 
   async function loadFoursomes() {
-    // tee_time_text optional
-    try {
-      const { data, error } = await supabase
-        .from("foursomes")
-        .select("id,group_name,code,tee_time_text,created_at")
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      setFoursomes(data || []);
-      return { ok: true };
-    } catch {
-      const { data, error } = await supabase
-        .from("foursomes")
-        .select("id,group_name,code,created_at")
-        .order("created_at", { ascending: true });
-      if (error) {
-        console.error(error);
-        return { ok: false };
-      }
-      setFoursomes(data || []);
-      return { ok: true };
+    const { data, error } = await supabase
+      .from("foursomes")
+      .select("id,group_name,code,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
     }
+    setFoursomes(data || []);
+    return { ok: true };
   }
 
   async function loadFoursomePlayers() {
-    // seat optional
-    try {
-      const { data, error } = await supabase
-        .from("foursome_players")
-        .select("id,foursome_id,player_id,seat,created_at")
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      setFoursomePlayers(data || []);
-      return { ok: true };
-    } catch {
-      const { data, error } = await supabase
-        .from("foursome_players")
-        .select("id,foursome_id,player_id,created_at")
-        .order("created_at", { ascending: true });
-      if (error) {
-        console.error(error);
-        return { ok: false };
-      }
-      setFoursomePlayers(data || []);
-      return { ok: true };
+    const { data, error } = await supabase
+      .from("foursome_players")
+      .select("id,foursome_id,player_id,seat,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
     }
+    setFoursomePlayers(data || []);
+    return { ok: true };
   }
 
   async function initialLoad() {
@@ -231,16 +214,6 @@ export default function App() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
-
-  // Close print mode after print
-  useEffect(() => {
-    function onAfterPrint() {
-      setPrintOpen(false);
-      setPrintFoursomeIds([]);
-    }
-    window.addEventListener("afterprint", onAfterPrint);
-    return () => window.removeEventListener("afterprint", onAfterPrint);
-  }, []);
 
   const leaderboardRows = useMemo(() => {
     // build last-write-wins map for scores by player/hole
@@ -271,9 +244,8 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      // ✅ True SI allocation
-      const strokesUsed = strokesUsedForPlayedHoles(handicap, playedHoles);
-      const netGross = gross - strokesUsed;
+      const proratedHandicap = (handicap * holesPlayed) / 18;
+      const netGross = gross - proratedHandicap;
       const netToPar = holesPlayed === 0 ? 9999 : Math.round(netGross - parPlayed);
 
       return {
@@ -284,7 +256,6 @@ export default function App() {
         holesPlayed,
         netToPar,
         scoresByHole,
-        strokesUsed,
       };
     });
 
@@ -306,37 +277,6 @@ export default function App() {
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
 
-  const scorecardPlayedHoles = useMemo(() => {
-    if (!scorecardPlayer) return [];
-    return Object.keys(scorecardPlayer.scoresByHole || {})
-      .map((x) => clampInt(x, 0))
-      .filter((h) => h >= 1 && h <= 18)
-      .sort((a, b) => a - b);
-  }, [scorecardPlayer]);
-
-  const scorecardStrokesUsed = useMemo(() => {
-    if (!scorecardPlayer) return 0;
-    return strokesUsedForPlayedHoles(scorecardPlayer.handicap, scorecardPlayedHoles);
-  }, [scorecardPlayer, scorecardPlayedHoles]);
-
-  const scorecardNetAgg = useMemo(() => {
-    if (!scorecardPlayer) return { out: 0, in: 0, total: 0 };
-
-    const diffs = Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
-      const par = PARS[h - 1];
-      const si = STROKE_INDEX[h - 1];
-      const gross = scorecardPlayer.scoresByHole?.[h];
-      if (gross == null) return null;
-      const strokes = strokesForHole(scorecardPlayer.handicap, si);
-      const net = gross - strokes;
-      return net - par;
-    });
-
-    const out = diffs.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
-    const inn = diffs.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
-    return { out, in: inn, total: out + inn };
-  }, [scorecardPlayer]);
-
   function enterAdmin() {
     if (adminPin === "112020") {
       setAdminOn(true);
@@ -347,9 +287,153 @@ export default function App() {
     }
   }
 
-  function getExistingScore(pid, holeNum) {
-    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
-    return row ? clampInt(row.score, 0) : null;
+  async function addPlayer() {
+    if (!adminOn) return alert("Admin only.");
+    const name = newName.trim();
+    const handicap = clampInt(newHandicap, 0);
+    const charity = newCharity.trim() || null;
+    if (!name) return alert("Name required.");
+
+    const { error } = await supabase.from("players").insert({ name, handicap, charity });
+    if (error) {
+      console.error(error);
+      alert("Error adding player.");
+      return;
+    }
+    setNewName("");
+    setNewHandicap("");
+    setNewCharity("");
+    await loadPlayers();
+  }
+
+  async function deletePlayer(id) {
+    if (!adminOn) return alert("Admin only.");
+    if (!confirm("Delete this player? This will also delete their scores and foursome assignment.")) return;
+
+    await supabase.from("scores").delete().eq("player_id", id);
+    await supabase.from("foursome_players").delete().eq("player_id", id);
+
+    const { error } = await supabase.from("players").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("Error deleting player.");
+      return;
+    }
+    await loadPlayers();
+    await loadScores();
+    await loadFoursomes();
+    await loadFoursomePlayers();
+  }
+
+  function playersInFoursome(fid) {
+    const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
+    return players.filter((p) => pids.includes(p.id));
+  }
+
+  async function createManualFoursome() {
+    if (!adminOn) return alert("Admin only.");
+    const group_name = manualGroupName.trim() || "Group";
+    const code = (manualCode.trim() || makeCode()).toUpperCase();
+
+    if (code.length !== 6) return alert("Code must be exactly 6 characters.");
+
+    const { error } = await supabase.from("foursomes").insert({ group_name, code });
+    if (error) {
+      console.error(error);
+      alert("Error creating foursome (code may already exist).");
+      return;
+    }
+    setManualGroupName("");
+    setManualCode("");
+    await loadFoursomes();
+  }
+
+  async function assignPlayerToFoursome() {
+    if (!adminOn) return alert("Admin only.");
+    if (!assignFoursomeId) return alert("Pick a foursome.");
+    if (!assignPlayerId) return alert("Pick a player.");
+
+    const { error } = await supabase.from("foursome_players").insert({
+      foursome_id: assignFoursomeId,
+      player_id: assignPlayerId,
+    });
+
+    if (error) {
+      console.error(error);
+      alert("Error assigning player (maybe already assigned?).");
+      return;
+    }
+
+    setAssignPlayerId("");
+    await loadFoursomePlayers();
+  }
+
+  async function removePlayerFromFoursome(fpRowId) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("foursome_players").delete().eq("id", fpRowId);
+    if (error) {
+      console.error(error);
+      alert("Error removing player.");
+      return;
+    }
+    await loadFoursomePlayers();
+  }
+
+  async function clearFoursomes() {
+    if (!adminOn) return alert("Admin only.");
+    if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
+
+    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+
+    await loadFoursomes();
+    await loadFoursomePlayers();
+  }
+
+  async function generateRandomFoursomes() {
+    if (!adminOn) return alert("Admin only.");
+    if (players.length < 2) return alert("Need at least 2 players.");
+
+    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+
+    const shuffled = shuffle(players);
+    const groups = [];
+    for (let i = 0; i < shuffled.length; i += 4) {
+      groups.push(shuffled.slice(i, i + 4));
+    }
+
+    for (let i = 0; i < groups.length; i++) {
+      const groupPlayers = groups[i];
+      const group_name = `Group ${i + 1}`;
+      const code = makeCode();
+
+      const { data: fData, error: fErr } = await supabase
+        .from("foursomes")
+        .insert({ group_name, code })
+        .select("id")
+        .single();
+
+      if (fErr) {
+        console.error(fErr);
+        alert("Error creating foursomes (check RLS/policies).");
+        return;
+      }
+
+      const fid = fData.id;
+      const inserts = groupPlayers.map((p) => ({ foursome_id: fid, player_id: p.id }));
+      const { error: fpErr } = await supabase.from("foursome_players").insert(inserts);
+
+      if (fpErr) {
+        console.error(fpErr);
+        alert("Error assigning players (check RLS/policies).");
+        return;
+      }
+    }
+
+    await loadFoursomes();
+    await loadFoursomePlayers();
+    alert("Foursomes generated ✅");
   }
 
   async function enterWithCode() {
@@ -388,7 +472,11 @@ export default function App() {
     setTab("enter");
   }
 
-  // Prefill inputs when hole changes
+  function getExistingScore(pid, holeNum) {
+    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
+    return row ? clampInt(row.score, 0) : null;
+  }
+
   useEffect(() => {
     if (!activeFoursome) return;
     const obj = {};
@@ -427,373 +515,8 @@ export default function App() {
     setHole(nextHole);
   }
 
-  // ------------------------
-  // Admin: Excel upload preview/apply
-  // Headers expected:
-  // first_name | last_name | handicap | charity | group_name | tee_time
-  // ------------------------
-
-  function buildTournamentPreview(rows) {
-    const errors = [];
-    const warnings = [];
-    const cleaned = [];
-    const groups = new Map(); // group_name -> { tee_time_text, members: [] }
-    const nameCounts = new Map();
-
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i] || {};
-      const first = safeStr(r.first_name);
-      const last = safeStr(r.last_name);
-      const group = safeStr(r.group_name);
-      const tee = safeStr(r.tee_time);
-      const charity = safeStr(r.charity) || null;
-
-      if (!first || !last) {
-        errors.push(`Row ${i + 2}: first_name and last_name are required.`);
-        continue;
-      }
-      if (!group) {
-        errors.push(`Row ${i + 2}: group_name is required.`);
-        continue;
-      }
-
-      const fullName = `${first} ${last}`.trim();
-      const norm = normalizeName(fullName);
-
-      const hc = parseHandicap(r.handicap);
-      if (hc.invalid) errors.push(`Row ${i + 2}: handicap is not a number for "${fullName}".`);
-      if (hc.missing) warnings.push(`Row ${i + 2}: handicap missing for "${fullName}" (defaults to 0).`);
-
-      nameCounts.set(norm, (nameCounts.get(norm) || 0) + 1);
-
-      cleaned.push({
-        name: fullName,
-        name_norm: norm,
-        handicap: hc.value,
-        charity,
-        group_name: group,
-        tee_time_text: tee || null,
-      });
-
-      if (!groups.has(group)) groups.set(group, { tee_time_text: tee || null, members: [] });
-      const g = groups.get(group);
-      if (!g.tee_time_text && tee) g.tee_time_text = tee;
-      g.members.push(fullName);
-    }
-
-    for (const [norm, count] of nameCounts.entries()) {
-      if (count > 1) warnings.push(`Duplicate player in upload: "${norm}" appears ${count} times.`);
-    }
-
-    for (const [gname, g] of groups.entries()) {
-      if (g.members.length > 4) warnings.push(`Group "${gname}" has ${g.members.length} players (more than 4).`);
-      if (!g.tee_time_text) warnings.push(`Group "${gname}" missing tee_time (optional).`);
-    }
-
-    const existingPlayerMap = new Map(players.map((p) => [normalizeName(p.name), p]));
-    const newPlayers = cleaned.filter((x) => !existingPlayerMap.has(x.name_norm));
-    const existingCount = cleaned.length - newPlayers.length;
-
-    const existingGroupMap = new Map(foursomes.map((f) => [safeStr(f.group_name), f]));
-    const newGroups = Array.from(groups.keys()).filter((g) => !existingGroupMap.has(g));
-
-    return {
-      ok: errors.length === 0,
-      counts: {
-        rows: rows.length,
-        validRows: cleaned.length,
-        players: cleaned.length,
-        existingPlayers: existingCount,
-        newPlayers: newPlayers.length,
-        groups: groups.size,
-        newGroups: newGroups.length,
-      },
-      groups: Array.from(groups.entries()).map(([group_name, v]) => ({
-        group_name,
-        tee_time_text: v.tee_time_text,
-        members: v.members,
-      })),
-      cleaned,
-      errors,
-      warnings,
-    };
-  }
-
-  async function applyTournamentSetup(preview) {
-    if (!adminOn) return alert("Admin only.");
-    if (!preview?.ok) return alert("Fix upload errors before applying.");
-
-    setUploadBusy(true);
-    setUploadMsg("Applying tournament setup…");
-
-    try {
-      // Pull current players
-      const { data: pData, error: pErr } = await supabase
-        .from("players")
-        .select("id,name,handicap,charity,created_at");
-      if (pErr) throw pErr;
-
-      const playerByNorm = new Map((pData || []).map((p) => [normalizeName(p.name), p]));
-
-      // Upsert players by name
-      for (const row of preview.cleaned) {
-        const existing = playerByNorm.get(row.name_norm);
-        if (existing) {
-          const { error } = await supabase
-            .from("players")
-            .update({ handicap: row.handicap, charity: row.charity })
-            .eq("id", existing.id);
-          if (error) throw error;
-        } else {
-          const { data: ins, error } = await supabase
-            .from("players")
-            .insert({ name: row.name, handicap: row.handicap, charity: row.charity })
-            .select("id,name,handicap,charity")
-            .single();
-          if (error) throw error;
-          playerByNorm.set(row.name_norm, ins);
-        }
-      }
-
-      // Pull current foursomes (tee_time_text optional)
-      let foursomesNow = [];
-      let hasTeeTime = false;
-
-      try {
-        const { data, error } = await supabase
-          .from("foursomes")
-          .select("id,group_name,code,tee_time_text,created_at");
-        if (error) throw error;
-        foursomesNow = data || [];
-        hasTeeTime = true;
-      } catch {
-        const { data, error } = await supabase
-          .from("foursomes")
-          .select("id,group_name,code,created_at");
-        if (error) throw error;
-        foursomesNow = data || [];
-        hasTeeTime = false;
-      }
-
-      const foursomeByName = new Map(foursomesNow.map((f) => [safeStr(f.group_name), f]));
-
-      // Upsert groups
-      for (const g of preview.groups) {
-        const existing = foursomeByName.get(g.group_name);
-
-        if (existing) {
-          const patch = {
-            ...(regenCodes ? { code: makeCode(6) } : {}),
-            ...(hasTeeTime ? { tee_time_text: g.tee_time_text || null } : {}),
-          };
-          const { error } = await supabase.from("foursomes").update(patch).eq("id", existing.id);
-          if (error) throw error;
-        } else {
-          const base = { group_name: g.group_name, code: makeCode(6) };
-
-          if (hasTeeTime) {
-            const { data: ins, error } = await supabase
-              .from("foursomes")
-              .insert({ ...base, tee_time_text: g.tee_time_text || null })
-              .select("id,group_name,code,tee_time_text")
-              .single();
-            if (error) throw error;
-            foursomeByName.set(g.group_name, ins);
-          } else {
-            const { data: ins, error } = await supabase
-              .from("foursomes")
-              .insert(base)
-              .select("id,group_name,code")
-              .single();
-            if (error) throw error;
-            foursomeByName.set(g.group_name, ins);
-          }
-        }
-      }
-
-      // Replace assignments if requested
-      if (replaceAssignments) {
-        const { error } = await supabase
-          .from("foursome_players")
-          .delete()
-          .neq("id", "00000000-0000-0000-0000-000000000000");
-        if (error) throw error;
-      }
-
-      // Assign players to groups, seat based on file order within group
-      const groupSeat = new Map();
-      const inserts = [];
-
-      for (const row of preview.cleaned) {
-        const f = foursomeByName.get(row.group_name);
-        const p = playerByNorm.get(row.name_norm);
-        if (!f || !p) continue;
-
-        const nextSeat = (groupSeat.get(row.group_name) || 0) + 1;
-        groupSeat.set(row.group_name, nextSeat);
-
-        inserts.push({
-          foursome_id: f.id,
-          player_id: p.id,
-          seat: nextSeat,
-        });
-      }
-
-      if (inserts.length) {
-        const { error } = await supabase.from("foursome_players").insert(inserts);
-        if (error) throw error;
-      }
-
-      await initialLoad();
-      setUploadMsg("Applied ✅");
-      alert("Tournament setup applied ✅");
-      setUploadPreview(null);
-    } catch (err) {
-      console.error(err);
-      setUploadMsg("Apply failed ❌");
-      alert("Apply failed. Open DevTools Console for the exact error.");
-    } finally {
-      setUploadBusy(false);
-    }
-  }
-
-  function openPrintForAllFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (!foursomes.length) return alert("No foursomes to print.");
-    setPrintFoursomeIds(foursomes.map((f) => f.id));
-    setPrintOpen(true);
-    setTimeout(() => window.print(), 80);
-  }
-
   return (
     <div style={styles.page}>
-      {/* PRINT CSS */}
-      <style>{`
-        @media print {
-          body { background: white !important; }
-          #app-shell { display: none !important; }
-          #print-root { display: block !important; }
-          #print-root { color: #000 !important; }
-          .print-page { page-break-after: always; }
-          .print-page:last-child { page-break-after: auto; }
-        }
-      `}</style>
-
-      {/* PRINT ROOT (only visible during print) */}
-      {printOpen && (
-        <div
-          id="print-root"
-          style={{
-            display: "none",
-            padding: 24,
-            background: "#fff",
-            color: "#000",
-            fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-          }}
-        >
-          {printFoursomeIds.map((fid) => {
-            const f = foursomes.find((x) => x.id === fid);
-            if (!f) return null;
-
-            const memberRows = foursomePlayers
-              .filter((fp) => fp.foursome_id === fid)
-              .slice()
-              .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
-
-            const members = memberRows
-              .map((fp) => players.find((p) => p.id === fp.player_id))
-              .filter(Boolean);
-
-            return (
-              <div key={fid} className="print-page" style={{ marginBottom: 24 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
-                  <div>
-                    <div style={{ fontSize: 22, fontWeight: 900 }}>
-                      {f.group_name || "Foursome"} — Code: {f.code}
-                    </div>
-
-                    {"tee_time_text" in f && f.tee_time_text ? (
-                      <div style={{ marginTop: 6, fontSize: 14 }}>Tee time: {f.tee_time_text}</div>
-                    ) : null}
-
-                    <div style={{ marginTop: 10, fontSize: 14 }}>
-                      {members.length ? (
-                        members.map((p) => (
-                          <div key={p.id}>
-                            <b>{p.name}</b> (HCP {clampInt(p.handicap, 0)})
-                            {p.charity ? ` — ${p.charity}` : ""}
-                          </div>
-                        ))
-                      ) : (
-                        <div style={{ color: "#b00" }}>No players assigned</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={{ fontSize: 12, textAlign: "right" }}>
-                    <div><b>● = handicap stroke</b></div>
-                    <div>Write gross scores in blanks</div>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 14, border: "1px solid #111", borderRadius: 10, overflow: "hidden" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ background: "#f2f2f2" }}>
-                        <th style={{ padding: 8, textAlign: "left", borderBottom: "1px solid #111" }}>Hole</th>
-                        <th style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #111" }}>Yards</th>
-                        <th style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #111" }}>Par</th>
-
-                        {members.map((p) => (
-                          <th key={p.id} style={{ padding: 8, textAlign: "left", borderBottom: "1px solid #111" }}>
-                            {p.name}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
-                        const par = PARS[h - 1];
-                        const yards = BLUE_YARDS[h - 1];
-                        const si = STROKE_INDEX[h - 1];
-
-                        return (
-                          <tr key={h}>
-                            <td style={{ padding: 8, borderBottom: "1px solid #ddd" }}>{h}</td>
-                            <td style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #ddd" }}>{yards}</td>
-                            <td style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #ddd" }}>{par}</td>
-
-                            {members.map((p) => {
-                              const hcp = clampInt(p.handicap, 0);
-                              const strokes = strokesForHole(hcp, si);
-                              const getsStroke = strokes > 0;
-
-                              return (
-                                <td key={p.id} style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
-                                  <span style={{ display: "inline-block", width: 18 }}>
-                                    {getsStroke ? "●" : ""}
-                                  </span>
-                                  <span style={{ opacity: 0.5 }}>_____</span>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div style={{ marginTop: 10, fontSize: 12 }}>
-                  Dots use Stroke Index allocation (true handicap distribution).
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Scorecard modal (leaderboard) */}
       {scorecardPlayer && (
         <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
@@ -801,14 +524,17 @@ export default function App() {
             <div style={styles.modalHeader}>
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
-                  {scorecardPlayer.name} <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
+                  {scorecardPlayer.name}{" "}
+                  <span style={{ opacity: 0.75, fontWeight: 700 }}>
+                    (HCP {scorecardPlayer.handicap})
+                  </span>
                 </div>
                 <div style={styles.modalSub}>
-                  Holes: {scorecardPlayer.holesPlayed} • HCP strokes used: <b>{scorecardStrokesUsed}</b> • Net vs Par:{" "}
+                  Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
                   {scorecardPlayer.holesPlayed === 0 ? (
-                    <span style={{ opacity: 0.7 }}>—</span>
+                    <span style={{ opacity: 0.75 }}>—</span>
                   ) : (
-                    <span style={{ fontWeight: 900, ...netColorStyle(scorecardPlayer.netToPar) }}>
+                    <span style={{ fontWeight: 950, ...netColorStyle(scorecardPlayer.netToPar) }}>
                       {formatToPar(scorecardPlayer.netToPar)}
                     </span>
                   )}
@@ -825,78 +551,47 @@ export default function App() {
                   <tr>
                     <th style={styles.th}>Hole</th>
                     <th style={styles.th}>Par</th>
-                    <th style={styles.th}>Gross</th>
-                    <th style={styles.th}>Net</th>
-                    <th style={styles.th}>Net +/-</th>
+                    <th style={styles.th}>Score</th>
+                    <th style={styles.th}>+/-</th>
                   </tr>
                 </thead>
                 <tbody>
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
-                    const si = STROKE_INDEX[h - 1];
-                    const gross = scorecardPlayer.scoresByHole[h];
-
-                    const strokes = strokesForHole(scorecardPlayer.handicap, si);
-                    const getsStrokes = strokes > 0;
-
-                    const net = gross != null ? gross - strokes : null;
-                    const netDiff = net != null ? net - par : null;
-
-                    const netDiffStyle =
-                      netDiff == null
+                    const sc = scorecardPlayer.scoresByHole[h];
+                    const diff = sc != null ? sc - par : null;
+                    const diffStyle =
+                      diff == null
                         ? {}
-                        : netDiff < 0
-                        ? { color: "#16a34a", fontWeight: 800 }
-                        : netDiff > 0
-                        ? { color: "#dc2626", fontWeight: 800 }
-                        : { opacity: 0.9, fontWeight: 800 };
-
-                    const rowStyle = getsStrokes
-                      ? {
-                          background: "rgba(245, 230, 200, 0.08)",
-                          boxShadow: "inset 3px 0 0 rgba(245, 230, 200, 0.55)",
-                        }
-                      : {};
+                        : diff < 0
+                        ? { color: THEME.good, fontWeight: 900 }
+                        : diff > 0
+                        ? { color: THEME.bad, fontWeight: 900 }
+                        : { opacity: 0.9, fontWeight: 900 };
 
                     return (
-                      <tr key={h} style={rowStyle}>
-                        <td style={styles.td}>
-                          {h} {getsStrokes ? <span style={{ opacity: 0.9 }}>★</span> : null}
-                        </td>
+                      <tr key={h}>
+                        <td style={styles.td}>{h}</td>
                         <td style={styles.td}>{par}</td>
-                        <td style={styles.td}>{gross != null ? gross : "—"}</td>
-                        <td style={styles.td}>{net != null ? net : "—"}</td>
-                        <td style={{ ...styles.td, ...netDiffStyle }}>
-                          {netDiff == null ? "—" : formatToPar(netDiff)}
+                        <td style={styles.td}>{sc != null ? sc : "—"}</td>
+                        <td style={{ ...styles.td, ...diffStyle }}>
+                          {diff == null ? "—" : formatToPar(diff)}
                         </td>
                       </tr>
                     );
                   })}
-
-                  {/* Totals row */}
-                  <tr>
-                    <td style={{ ...styles.td, fontWeight: 950 }} colSpan={4}>
-                      Totals{" "}
-                      <span style={{ opacity: 0.7, fontWeight: 800 }}>
-                        (Out {formatToPar(scorecardNetAgg.out)} • In {formatToPar(scorecardNetAgg.in)})
-                      </span>
-                    </td>
-                    <td style={{ ...styles.td, fontWeight: 950 }}>
-                      <span style={netColorStyle(scorecardNetAgg.total)}>{formatToPar(scorecardNetAgg.total)}</span>
-                    </td>
-                  </tr>
                 </tbody>
               </table>
             </div>
 
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-              ★ indicates holes where handicap strokes apply (Stroke Index allocation).
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
+              Net is computed as gross minus <b>pro-rated handicap</b> for holes played.
             </div>
           </div>
         </div>
       )}
 
-      <div id="app-shell" style={styles.shell}>
+      <div style={styles.shell}>
         {/* HOME (no top nav) */}
         {tab === "home" && (
           <div style={styles.homeCard}>
@@ -904,28 +599,34 @@ export default function App() {
               <img
                 src="/logo.png"
                 alt="Ginvitational logo"
-                style={{ width: 220, height: 220, objectFit: "contain" }}
+                style={{ width: 210, height: 210, objectFit: "contain" }}
               />
-              <div style={{ marginTop: 12, fontSize: 34, fontWeight: 950, letterSpacing: -0.5 }}>
-                The Ginvitational
+
+              <div style={styles.homeTitle}>The Ginvitational</div>
+
+              <div style={styles.homeSub}>
+                Manufacturers Golf &amp; CC • May 2026
               </div>
-              <div style={{ marginTop: 8, opacity: 0.82, fontSize: 14 }}>
-                Manufacturers Golf & CC • May 2026
-              </div>
+
+              <div style={styles.homeRule} />
             </div>
 
             <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
               <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
-                📊 Leaderboard
+                Leaderboard
               </button>
 
               <button style={styles.bigBtn} onClick={() => setTab("code")}>
-                📝 Enter Scores
+                Enter Scores
               </button>
 
               <button style={styles.bigBtn} onClick={() => setTab("admin")}>
-                ⚙️ Admin
+                Admin
               </button>
+            </div>
+
+            <div style={{ marginTop: 14, textAlign: "center", fontSize: 12, color: THEME.textMuted }}>
+              Classic format. Mobile-first. Fast scoring.
             </div>
           </div>
         )}
@@ -935,12 +636,14 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.headerRow}>
               <button style={styles.smallBtn} onClick={() => setTab("home")}>
-                ← Home
+                Home
               </button>
-              <div style={{ fontSize: 12, opacity: 0.85 }}>{status}</div>
+              <div style={{ fontSize: 12, color: THEME.textMuted }}>{status}</div>
             </div>
 
-            <div style={{ marginTop: 12, fontSize: 22, fontWeight: 950 }}>Enter Scores</div>
+            <div style={{ marginTop: 12, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
+              Enter Scores
+            </div>
             <div style={styles.helpText}>
               Enter your <b>6-character foursome code</b> to score your group.
             </div>
@@ -950,15 +653,15 @@ export default function App() {
                 style={styles.input}
                 value={entryCode}
                 onChange={(e) => setEntryCode(e.target.value.toUpperCase())}
-                placeholder="Enter 6-letter code (ex: A1B2C3)"
+                placeholder="Enter 6-character code"
                 maxLength={6}
                 autoCapitalize="characters"
               />
               <button style={styles.bigBtn} onClick={enterWithCode}>
-                ✅ Continue
+                Continue
               </button>
 
-              <div style={{ fontSize: 12, opacity: 0.8 }}>
+              <div style={{ fontSize: 12, color: THEME.textMuted }}>
                 You can only enter scores for your foursome code.
               </div>
             </div>
@@ -1015,7 +718,7 @@ export default function App() {
             </div>
 
             <div style={styles.helpText}>
-              Tap a player name to view their scorecard. Handicap uses Stroke Index allocation.
+              Tap a player name to view their scorecard. Auto-refreshes every minute.
             </div>
 
             <div style={styles.tableWrap}>
@@ -1034,7 +737,7 @@ export default function App() {
                     const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
                     const netStyle =
                       r.holesPlayed === 0
-                        ? { opacity: 0.6 }
+                        ? { opacity: 0.6, color: THEME.textMuted }
                         : { fontWeight: 950, ...netColorStyle(r.netToPar) };
 
                     return (
@@ -1048,7 +751,6 @@ export default function App() {
                           <div style={styles.playerMeta}>
                             HCP {r.handicap}
                             {r.charity ? ` • ${r.charity}` : ""}
-                            {r.holesPlayed > 0 ? ` • Strokes used: ${r.strokesUsed}` : ""}
                           </div>
                         </td>
 
@@ -1082,7 +784,7 @@ export default function App() {
             <div style={styles.cardHeaderRow}>
               <div>
                 <div style={styles.cardTitle}>Enter Scores</div>
-                <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+                <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                   Foursome: <b>{activeFoursome?.group_name}</b> • Code: <b>{activeFoursome?.code}</b>
                 </div>
               </div>
@@ -1101,7 +803,7 @@ export default function App() {
 
             <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
               <div style={{ fontSize: 18, fontWeight: 950 }}>
-                Hole {hole} <span style={{ opacity: 0.7 }}>(Par {PARS[hole - 1]})</span>
+                Hole {hole} <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
               </div>
 
               <div style={{ display: "grid", gap: 10 }}>
@@ -1111,7 +813,9 @@ export default function App() {
                       <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
                         {p.name}
                       </div>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>HCP {clampInt(p.handicap, 0)}</div>
+                      <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                        HCP {clampInt(p.handicap, 0)}
+                      </div>
                     </div>
 
                     <input
@@ -1126,17 +830,25 @@ export default function App() {
               </div>
 
               <div style={styles.navRow}>
-                <button style={styles.smallBtn} disabled={hole === 1} onClick={() => saveHoleThenNavigate(hole - 1)}>
-                  ← Last Hole
+                <button
+                  style={styles.smallBtn}
+                  disabled={hole === 1}
+                  onClick={() => saveHoleThenNavigate(hole - 1)}
+                >
+                  Last Hole
                 </button>
 
-                <button style={styles.bigBtn} onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}>
-                  Save & Next →
+                <button
+                  style={styles.bigBtn}
+                  onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}
+                >
+                  Save & Next
                 </button>
               </div>
 
               <div style={styles.helpText}>
-                Type scores for your foursome, then hit <b>Save & Next</b>. Leaving a box blank means “no score yet.”
+                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with{" "}
+                <b>Last Hole</b>. Leaving a box blank means “no score yet”.
               </div>
             </div>
           </div>
@@ -1166,7 +878,7 @@ export default function App() {
                 </button>
 
                 <div style={styles.helpText}>
-                  Upload an Excel file to set up players + groups + tee times. Then print scorecards.
+                  Simple front-end PIN gate. (We can harden security later.)
                 </div>
               </div>
             ) : (
@@ -1186,188 +898,192 @@ export default function App() {
                     Reload Data
                   </button>
 
-                  <button style={styles.smallBtn} onClick={openPrintForAllFoursomes}>
-                    🖨️ Print Scorecards
+                  <button style={styles.dangerBtn} onClick={clearFoursomes}>
+                    Clear Foursomes
                   </button>
                 </div>
 
                 <div style={styles.adminGrid}>
-                  {/* Upload */}
+                  {/* Foursomes */}
                   <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Tournament Setup Upload</div>
-                    <div style={styles.helpText}>
-                      Required headers: <b>first_name</b>, <b>last_name</b>, <b>handicap</b>, <b>charity</b>,{" "}
-                      <b>group_name</b>, <b>tee_time</b>.
-                    </div>
+                    <div style={styles.subTitle}>Foursomes</div>
 
-                    <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                      <input
-                        type="file"
-                        accept=".xlsx,.xls"
-                        disabled={uploadBusy}
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <button style={styles.bigBtn} onClick={generateRandomFoursomes}>
+                        Generate Foursomes (Random)
+                      </button>
 
-                          setUploadMsg("");
-                          setUploadPreview(null);
+                      <div style={styles.hr} />
 
-                          try {
-                            const rows = await readExcelFile(file);
-                            const prev = buildTournamentPreview(rows);
-                            setUploadPreview(prev);
-                          } catch (err) {
-                            console.error(err);
-                            alert("Could not read Excel file.");
-                          }
-                        }}
-                      />
-
-                      <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={styles.sectionLabel}>Manual create</div>
                         <input
-                          type="checkbox"
-                          checked={replaceAssignments}
-                          onChange={(e) => setReplaceAssignments(e.target.checked)}
-                          disabled={uploadBusy}
+                          style={styles.input}
+                          placeholder='Group name (ex: "Group A")'
+                          value={manualGroupName}
+                          onChange={(e) => setManualGroupName(e.target.value)}
                         />
-                        <div style={{ fontSize: 13, opacity: 0.9 }}>
-                          Replace all foursome assignments from this file (recommended)
-                        </div>
-                      </label>
-
-                      <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                         <input
-                          type="checkbox"
-                          checked={regenCodes}
-                          onChange={(e) => setRegenCodes(e.target.checked)}
-                          disabled={uploadBusy}
+                          style={styles.input}
+                          placeholder="Code (6 chars) — leave blank to auto-generate"
+                          value={manualCode}
+                          onChange={(e) => setManualCode(e.target.value.toUpperCase())}
+                          maxLength={6}
                         />
-                        <div style={{ fontSize: 13, opacity: 0.9 }}>
-                          Regenerate all foursome codes (OFF by default)
-                        </div>
-                      </label>
+                        <button style={styles.smallBtn} onClick={createManualFoursome}>
+                          Create Foursome
+                        </button>
+                      </div>
 
-                      {uploadPreview ? (
-                        <div style={{ marginTop: 6, display: "grid", gap: 10 }}>
-                          <div style={{ fontWeight: 950 }}>Preview</div>
+                      <div style={styles.hr} />
 
-                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13, opacity: 0.9 }}>
-                            <span style={styles.pill}>Rows: {uploadPreview.counts.rows}</span>
-                            <span style={styles.pill}>Players: {uploadPreview.counts.players}</span>
-                            <span style={styles.pill}>Groups: {uploadPreview.counts.groups}</span>
-                            <span style={styles.pill}>New Players: {uploadPreview.counts.newPlayers}</span>
-                            <span style={styles.pill}>New Groups: {uploadPreview.counts.newGroups}</span>
-                          </div>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={styles.sectionLabel}>Assign player to foursome</div>
 
-                          {uploadPreview.errors.length > 0 && (
-                            <div
-                              style={{
-                                padding: 10,
-                                borderRadius: 12,
-                                border: "1px solid rgba(220,38,38,0.35)",
-                                background: "rgba(220,38,38,0.10)",
-                              }}
-                            >
-                              <div style={{ fontWeight: 950, marginBottom: 6 }}>Errors (fix before applying)</div>
-                              <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.95 }}>
-                                {uploadPreview.errors.slice(0, 15).map((x, i) => (
-                                  <div key={i}>• {x}</div>
-                                ))}
-                                {uploadPreview.errors.length > 15 && <div>…and more</div>}
-                              </div>
-                            </div>
-                          )}
+                        <select
+                          style={styles.input}
+                          value={assignFoursomeId}
+                          onChange={(e) => setAssignFoursomeId(e.target.value)}
+                        >
+                          <option value="">Select foursome…</option>
+                          {foursomes.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.group_name} — {f.code}
+                            </option>
+                          ))}
+                        </select>
 
-                          {uploadPreview.warnings.length > 0 && (
-                            <div
-                              style={{
-                                padding: 10,
-                                borderRadius: 12,
-                                border: "1px solid rgba(255,255,255,0.18)",
-                                background: "rgba(255,255,255,0.06)",
-                              }}
-                            >
-                              <div style={{ fontWeight: 950, marginBottom: 6 }}>Warnings</div>
-                              <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.9 }}>
-                                {uploadPreview.warnings.slice(0, 15).map((x, i) => (
-                                  <div key={i}>• {x}</div>
-                                ))}
-                                {uploadPreview.warnings.length > 15 && <div>…and more</div>}
-                              </div>
-                            </div>
-                          )}
+                        <select
+                          style={styles.input}
+                          value={assignPlayerId}
+                          onChange={(e) => setAssignPlayerId(e.target.value)}
+                        >
+                          <option value="">Select player…</option>
+                          {players.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} (HCP {clampInt(p.handicap, 0)})
+                            </option>
+                          ))}
+                        </select>
 
-                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                            <button
-                              style={styles.bigBtn}
-                              disabled={uploadBusy || !uploadPreview.ok}
-                              onClick={() => applyTournamentSetup(uploadPreview)}
-                            >
-                              {uploadBusy ? "Applying…" : "✅ Apply Tournament Setup"}
-                            </button>
+                        <button style={styles.smallBtn} onClick={assignPlayerToFoursome}>
+                          Add Player to Foursome
+                        </button>
+                      </div>
 
-                            <button
-                              style={styles.smallBtn}
-                              disabled={uploadBusy}
-                              onClick={() => {
-                                setUploadPreview(null);
-                                setUploadMsg("");
-                              }}
-                            >
-                              Clear Upload
-                            </button>
-                          </div>
+                      <div style={styles.hr} />
 
-                          {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>}
-
-                          <div style={{ marginTop: 6 }}>
-                            <div style={{ fontWeight: 900, opacity: 0.9, marginBottom: 6 }}>Groups (from upload)</div>
-                            <div style={{ display: "grid", gap: 8 }}>
-                              {uploadPreview.groups.slice(0, 12).map((g) => (
-                                <div key={g.group_name} style={styles.foursomeCard}>
+                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>View codes + members</div>
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {foursomes.map((f) => {
+                          const members = playersInFoursome(f.id);
+                          const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
+                          return (
+                            <div key={f.id} style={styles.foursomeCard}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 950 }}>
-                                    {g.group_name}
-                                    {g.tee_time_text ? <span style={{ opacity: 0.75 }}> • {g.tee_time_text}</span> : null}
+                                    {f.group_name}{" "}
+                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>
+                                      (Code: {f.code})
+                                    </span>
                                   </div>
-                                  <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-                                    {g.members.join(", ")}
+                                  <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                                    Members: {members.length}
                                   </div>
                                 </div>
-                              ))}
-                              {uploadPreview.groups.length > 12 && (
-                                <div style={styles.helpText}>…and {uploadPreview.groups.length - 12} more groups</div>
-                              )}
+                              </div>
+
+                              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                                {memberRows.map((fp) => {
+                                  const p = players.find((x) => x.id === fp.player_id);
+                                  return (
+                                    <div key={fp.id} style={styles.playerRow}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontWeight: 950 }}>
+                                          {p ? p.name : fp.player_id}
+                                        </div>
+                                        {p && (
+                                          <div style={styles.playerMeta}>
+                                            HCP {clampInt(p.handicap, 0)}
+                                            {p.charity ? ` • ${p.charity}` : ""}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <button
+                                        style={styles.dangerBtn}
+                                        onClick={() => removePlayerFromFoursome(fp.id)}
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                                {memberRows.length === 0 && (
+                                  <div style={styles.helpText}>No players assigned.</div>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={styles.helpText}>
-                          Upload a file to see a preview. Nothing writes until you click <b>Apply</b>.
-                        </div>
-                      )}
+                          );
+                        })}
+
+                        {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                      </div>
                     </div>
                   </div>
 
-                  {/* Current codes */}
+                  {/* Players */}
                   <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Current Foursome Codes</div>
-                    <div style={styles.helpText}>Players enter scores using their group’s 6-character code.</div>
+                    <div style={styles.subTitle}>Players</div>
 
-                    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                      {foursomes.map((f) => (
-                        <div key={f.id} style={styles.foursomeCard}>
-                          <div style={{ fontWeight: 950 }}>
-                            {f.group_name || "Foursome"}{" "}
-                            <span style={{ opacity: 0.75, fontWeight: 800 }}>(Code: {f.code})</span>
-                          </div>
-                          {"tee_time_text" in f && f.tee_time_text ? (
-                            <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-                              Tee time: {f.tee_time_text}
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
+                      <input
+                        style={styles.input}
+                        placeholder="Name"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                      />
+                      <input
+                        style={styles.input}
+                        placeholder="Handicap"
+                        value={newHandicap}
+                        onChange={(e) => setNewHandicap(e.target.value)}
+                        inputMode="numeric"
+                      />
+                      <input
+                        style={styles.input}
+                        placeholder="Charity (optional)"
+                        value={newCharity}
+                        onChange={(e) => setNewCharity(e.target.value)}
+                      />
+                      <button style={styles.bigBtn} onClick={addPlayer}>
+                        Add Player
+                      </button>
+                    </div>
+
+                    <div style={styles.hr} />
+
+                    <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Player List</div>
+                    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                      {players.map((p) => (
+                        <div key={p.id} style={styles.playerRow}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {p.name}
                             </div>
-                          ) : null}
+                            <div style={styles.playerMeta}>
+                              HCP {clampInt(p.handicap, 0)}
+                              {p.charity ? ` • ${p.charity}` : ""}
+                            </div>
+                          </div>
+
+                          <button style={styles.dangerBtn} onClick={() => deletePlayer(p.id)}>
+                            Delete
+                          </button>
                         </div>
                       ))}
-                      {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                      {players.length === 0 && <div style={styles.helpText}>No players.</div>}
                     </div>
                   </div>
                 </div>
@@ -1376,7 +1092,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Router guard */}
+        {/* Router fallback */}
         {tab === "enter" && !activeFoursome && (
           <div style={styles.card}>
             <div style={styles.cardTitle}>Enter Scores</div>
@@ -1391,13 +1107,13 @@ export default function App() {
   );
 }
 
-/** Styles: phone-first */
+/** Styles: phone-first, classy palette */
 const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background: "radial-gradient(circle at 30% 20%, #f5e6c8 0%, #2c2c2c 55%, #111 100%)",
-    color: "#fff",
+    background: `radial-gradient(circle at 20% 10%, ${PALETTE.teeSand} 0%, ${PALETTE.sandstone} 34%, ${PALETTE.fairwayGreen} 140%)`,
+    color: THEME.text,
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   },
   shell: {
@@ -1422,50 +1138,77 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
+
   brand: { minWidth: 240 },
   brandTitle: {
     fontSize: 34,
     fontWeight: 950,
     letterSpacing: -0.6,
     lineHeight: 1.05,
+    color: THEME.text,
   },
-  brandSub: { marginTop: 6, opacity: 0.85, fontSize: 13 },
+  brandSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
+
   nav: { display: "flex", gap: 10, flexWrap: "wrap" },
   navBtn: {
     padding: "10px 12px",
     borderRadius: 12,
-    background: "rgba(255,255,255,0.08)",
-    border: "1px solid rgba(255,255,255,0.18)",
-    color: "#fff",
+    background: "rgba(7,31,19,0.40)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
     cursor: "pointer",
-    fontWeight: 800,
+    fontWeight: 850,
+    backdropFilter: "blur(8px)",
   },
   navBtnActive: {
     padding: "10px 12px",
     borderRadius: 12,
-    background: "rgba(255,255,255,0.18)",
-    border: "1px solid rgba(255,255,255,0.30)",
-    color: "#fff",
+    background: THEME.btnStrong,
+    border: `1px solid ${THEME.borderStrong}`,
+    color: THEME.text,
     cursor: "pointer",
     fontWeight: 950,
+    backdropFilter: "blur(8px)",
   },
 
   homeCard: {
-    background: "rgba(0,0,0,0.28)",
-    border: "1px solid rgba(255,255,255,0.14)",
-    borderRadius: 20,
+    background: THEME.surfaceSoft,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 22,
     padding: 18,
-    backdropFilter: "blur(12px)",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+    backdropFilter: "blur(14px)",
+    boxShadow: "0 18px 55px rgba(7,31,19,0.35)",
+  },
+  homeTitle: {
+    marginTop: 10,
+    fontSize: 38,
+    fontWeight: 950,
+    letterSpacing: -0.6,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  homeSub: {
+    marginTop: 10,
+    fontSize: 13,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: THEME.textMuted,
+  },
+  homeRule: {
+    margin: "16px auto 0",
+    width: "72%",
+    height: 1,
+    background: "rgba(242,235,221,0.32)",
   },
 
   card: {
-    background: "rgba(0,0,0,0.35)",
-    border: "1px solid rgba(255,255,255,0.14)",
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
     borderRadius: 18,
     padding: 16,
-    backdropFilter: "blur(10px)",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 16px 48px rgba(7,31,19,0.35)",
   },
   cardHeaderRow: {
     display: "flex",
@@ -1474,34 +1217,54 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  cardTitle: { fontSize: 22, fontWeight: 950, letterSpacing: -0.2 },
-  helpText: { marginTop: 10, fontSize: 12, opacity: 0.8, lineHeight: 1.35 },
+  cardTitle: {
+    fontSize: 22,
+    fontWeight: 950,
+    letterSpacing: -0.2,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  helpText: { marginTop: 10, fontSize: 12, lineHeight: 1.35, color: THEME.textMuted },
 
   bigBtn: {
     padding: "14px 14px",
     borderRadius: 16,
-    background: "rgba(255,255,255,0.12)",
-    border: "1px solid rgba(255,255,255,0.22)",
-    color: "#fff",
+    background: THEME.btn,
+    border: `1px solid ${THEME.btnBorder}`,
+    color: THEME.text,
     cursor: "pointer",
     fontWeight: 950,
     fontSize: 16,
+    letterSpacing: 0.2,
   },
   smallBtn: {
     padding: "10px 12px",
     borderRadius: 12,
-    background: "rgba(255,255,255,0.10)",
-    border: "1px solid rgba(255,255,255,0.18)",
-    color: "#fff",
+    background: "rgba(242,235,221,0.08)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
     cursor: "pointer",
     fontWeight: 900,
+    letterSpacing: 0.2,
+  },
+  dangerBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(153,75,62,0.16)",
+    border: "1px solid rgba(153,75,62,0.40)",
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 950,
+    letterSpacing: 0.2,
   },
 
-  label: { display: "grid", gap: 6, fontSize: 12, opacity: 0.9 },
+  label: { display: "grid", gap: 6, fontSize: 12, color: THEME.textMuted },
+
   input: {
-    background: "rgba(0,0,0,0.35)",
-    border: "1px solid rgba(255,255,255,0.18)",
-    color: "#fff",
+    background: "rgba(7,31,19,0.34)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
     padding: "12px 12px",
     borderRadius: 12,
     outline: "none",
@@ -1512,7 +1275,8 @@ const styles = {
     marginTop: 12,
     overflowX: "auto",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.12)",
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.20)",
   },
   table: {
     width: "100%",
@@ -1524,39 +1288,47 @@ const styles = {
     textAlign: "left",
     padding: "10px 10px",
     fontSize: 12,
-    opacity: 0.9,
-    background: "rgba(255,255,255,0.07)",
-    borderBottom: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(203,189,151,0.10)",
+    borderBottom: `1px solid ${THEME.border}`,
     whiteSpace: "nowrap",
+    color: THEME.text,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
   td: {
     padding: "10px 10px",
-    borderBottom: "1px solid rgba(255,255,255,0.08)",
+    borderBottom: `1px solid ${THEME.border}`,
     fontSize: 14,
     verticalAlign: "top",
     whiteSpace: "nowrap",
+    color: THEME.text,
   },
+
   playerLink: {
     background: "transparent",
     border: "none",
-    color: "#fff",
+    color: THEME.text,
     cursor: "pointer",
     textDecoration: "underline",
     fontWeight: 950,
     padding: 0,
     fontSize: 15,
     textAlign: "left",
+    textUnderlineOffset: 3,
+    textDecorationColor: "rgba(242,235,221,0.45)",
   },
-  playerMeta: { marginTop: 4, fontSize: 12, opacity: 0.75, whiteSpace: "normal" },
+  playerMeta: { marginTop: 4, fontSize: 12, color: THEME.textMuted, whiteSpace: "normal" },
+
   pill: {
     display: "inline-block",
     minWidth: 28,
     padding: "4px 10px",
     borderRadius: 999,
-    background: "rgba(255,255,255,0.10)",
-    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(203,189,151,0.14)",
+    border: `1px solid ${THEME.border}`,
     fontWeight: 950,
     fontSize: 12,
+    color: THEME.text,
   },
 
   adminGrid: {
@@ -1566,18 +1338,43 @@ const styles = {
     gridTemplateColumns: "1fr",
   },
   subCard: {
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: THEME.surfaceUltraSoft,
+    border: `1px solid ${THEME.border}`,
     borderRadius: 14,
     padding: 14,
   },
-  subTitle: { fontWeight: 950, marginBottom: 10, fontSize: 16 },
+  subTitle: {
+    fontWeight: 950,
+    marginBottom: 10,
+    fontSize: 16,
+    color: THEME.text,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  sectionLabel: {
+    fontWeight: 950,
+    opacity: 0.9,
+    color: THEME.text,
+    letterSpacing: 0.2,
+  },
+  hr: { height: 1, background: "rgba(242,235,221,0.16)", margin: "8px 0" },
+
+  playerRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 10px",
+    borderRadius: 12,
+    background: "rgba(7,31,19,0.18)",
+    border: `1px solid ${THEME.border}`,
+  },
 
   foursomeCard: {
     padding: 12,
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.18)",
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.16)",
   },
 
   scoreRow: {
@@ -1587,8 +1384,8 @@ const styles = {
     gap: 12,
     padding: "10px 10px",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(0,0,0,0.18)",
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.16)",
   },
   navRow: {
     marginTop: 10,
@@ -1597,25 +1394,24 @@ const styles = {
     gridTemplateColumns: "1fr 1fr",
   },
 
-  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.58)",
+    background: "rgba(7,31,19,0.72)",
     display: "grid",
     placeItems: "center",
     padding: 14,
     zIndex: 50,
   },
   modalCard: {
-    width: "min(860px, 96vw)",
+    width: "min(920px, 96vw)",
     maxHeight: "86vh",
     overflow: "auto",
-    background: "rgba(20,20,20,0.92)",
-    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(7,31,19,0.92)",
+    border: `1px solid ${THEME.borderStrong}`,
     borderRadius: 18,
     padding: 14,
-    boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
+    boxShadow: "0 22px 70px rgba(7,31,19,0.55)",
   },
   modalHeader: {
     display: "flex",
@@ -1624,11 +1420,18 @@ const styles = {
     gap: 10,
     flexWrap: "wrap",
   },
-  modalTitle: { fontSize: 18, fontWeight: 950, lineHeight: 1.1 },
-  modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 950,
+    lineHeight: 1.1,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  modalSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
 };
 
-// Wider screens (admin grid)
+// Wider screens
 const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
 if (media && media.matches) {
   styles.adminGrid.gridTemplateColumns = "1fr 1fr";
