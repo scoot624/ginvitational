@@ -7,24 +7,36 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blue tees, Par 72) — confirmed */
+/** ⛳ PARS (Blue tees, Par 72; hole 18 is par 5) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
 ];
 
-/** 🧠 STROKE INDEX (Men’s Handicap row from your scorecard)
- *  1 = hardest hole, 18 = easiest
- */
+/** 🧠 STROKE INDEX (Men’s Handicap row from your scorecard) */
 const STROKE_INDEX = [
   12, 10, 4, 14, 2, 8, 6, 18, 16,
   9, 3, 17, 13, 5, 15, 1, 11, 7,
+];
+
+/** 🟦 BLUE tee yardages (hole 18 uses the bigger number = 491) */
+const BLUE_YARDS = [
+  371, 368, 453, 163, 412, 193, 491, 114, 460,
+  414, 193, 493, 220, 400, 513, 416, 369, 491,
 ];
 
 function clampInt(v, fallback = 0) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.trunc(n);
+}
+
+function safeStr(v) {
+  return (v ?? "").toString().trim();
+}
+
+function normalizeName(s) {
+  return (s || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function formatToPar(n) {
@@ -44,22 +56,6 @@ function makeCode(len = 6) {
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
-}
-
-function safeStr(v) {
-  return (v ?? "").toString().trim();
-}
-
-function normalizeName(s) {
-  return (s || "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function parseHandicap(v) {
-  const s = safeStr(v);
-  if (s === "") return { value: 0, missing: true, invalid: false };
-  const n = Number(s);
-  if (!Number.isFinite(n)) return { value: 0, missing: false, invalid: true };
-  return { value: Math.trunc(n), missing: false, invalid: false };
 }
 
 /** True stroke index allocation:
@@ -89,6 +85,14 @@ async function readExcelFile(file) {
   return XLSX.utils.sheet_to_json(sheet, { defval: "" });
 }
 
+function parseHandicap(v) {
+  const s = safeStr(v);
+  if (s === "") return { value: 0, missing: true, invalid: false };
+  const n = Number(s);
+  if (!Number.isFinite(n)) return { value: 0, missing: false, invalid: true };
+  return { value: Math.trunc(n), missing: false, invalid: false };
+}
+
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin
   const [status, setStatus] = useState("Loading...");
@@ -103,16 +107,16 @@ export default function App() {
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
 
-  // Foursomes
+  // Foursomes data
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]);
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with id, foursome_id, player_id, seat?
 
-  // Enter scores gate
+  // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null);
-  const [activePlayers, setActivePlayers] = useState([]);
+  const [activeFoursome, setActiveFoursome] = useState(null); // {id, group_name, code}
+  const [activePlayers, setActivePlayers] = useState([]); // players in the foursome
 
-  // Hole entry
+  // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
 
@@ -122,6 +126,10 @@ export default function App() {
   const [uploadMsg, setUploadMsg] = useState("");
   const [replaceAssignments, setReplaceAssignments] = useState(true);
   const [regenCodes, setRegenCodes] = useState(false);
+
+  // Print scorecards
+  const [printOpen, setPrintOpen] = useState(false);
+  const [printFoursomeIds, setPrintFoursomeIds] = useState([]);
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -152,7 +160,7 @@ export default function App() {
   }
 
   async function loadFoursomes() {
-    // tee_time_text might not exist in your schema — handle both cases
+    // tee_time_text optional
     try {
       const { data, error } = await supabase
         .from("foursomes")
@@ -176,7 +184,7 @@ export default function App() {
   }
 
   async function loadFoursomePlayers() {
-    // seat might not exist in your schema — handle both cases
+    // seat optional
     try {
       const { data, error } = await supabase
         .from("foursome_players")
@@ -213,7 +221,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Leaderboard refresh while on leaderboard
+  // Leaderboard auto-refresh every minute while on leaderboard tab
   useEffect(() => {
     if (tab !== "leaderboard") return;
     const id = setInterval(async () => {
@@ -224,8 +232,18 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  // Close print mode after print
+  useEffect(() => {
+    function onAfterPrint() {
+      setPrintOpen(false);
+      setPrintFoursomeIds([]);
+    }
+    window.addEventListener("afterprint", onAfterPrint);
+    return () => window.removeEventListener("afterprint", onAfterPrint);
+  }, []);
+
   const leaderboardRows = useMemo(() => {
-    // last-write-wins map for scores
+    // build last-write-wins map for scores by player/hole
     const scoresByPlayer = new Map();
     for (const s of scores) {
       const pid = s.player_id;
@@ -270,6 +288,7 @@ export default function App() {
       };
     });
 
+    // Sort: scored first, then netToPar, then holesPlayed desc, then name
     rows.sort((a, b) => {
       const aHas = a.holesPlayed > 0;
       const bHas = b.holesPlayed > 0;
@@ -300,19 +319,17 @@ export default function App() {
     return strokesUsedForPlayedHoles(scorecardPlayer.handicap, scorecardPlayedHoles);
   }, [scorecardPlayer, scorecardPlayedHoles]);
 
-  // Aggregated net +/- (Out / In / Total) for scorecard modal
   const scorecardNetAgg = useMemo(() => {
     if (!scorecardPlayer) return { out: 0, in: 0, total: 0 };
 
     const diffs = Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
       const par = PARS[h - 1];
       const si = STROKE_INDEX[h - 1];
-      const sc = scorecardPlayer.scoresByHole?.[h];
-      if (sc == null) return null;
-
-      const hcpStrokes = strokesForHole(scorecardPlayer.handicap, si);
-      const netSc = sc - hcpStrokes;
-      return netSc - par;
+      const gross = scorecardPlayer.scoresByHole?.[h];
+      if (gross == null) return null;
+      const strokes = strokesForHole(scorecardPlayer.handicap, si);
+      const net = gross - strokes;
+      return net - par;
     });
 
     const out = diffs.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
@@ -330,6 +347,11 @@ export default function App() {
     }
   }
 
+  function getExistingScore(pid, holeNum) {
+    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
+    return row ? clampInt(row.score, 0) : null;
+  }
+
   async function enterWithCode() {
     const code = entryCode.trim().toUpperCase();
     if (code.length !== 6) return alert("Enter a 6-character code.");
@@ -345,7 +367,10 @@ export default function App() {
       alert("Error checking code.");
       return;
     }
-    if (!f) return alert("Code not found.");
+    if (!f) {
+      alert("Code not found.");
+      return;
+    }
 
     const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
     const memberIds = memberRows.map((x) => x.player_id);
@@ -363,11 +388,7 @@ export default function App() {
     setTab("enter");
   }
 
-  function getExistingScore(pid, holeNum) {
-    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
-    return row ? clampInt(row.score, 0) : null;
-  }
-
+  // Prefill inputs when hole changes
   useEffect(() => {
     if (!activeFoursome) return;
     const obj = {};
@@ -384,7 +405,7 @@ export default function App() {
 
     for (const p of activePlayers) {
       const raw = (holeInputs[p.id] ?? "").trim();
-      if (!raw) continue;
+      if (!raw) continue; // allow blanks
       const sc = clampInt(raw, 0);
       if (sc < 1 || sc > 20) {
         alert(`Score for ${p.name} looks wrong (1–20).`);
@@ -514,7 +535,7 @@ export default function App() {
 
       const playerByNorm = new Map((pData || []).map((p) => [normalizeName(p.name), p]));
 
-      // Upsert players by name (update handicap/charity if exists)
+      // Upsert players by name
       for (const row of preview.cleaned) {
         const existing = playerByNorm.get(row.name_norm);
         if (existing) {
@@ -556,7 +577,7 @@ export default function App() {
 
       const foursomeByName = new Map(foursomesNow.map((f) => [safeStr(f.group_name), f]));
 
-      // Upsert groups (create if missing; optionally regen codes; optionally tee_time_text)
+      // Upsert groups
       for (const g of preview.groups) {
         const existing = foursomeByName.get(g.group_name);
 
@@ -565,10 +586,7 @@ export default function App() {
             ...(regenCodes ? { code: makeCode(6) } : {}),
             ...(hasTeeTime ? { tee_time_text: g.tee_time_text || null } : {}),
           };
-          const { error } = await supabase
-            .from("foursomes")
-            .update(patch)
-            .eq("id", existing.id);
+          const { error } = await supabase.from("foursomes").update(patch).eq("id", existing.id);
           if (error) throw error;
         } else {
           const base = { group_name: g.group_name, code: makeCode(6) };
@@ -602,7 +620,7 @@ export default function App() {
         if (error) throw error;
       }
 
-      // Assign players to groups, seats based on upload order in each group
+      // Assign players to groups, seat based on file order within group
       const groupSeat = new Map();
       const inserts = [];
 
@@ -639,23 +657,154 @@ export default function App() {
     }
   }
 
+  function openPrintForAllFoursomes() {
+    if (!adminOn) return alert("Admin only.");
+    if (!foursomes.length) return alert("No foursomes to print.");
+    setPrintFoursomeIds(foursomes.map((f) => f.id));
+    setPrintOpen(true);
+    setTimeout(() => window.print(), 80);
+  }
+
   return (
     <div style={styles.page}>
-      {/* Scorecard modal */}
+      {/* PRINT CSS */}
+      <style>{`
+        @media print {
+          body { background: white !important; }
+          #app-shell { display: none !important; }
+          #print-root { display: block !important; }
+          #print-root { color: #000 !important; }
+          .print-page { page-break-after: always; }
+          .print-page:last-child { page-break-after: auto; }
+        }
+      `}</style>
+
+      {/* PRINT ROOT (only visible during print) */}
+      {printOpen && (
+        <div
+          id="print-root"
+          style={{
+            display: "none",
+            padding: 24,
+            background: "#fff",
+            color: "#000",
+            fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+          }}
+        >
+          {printFoursomeIds.map((fid) => {
+            const f = foursomes.find((x) => x.id === fid);
+            if (!f) return null;
+
+            const memberRows = foursomePlayers
+              .filter((fp) => fp.foursome_id === fid)
+              .slice()
+              .sort((a, b) => (a.seat ?? 99) - (b.seat ?? 99));
+
+            const members = memberRows
+              .map((fp) => players.find((p) => p.id === fp.player_id))
+              .filter(Boolean);
+
+            return (
+              <div key={fid} className="print-page" style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontSize: 22, fontWeight: 900 }}>
+                      {f.group_name || "Foursome"} — Code: {f.code}
+                    </div>
+
+                    {"tee_time_text" in f && f.tee_time_text ? (
+                      <div style={{ marginTop: 6, fontSize: 14 }}>Tee time: {f.tee_time_text}</div>
+                    ) : null}
+
+                    <div style={{ marginTop: 10, fontSize: 14 }}>
+                      {members.length ? (
+                        members.map((p) => (
+                          <div key={p.id}>
+                            <b>{p.name}</b> (HCP {clampInt(p.handicap, 0)})
+                            {p.charity ? ` — ${p.charity}` : ""}
+                          </div>
+                        ))
+                      ) : (
+                        <div style={{ color: "#b00" }}>No players assigned</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, textAlign: "right" }}>
+                    <div><b>● = handicap stroke</b></div>
+                    <div>Write gross scores in blanks</div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14, border: "1px solid #111", borderRadius: 10, overflow: "hidden" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#f2f2f2" }}>
+                        <th style={{ padding: 8, textAlign: "left", borderBottom: "1px solid #111" }}>Hole</th>
+                        <th style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #111" }}>Yards</th>
+                        <th style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #111" }}>Par</th>
+
+                        {members.map((p) => (
+                          <th key={p.id} style={{ padding: 8, textAlign: "left", borderBottom: "1px solid #111" }}>
+                            {p.name}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
+                        const par = PARS[h - 1];
+                        const yards = BLUE_YARDS[h - 1];
+                        const si = STROKE_INDEX[h - 1];
+
+                        return (
+                          <tr key={h}>
+                            <td style={{ padding: 8, borderBottom: "1px solid #ddd" }}>{h}</td>
+                            <td style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #ddd" }}>{yards}</td>
+                            <td style={{ padding: 8, textAlign: "right", borderBottom: "1px solid #ddd" }}>{par}</td>
+
+                            {members.map((p) => {
+                              const hcp = clampInt(p.handicap, 0);
+                              const strokes = strokesForHole(hcp, si);
+                              const getsStroke = strokes > 0;
+
+                              return (
+                                <td key={p.id} style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
+                                  <span style={{ display: "inline-block", width: 18 }}>
+                                    {getsStroke ? "●" : ""}
+                                  </span>
+                                  <span style={{ opacity: 0.5 }}>_____</span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: 10, fontSize: 12 }}>
+                  Dots use Stroke Index allocation (true handicap distribution).
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Scorecard modal (leaderboard) */}
       {scorecardPlayer && (
         <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
-                  {scorecardPlayer.name}{" "}
-                  <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
+                  {scorecardPlayer.name} <span style={{ opacity: 0.7 }}>(HCP {scorecardPlayer.handicap})</span>
                 </div>
-
                 <div style={styles.modalSub}>
-                  Holes: {scorecardPlayer.holesPlayed}
-                  {" • "}HCP strokes used: <b>{scorecardStrokesUsed}</b>
-                  {" • "}Net vs Par:{" "}
+                  Holes: {scorecardPlayer.holesPlayed} • HCP strokes used: <b>{scorecardStrokesUsed}</b> • Net vs Par:{" "}
                   {scorecardPlayer.holesPlayed === 0 ? (
                     <span style={{ opacity: 0.7 }}>—</span>
                   ) : (
@@ -665,7 +814,6 @@ export default function App() {
                   )}
                 </div>
               </div>
-
               <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
                 Close
               </button>
@@ -682,17 +830,16 @@ export default function App() {
                     <th style={styles.th}>Net +/-</th>
                   </tr>
                 </thead>
-
                 <tbody>
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
                     const si = STROKE_INDEX[h - 1];
                     const gross = scorecardPlayer.scoresByHole[h];
 
-                    const hcpStrokes = strokesForHole(scorecardPlayer.handicap, si);
-                    const getsStrokes = hcpStrokes > 0;
+                    const strokes = strokesForHole(scorecardPlayer.handicap, si);
+                    const getsStrokes = strokes > 0;
 
-                    const net = gross != null ? gross - hcpStrokes : null;
+                    const net = gross != null ? gross - strokes : null;
                     const netDiff = net != null ? net - par : null;
 
                     const netDiffStyle =
@@ -726,12 +873,11 @@ export default function App() {
                     );
                   })}
 
-                  {/* ✅ Totals row (Out / In / Total) */}
+                  {/* Totals row */}
                   <tr>
                     <td style={{ ...styles.td, fontWeight: 950 }} colSpan={4}>
-                      Totals
+                      Totals{" "}
                       <span style={{ opacity: 0.7, fontWeight: 800 }}>
-                        {" "}
                         (Out {formatToPar(scorecardNetAgg.out)} • In {formatToPar(scorecardNetAgg.in)})
                       </span>
                     </td>
@@ -750,8 +896,8 @@ export default function App() {
         </div>
       )}
 
-      <div style={styles.shell}>
-        {/* HOME */}
+      <div id="app-shell" style={styles.shell}>
+        {/* HOME (no top nav) */}
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
@@ -772,9 +918,11 @@ export default function App() {
               <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
                 📊 Leaderboard
               </button>
+
               <button style={styles.bigBtn} onClick={() => setTab("code")}>
                 📝 Enter Scores
               </button>
+
               <button style={styles.bigBtn} onClick={() => setTab("admin")}>
                 ⚙️ Admin
               </button>
@@ -782,7 +930,7 @@ export default function App() {
           </div>
         )}
 
-        {/* CODE GATE */}
+        {/* CODE GATE SCREEN (enter scores) */}
         {tab === "code" && (
           <div style={styles.card}>
             <div style={styles.headerRow}>
@@ -817,7 +965,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TOP NAV */}
+        {/* TOP NAV (all non-home pages) */}
         {tab !== "home" && tab !== "code" && (
           <header style={styles.header}>
             <div style={styles.headerTop}>
@@ -855,7 +1003,13 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
               <div style={styles.cardTitle}>Leaderboard</div>
-              <button style={styles.smallBtn} onClick={async () => { await loadPlayers(); await loadScores(); }}>
+              <button
+                style={styles.smallBtn}
+                onClick={async () => {
+                  await loadPlayers();
+                  await loadScores();
+                }}
+              >
                 Refresh
               </button>
             </div>
@@ -911,7 +1065,9 @@ export default function App() {
 
                   {leaderboardRows.length === 0 && (
                     <tr>
-                      <td style={styles.td} colSpan={4}>No players yet.</td>
+                      <td style={styles.td} colSpan={4}>
+                        No players yet.
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -920,7 +1076,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ENTER SCORES */}
+        {/* ENTER SCORES (foursome hole-by-hole) */}
         {tab === "enter" && (
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
@@ -955,9 +1111,7 @@ export default function App() {
                       <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
                         {p.name}
                       </div>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>
-                        HCP {clampInt(p.handicap, 0)}
-                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>HCP {clampInt(p.handicap, 0)}</div>
                     </div>
 
                     <input
@@ -982,7 +1136,7 @@ export default function App() {
               </div>
 
               <div style={styles.helpText}>
-                Type scores for your foursome, then hit <b>Save & Next</b>. Leaving a box blank means “no score yet”.
+                Type scores for your foursome, then hit <b>Save & Next</b>. Leaving a box blank means “no score yet.”
               </div>
             </div>
           </div>
@@ -992,7 +1146,6 @@ export default function App() {
         {tab === "admin" && (
           <div style={styles.card}>
             <div style={styles.cardTitle}>Admin</div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>EXCEL SETUP + TRUE HANDICAP v2</div>
 
             {!adminOn ? (
               <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
@@ -1012,11 +1165,13 @@ export default function App() {
                   Unlock Admin
                 </button>
 
-                <div style={styles.helpText}>Upload an Excel file to set up players + groups + tee times.</div>
+                <div style={styles.helpText}>
+                  Upload an Excel file to set up players + groups + tee times. Then print scorecards.
+                </div>
               </div>
             ) : (
-              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
                   <button
                     style={styles.smallBtn}
                     onClick={() => {
@@ -1030,197 +1185,205 @@ export default function App() {
                   <button style={styles.smallBtn} onClick={() => initialLoad()}>
                     Reload Data
                   </button>
+
+                  <button style={styles.smallBtn} onClick={openPrintForAllFoursomes}>
+                    🖨️ Print Scorecards
+                  </button>
                 </div>
 
-                <div style={styles.subCard}>
-                  <div style={styles.subTitle}>Tournament Setup Upload</div>
-                  <div style={styles.helpText}>
-                    Required headers: <b>first_name</b>, <b>last_name</b>, <b>handicap</b>, <b>charity</b>,{" "}
-                    <b>group_name</b>, <b>tee_time</b>.
-                  </div>
+                <div style={styles.adminGrid}>
+                  {/* Upload */}
+                  <div style={styles.subCard}>
+                    <div style={styles.subTitle}>Tournament Setup Upload</div>
+                    <div style={styles.helpText}>
+                      Required headers: <b>first_name</b>, <b>last_name</b>, <b>handicap</b>, <b>charity</b>,{" "}
+                      <b>group_name</b>, <b>tee_time</b>.
+                    </div>
 
-                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                    <input
-                      type="file"
-                      accept=".xlsx,.xls"
-                      disabled={uploadBusy}
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-
-                        setUploadMsg("");
-                        setUploadPreview(null);
-
-                        try {
-                          const rows = await readExcelFile(file);
-                          const prev = buildTournamentPreview(rows);
-                          setUploadPreview(prev);
-                        } catch (err) {
-                          console.error(err);
-                          alert("Could not read Excel file.");
-                        }
-                      }}
-                    />
-
-                    <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
                       <input
-                        type="checkbox"
-                        checked={replaceAssignments}
-                        onChange={(e) => setReplaceAssignments(e.target.checked)}
+                        type="file"
+                        accept=".xlsx,.xls"
                         disabled={uploadBusy}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+
+                          setUploadMsg("");
+                          setUploadPreview(null);
+
+                          try {
+                            const rows = await readExcelFile(file);
+                            const prev = buildTournamentPreview(rows);
+                            setUploadPreview(prev);
+                          } catch (err) {
+                            console.error(err);
+                            alert("Could not read Excel file.");
+                          }
+                        }}
                       />
-                      <div style={{ fontSize: 13, opacity: 0.9 }}>
-                        Replace all foursome assignments from this file (recommended)
-                      </div>
-                    </label>
 
-                    <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <input
-                        type="checkbox"
-                        checked={regenCodes}
-                        onChange={(e) => setRegenCodes(e.target.checked)}
-                        disabled={uploadBusy}
-                      />
-                      <div style={{ fontSize: 13, opacity: 0.9 }}>
-                        Regenerate all foursome codes (OFF by default)
-                      </div>
-                    </label>
-
-                    {uploadPreview ? (
-                      <div style={{ marginTop: 6, display: "grid", gap: 10 }}>
-                        <div style={{ fontWeight: 950 }}>Preview</div>
-
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13, opacity: 0.9 }}>
-                          <span style={styles.pill}>Rows: {uploadPreview.counts.rows}</span>
-                          <span style={styles.pill}>Players: {uploadPreview.counts.players}</span>
-                          <span style={styles.pill}>Groups: {uploadPreview.counts.groups}</span>
-                          <span style={styles.pill}>New Players: {uploadPreview.counts.newPlayers}</span>
-                          <span style={styles.pill}>New Groups: {uploadPreview.counts.newGroups}</span>
+                      <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <input
+                          type="checkbox"
+                          checked={replaceAssignments}
+                          onChange={(e) => setReplaceAssignments(e.target.checked)}
+                          disabled={uploadBusy}
+                        />
+                        <div style={{ fontSize: 13, opacity: 0.9 }}>
+                          Replace all foursome assignments from this file (recommended)
                         </div>
+                      </label>
 
-                        {uploadPreview.errors.length > 0 && (
-                          <div
-                            style={{
-                              padding: 10,
-                              borderRadius: 12,
-                              border: "1px solid rgba(220,38,38,0.35)",
-                              background: "rgba(220,38,38,0.10)",
-                            }}
-                          >
-                            <div style={{ fontWeight: 950, marginBottom: 6 }}>Errors (fix before applying)</div>
-                            <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.95 }}>
-                              {uploadPreview.errors.slice(0, 15).map((x, i) => (
-                                <div key={i}>• {x}</div>
-                              ))}
-                              {uploadPreview.errors.length > 15 && <div>…and more</div>}
-                            </div>
-                          </div>
-                        )}
-
-                        {uploadPreview.warnings.length > 0 && (
-                          <div
-                            style={{
-                              padding: 10,
-                              borderRadius: 12,
-                              border: "1px solid rgba(255,255,255,0.18)",
-                              background: "rgba(255,255,255,0.06)",
-                            }}
-                          >
-                            <div style={{ fontWeight: 950, marginBottom: 6 }}>Warnings</div>
-                            <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.9 }}>
-                              {uploadPreview.warnings.slice(0, 15).map((x, i) => (
-                                <div key={i}>• {x}</div>
-                              ))}
-                              {uploadPreview.warnings.length > 15 && <div>…and more</div>}
-                            </div>
-                          </div>
-                        )}
-
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                          <button
-                            style={styles.bigBtn}
-                            disabled={uploadBusy || !uploadPreview.ok}
-                            onClick={() => applyTournamentSetup(uploadPreview)}
-                          >
-                            {uploadBusy ? "Applying…" : "✅ Apply Tournament Setup"}
-                          </button>
-
-                          <button
-                            style={styles.smallBtn}
-                            disabled={uploadBusy}
-                            onClick={() => {
-                              setUploadPreview(null);
-                              setUploadMsg("");
-                            }}
-                          >
-                            Clear Upload
-                          </button>
+                      <label style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <input
+                          type="checkbox"
+                          checked={regenCodes}
+                          onChange={(e) => setRegenCodes(e.target.checked)}
+                          disabled={uploadBusy}
+                        />
+                        <div style={{ fontSize: 13, opacity: 0.9 }}>
+                          Regenerate all foursome codes (OFF by default)
                         </div>
+                      </label>
 
-                        {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>
+                      {uploadPreview ? (
+                        <div style={{ marginTop: 6, display: "grid", gap: 10 }}>
+                          <div style={{ fontWeight: 950 }}>Preview</div>
 
-                        }
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 13, opacity: 0.9 }}>
+                            <span style={styles.pill}>Rows: {uploadPreview.counts.rows}</span>
+                            <span style={styles.pill}>Players: {uploadPreview.counts.players}</span>
+                            <span style={styles.pill}>Groups: {uploadPreview.counts.groups}</span>
+                            <span style={styles.pill}>New Players: {uploadPreview.counts.newPlayers}</span>
+                            <span style={styles.pill}>New Groups: {uploadPreview.counts.newGroups}</span>
+                          </div>
 
-                        <div style={{ marginTop: 6 }}>
-                          <div style={{ fontWeight: 900, opacity: 0.9, marginBottom: 6 }}>Groups (from upload)</div>
-                          <div style={{ display: "grid", gap: 8 }}>
-                            {uploadPreview.groups.slice(0, 12).map((g) => (
-                              <div key={g.group_name} style={styles.foursomeCard}>
-                                <div style={{ fontWeight: 950 }}>
-                                  {g.group_name}
-                                  {g.tee_time_text ? <span style={{ opacity: 0.75 }}> • {g.tee_time_text}</span> : null}
-                                </div>
-                                <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-                                  {g.members.join(", ")}
-                                </div>
+                          {uploadPreview.errors.length > 0 && (
+                            <div
+                              style={{
+                                padding: 10,
+                                borderRadius: 12,
+                                border: "1px solid rgba(220,38,38,0.35)",
+                                background: "rgba(220,38,38,0.10)",
+                              }}
+                            >
+                              <div style={{ fontWeight: 950, marginBottom: 6 }}>Errors (fix before applying)</div>
+                              <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.95 }}>
+                                {uploadPreview.errors.slice(0, 15).map((x, i) => (
+                                  <div key={i}>• {x}</div>
+                                ))}
+                                {uploadPreview.errors.length > 15 && <div>…and more</div>}
                               </div>
-                            ))}
-                            {uploadPreview.groups.length > 12 && (
-                              <div style={styles.helpText}>…and {uploadPreview.groups.length - 12} more groups</div>
-                            )}
+                            </div>
+                          )}
+
+                          {uploadPreview.warnings.length > 0 && (
+                            <div
+                              style={{
+                                padding: 10,
+                                borderRadius: 12,
+                                border: "1px solid rgba(255,255,255,0.18)",
+                                background: "rgba(255,255,255,0.06)",
+                              }}
+                            >
+                              <div style={{ fontWeight: 950, marginBottom: 6 }}>Warnings</div>
+                              <div style={{ display: "grid", gap: 6, fontSize: 12, opacity: 0.9 }}>
+                                {uploadPreview.warnings.slice(0, 15).map((x, i) => (
+                                  <div key={i}>• {x}</div>
+                                ))}
+                                {uploadPreview.warnings.length > 15 && <div>…and more</div>}
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                            <button
+                              style={styles.bigBtn}
+                              disabled={uploadBusy || !uploadPreview.ok}
+                              onClick={() => applyTournamentSetup(uploadPreview)}
+                            >
+                              {uploadBusy ? "Applying…" : "✅ Apply Tournament Setup"}
+                            </button>
+
+                            <button
+                              style={styles.smallBtn}
+                              disabled={uploadBusy}
+                              onClick={() => {
+                                setUploadPreview(null);
+                                setUploadMsg("");
+                              }}
+                            >
+                              Clear Upload
+                            </button>
+                          </div>
+
+                          {uploadMsg && <div style={{ fontSize: 12, opacity: 0.85 }}>{uploadMsg}</div>}
+
+                          <div style={{ marginTop: 6 }}>
+                            <div style={{ fontWeight: 900, opacity: 0.9, marginBottom: 6 }}>Groups (from upload)</div>
+                            <div style={{ display: "grid", gap: 8 }}>
+                              {uploadPreview.groups.slice(0, 12).map((g) => (
+                                <div key={g.group_name} style={styles.foursomeCard}>
+                                  <div style={{ fontWeight: 950 }}>
+                                    {g.group_name}
+                                    {g.tee_time_text ? <span style={{ opacity: 0.75 }}> • {g.tee_time_text}</span> : null}
+                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+                                    {g.members.join(", ")}
+                                  </div>
+                                </div>
+                              ))}
+                              {uploadPreview.groups.length > 12 && (
+                                <div style={styles.helpText}>…and {uploadPreview.groups.length - 12} more groups</div>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div style={styles.helpText}>
-                        Upload a file to see a preview. Nothing writes until you click <b>Apply</b>.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div style={styles.subCard}>
-                  <div style={styles.subTitle}>Current Foursome Codes</div>
-                  <div style={styles.helpText}>Players enter scores using their group’s 6-character code.</div>
-
-                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                    {foursomes.map((f) => (
-                      <div key={f.id} style={styles.foursomeCard}>
-                        <div style={{ fontWeight: 950 }}>
-                          {f.group_name}{" "}
-                          <span style={{ opacity: 0.75, fontWeight: 800 }}>(Code: {f.code})</span>
+                      ) : (
+                        <div style={styles.helpText}>
+                          Upload a file to see a preview. Nothing writes until you click <b>Apply</b>.
                         </div>
-                        {typeof f.tee_time_text !== "undefined" && f.tee_time_text ? (
-                          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-                            Tee time: {f.tee_time_text}
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Current codes */}
+                  <div style={styles.subCard}>
+                    <div style={styles.subTitle}>Current Foursome Codes</div>
+                    <div style={styles.helpText}>Players enter scores using their group’s 6-character code.</div>
+
+                    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                      {foursomes.map((f) => (
+                        <div key={f.id} style={styles.foursomeCard}>
+                          <div style={{ fontWeight: 950 }}>
+                            {f.group_name || "Foursome"}{" "}
+                            <span style={{ opacity: 0.75, fontWeight: 800 }}>(Code: {f.code})</span>
                           </div>
-                        ) : null}
-                      </div>
-                    ))}
-                    {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                          {"tee_time_text" in f && f.tee_time_text ? (
+                            <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+                              Tee time: {f.tee_time_text}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                      {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                    </div>
                   </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
         )}
 
-        {/* Guard */}
+        {/* Router guard */}
         {tab === "enter" && !activeFoursome && (
           <div style={styles.card}>
             <div style={styles.cardTitle}>Enter Scores</div>
             <div style={styles.helpText}>No foursome loaded. Go back and enter your code.</div>
-            <button style={styles.smallBtn} onClick={() => setTab("code")}>Back to Code</button>
+            <button style={styles.smallBtn} onClick={() => setTab("code")}>
+              Back to Code
+            </button>
           </div>
         )}
       </div>
@@ -1396,6 +1559,12 @@ const styles = {
     fontSize: 12,
   },
 
+  adminGrid: {
+    marginTop: 14,
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "1fr",
+  },
   subCard: {
     background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.12)",
@@ -1428,6 +1597,7 @@ const styles = {
     gridTemplateColumns: "1fr 1fr",
   },
 
+  // modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1458,8 +1628,8 @@ const styles = {
   modalSub: { marginTop: 6, fontSize: 13, opacity: 0.85 },
 };
 
-// Wider screens
+// Wider screens (admin grid)
 const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
 if (media && media.matches) {
-  // keep simple grid feel on desktop
+  styles.adminGrid.gridTemplateColumns = "1fr 1fr";
 }
