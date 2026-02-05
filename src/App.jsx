@@ -596,11 +596,33 @@ export default function App() {
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
-              <img
-                src="/logo.png"
-                alt="Ginvitational logo"
-                style={{ width: 210, height: 210, objectFit: "contain" }}
-              />
+              <div
+  style={{
+    display: "flex",
+    justifyContent: "center",
+    marginBottom: 24,
+  }}
+>
+  <div
+    style={{
+      background: "#F2EBDD", // sandstone
+      padding: "28px 36px",
+      borderRadius: 24,
+      boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+    }}
+  >
+    <img
+      src="/logo.png"
+      alt="Ginvitational logo"
+      style={{
+        width: 180,
+        height: "auto",
+        display: "block",
+      }}
+    />
+  </div>
+</div>
+
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
@@ -626,7 +648,7 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 14, textAlign: "center", fontSize: 12, color: THEME.textMuted }}>
-              Classic format. Mobile-first. Fast scoring.
+              Drink Good. Play Good. Do Good.
             </div>
           </div>
         )}
