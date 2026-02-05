@@ -596,9 +596,9 @@ export default function App() {
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
-              <div
-  
-   src="/logo.png"
+          
+  <img
+  src="/logo.png"
   alt="Ginvitational logo"
   style={{
     width: 210,
