@@ -597,37 +597,23 @@ export default function App() {
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
               <div
+  
+   src="/logo.png"
+  alt="Ginvitational logo"
   style={{
-    display: "flex",
-    justifyContent: "center",
-    marginBottom: 24,
+    width: 210,
+    height: "auto",
+    display: "block",
+    margin: "0 auto",
   }}
->
-  <div
-    style={{
-      background: "#F2EBDD", // sandstone
-      padding: "28px 36px",
-      borderRadius: 24,
-      boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
-    }}
-  >
-    <img
-      src="/logo.png"
-      alt="Ginvitational logo"
-      style={{
-        width: 180,
-        height: "auto",
-        display: "block",
-      }}
-    />
-  </div>
-</div>
+/>
+
 
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
               <div style={styles.homeSub}>
-                Manufacturers Golf &amp; CC • May 2026
+                Drink Good. Play Good. Do Good.
               </div>
 
               <div style={styles.homeRule} />
@@ -648,7 +634,7 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 14, textAlign: "center", fontSize: 12, color: THEME.textMuted }}>
-              Drink Good. Play Good. Do Good.
+              Manufacturers Golf &amp; CC • May 2026
             </div>
           </div>
         )}
