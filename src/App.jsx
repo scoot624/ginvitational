@@ -1174,7 +1174,7 @@ export default function App() {
                         <td style={styles.td}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                             <span>{h}</span>
-                            {strokes > 0 && <span style={styles.strokePill}>{`+${strokes}`}</span>}
+                            {strokes > 0 && <span style={styles.strokeDot} />}
                           </span>
                         </td>
                         <td style={styles.td}>{si}</td>
@@ -2028,6 +2028,14 @@ const styles = {
     fontSize: 12,
     color: THEME.text,
   },
+strokeDot: {
+  display: "inline-block",
+  width: 8,
+  height: 8,
+  borderRadius: "50%",
+  background: "rgba(203,189,151,0.85)",
+  marginLeft: 6,
+},
 
   strokePill: {
     display: "inline-block",
