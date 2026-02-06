@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 
@@ -7,32 +7,18 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blue tees, Par 72; hole 18 is Par 5 per your note) */
+/** ⛳ PARS (Blue tees, Par 72; hole 18 is par 5) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
 ];
 
-/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s) (1 = hardest) */
+/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s) (1 = hardest)
+ * If these ever change, just update this array.
+ */
 const STROKE_INDEX = [
-  12, // Hole 1
-  10, // Hole 2
-  4,  // Hole 3
-  14, // Hole 4
-  2,  // Hole 5
-  8,  // Hole 6
-  6,  // Hole 7
-  18, // Hole 8
-  16, // Hole 9
-  9,  // Hole 10
-  3,  // Hole 11
-  17, // Hole 12
-  13, // Hole 13
-  5,  // Hole 14
-  15, // Hole 15
-  1,  // Hole 16 (hardest)
-  11, // Hole 17
-  7,  // Hole 18
+  12, 10, 4, 14, 2, 8, 6, 18, 16,
+  9, 3, 17, 13, 5, 15, 1, 11, 7,
 ];
 
 function clampInt(v, fallback = 0) {
@@ -52,9 +38,9 @@ function strokesOnHole(courseHcp, holeNum) {
   const h = clampInt(courseHcp, 0);
   if (h <= 0) return 0;
 
-  const full = Math.floor(h / 18);      // strokes on every hole
-  const rem = h % 18;                   // extra strokes on hardest rem holes
-  const si = STROKE_INDEX[holeNum - 1]; // 1..18 (1 hardest)
+  const full = Math.floor(h / 18);
+  const rem = h % 18;
+  const si = STROKE_INDEX[holeNum - 1];
 
   return full + (rem > 0 && si <= rem ? 1 : 0);
 }
@@ -63,7 +49,24 @@ function netScoreForHole(grossScore, courseHcp, holeNum) {
   return grossScore - strokesOnHole(courseHcp, holeNum);
 }
 
-/** --- Brand palette from your style guide --- */
+function errToText(err) {
+  if (!err) return "";
+  if (typeof err === "string") return err;
+  if (err.message) return err.message;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function lastName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  return parts[parts.length - 1];
+}
+
+/** --- Brand palette --- */
 const PALETTE = {
   // Primary
   fairwayGreen: "#1E3D34",
@@ -88,7 +91,6 @@ const THEME = {
   bg: PALETTE.sandstone,
   ink: PALETTE.deepMeadow,
 
-  // Dark “club” surface
   surface: "rgba(7, 31, 19, 0.86)",
   surfaceSoft: "rgba(30, 61, 52, 0.44)",
   surfaceUltraSoft: "rgba(30, 61, 52, 0.26)",
@@ -133,27 +135,38 @@ function shuffle(arr) {
   return a;
 }
 
-function errToText(err) {
-  if (!err) return "";
-  if (typeof err === "string") return err;
-  if (err.message) return err.message;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
+/** Broadcast helpers */
+function nowKeyMinute() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(
+    2,
+    "0"
+  )}`;
+}
+
+function safeDedupeKey(parts) {
+  return parts
+    .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
+    .join("|")
+    .slice(0, 240);
 }
 
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
 
-  // ✅ On-screen diagnostics (no DevTools needed)
+  // Diagnostics (kept)
   const [lastLoadErrors, setLastLoadErrors] = useState([]);
   const [lastLoadAt, setLastLoadAt] = useState(null);
 
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
+
+  // Broadcast
+  const [broadcastMsgs, setBroadcastMsgs] = useState([]);
+  const lastSnapshotRef = useRef(null);
 
   // Leaderboard scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
@@ -169,7 +182,7 @@ export default function App() {
 
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // {foursome_id, player_id, seat, created_at}
+  const [foursomePlayers, setFoursomePlayers] = useState([]);
 
   // Admin: manual foursome
   const [manualGroupName, setManualGroupName] = useState("");
@@ -181,14 +194,14 @@ export default function App() {
 
   // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
-  const [activeFoursome, setActiveFoursome] = useState(null); // {id, group_name, code}
-  const [activePlayers, setActivePlayers] = useState([]); // players in the foursome
+  const [activeFoursome, setActiveFoursome] = useState(null);
+  const [activePlayers, setActivePlayers] = useState([]);
 
   // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
-  const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
+  const [holeInputs, setHoleInputs] = useState({});
 
-  // ✅ Admin: Excel import (tee sheet)
+  // Admin: Excel import (tee sheet)
   const [teeSheetFile, setTeeSheetFile] = useState(null);
   const [teeSheetRows, setTeeSheetRows] = useState([]);
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
@@ -236,7 +249,6 @@ export default function App() {
     return { ok: true, where: "foursomes" };
   }
 
-  // ✅ OPTION A: composite PK table (no id column)
   async function loadFoursomePlayers() {
     const { data, error } = await supabase
       .from("foursome_players")
@@ -251,6 +263,22 @@ export default function App() {
     return { ok: true, where: "foursome_players" };
   }
 
+  async function loadBroadcast() {
+    // newest first
+    const { data, error } = await supabase
+      .from("broadcast_messages")
+      .select("id,created_at,kind,text,player_id,dedupe_key")
+      .order("created_at", { ascending: false })
+      .limit(5000);
+
+    if (error) {
+      console.error("loadBroadcast error:", error);
+      return { ok: false, where: "broadcast_messages", error: errToText(error) };
+    }
+    setBroadcastMsgs(data || []);
+    return { ok: true, where: "broadcast_messages" };
+  }
+
   async function initialLoad() {
     setStatus("Loading...");
     setLastLoadErrors([]);
@@ -260,6 +288,7 @@ export default function App() {
     results.push(await loadScores());
     results.push(await loadFoursomes());
     results.push(await loadFoursomePlayers());
+    results.push(await loadBroadcast());
 
     const fails = results.filter((r) => !r.ok);
     setLastLoadErrors(fails);
@@ -291,7 +320,7 @@ export default function App() {
   }, [tab]);
 
   const leaderboardRows = useMemo(() => {
-    // build last-write-wins map for scores by player/hole
+    // last-write-wins scores by player/hole
     const scoresByPlayer = new Map();
     for (const s of scores) {
       const pid = s.player_id;
@@ -319,18 +348,19 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      // ✅ Real net (stroke index allocation), works mid-round
+      // Real net (stroke index allocation)
       const netGross = playedHoles.reduce((acc, h) => {
         const grossHole = scoresByHole[h];
         const netHole = netScoreForHole(grossHole, handicap, h);
         return acc + netHole;
       }, 0);
 
-      const netToPar = holesPlayed === 0 ? 9999 : (netGross - parPlayed);
+      const netToPar = holesPlayed === 0 ? 9999 : netGross - parPlayed;
 
       return {
         id: p.id,
         name: p.name,
+        last: lastName(p.name),
         handicap,
         charity: p.charity,
         holesPlayed,
@@ -357,6 +387,289 @@ export default function App() {
     if (!scorecardPlayerId) return null;
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
+
+  /** -----------------------
+   *  BROADCAST ENGINE
+   *  Runs every 3 minutes
+   * ----------------------*/
+  async function insertBroadcast(kind, text, dedupeParts, player_id = null) {
+    const dedupe_key = safeDedupeKey(dedupeParts);
+
+    const { error } = await supabase
+      .from("broadcast_messages")
+      .insert({ kind, text, player_id, dedupe_key });
+
+    // Ignore duplicates (unique dedupe_key)
+    if (error) {
+      const msg = errToText(error);
+      if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) return;
+      console.error("insertBroadcast error:", error);
+    }
+  }
+
+  function computeNetStats(row) {
+    const played = Object.keys(row.scoresByHole || {})
+      .map((x) => clampInt(x, 0))
+      .filter((h) => h >= 1 && h <= 18)
+      .sort((a, b) => a - b);
+
+    let netBirdies = 0;
+    let bogeyFree = true;
+    let netDoubles = 0;
+    let netTriplesPlus = 0;
+
+    for (const h of played) {
+      const gross = row.scoresByHole[h];
+      const net = netScoreForHole(gross, row.handicap, h);
+      const par = PARS[h - 1];
+
+      if (net <= par - 1) netBirdies += 1;
+      if (net > par) bogeyFree = false;
+
+      const over = net - par;
+      if (over >= 2 && over < 3) netDoubles += 1;
+      if (over >= 3) netTriplesPlus += 1;
+    }
+
+    // Front/back splits (net to par)
+    const front = played.filter((h) => h >= 1 && h <= 9);
+    const back = played.filter((h) => h >= 10 && h <= 18);
+
+    const frontNetToPar =
+      front.length === 0
+        ? null
+        : front.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
+
+    const backNetToPar =
+      back.length === 0
+        ? null
+        : back.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
+
+    return {
+      played,
+      netBirdies,
+      bogeyFree,
+      netDoubles,
+      netTriplesPlus,
+      frontNetToPar,
+      backNetToPar,
+    };
+  }
+
+  async function runBroadcastTick() {
+    // need leaderboard computed
+    if (!leaderboardRows || leaderboardRows.length === 0) return;
+
+    // Snapshot current ranks
+    const ranked = leaderboardRows
+      .filter((r) => r.holesPlayed > 0) // only consider players with scores
+      .map((r, idx) => ({ ...r, rank: idx + 1 }));
+
+    if (ranked.length === 0) return;
+
+    const current = new Map();
+    for (const r of ranked) {
+      const stats = computeNetStats(r);
+      current.set(r.id, {
+        id: r.id,
+        last: r.last,
+        name: r.name,
+        rank: r.rank,
+        holes: r.holesPlayed,
+        netToPar: r.netToPar,
+        stats,
+      });
+    }
+
+    const prev = lastSnapshotRef.current;
+    lastSnapshotRef.current = current;
+
+    // First run: don't spam historical events; just set baseline
+    if (!prev) return;
+
+    // Determine leader + LEX (last among scored)
+    const leader = ranked[0];
+    const lex = ranked[ranked.length - 1];
+
+    const prevLeader = Array.from(prev.values()).find((x) => x.rank === 1);
+    const prevLex = Array.from(prev.values()).reduce((acc, x) => (!acc || x.rank > acc.rank ? x : acc), null);
+
+    // New overall leader
+    if (prevLeader && prevLeader.id !== leader.id) {
+      const t = `${leader.last} takes the lead. Net ${formatToPar(leader.netToPar)}.`;
+      await insertBroadcast(
+        "leader",
+        t,
+        ["leader", nowKeyMinute(), leader.id, leader.netToPar, leader.holesPlayed],
+        leader.id
+      );
+    }
+
+    // New LEX
+    if (prevLex && prevLex.id !== lex.id) {
+      const t = `${lex.last} just inherited The LEX. Someone check on them.`;
+      await insertBroadcast("lex", t, ["lex", nowKeyMinute(), lex.id, lex.netToPar, lex.holesPlayed], lex.id);
+    }
+
+    // New Top 5 entrant (someone who wasn't in top 5 before, now is)
+    const prevTop5 = new Set(Array.from(prev.values()).filter((x) => x.rank <= 5).map((x) => x.id));
+    for (const r of ranked.filter((x) => x.rank <= 5)) {
+      if (!prevTop5.has(r.id)) {
+        const t = `${r.last} just cracked the Top 5. Net ${formatToPar(r.netToPar)}.`;
+        await insertBroadcast("top5", t, ["top5_in", nowKeyMinute(), r.id, r.rank, r.netToPar], r.id);
+      }
+    }
+
+    // Moved up/down X spots (only if absolute change >= 2)
+    for (const r of ranked) {
+      const p = prev.get(r.id);
+      if (!p) continue;
+      const delta = p.rank - r.rank; // positive means moved up
+      if (Math.abs(delta) >= 2) {
+        const dir = delta > 0 ? "up" : "down";
+        const spots = Math.abs(delta);
+        const t = `${r.last} moved ${dir} ${spots} spot${spots === 1 ? "" : "s"} to #${r.rank}.`;
+        await insertBroadcast(
+          "move",
+          t,
+          ["move", nowKeyMinute(), r.id, p.rank, r.rank, r.netToPar],
+          r.id
+        );
+      }
+    }
+
+    // Player-specific triggers
+    for (const r of ranked) {
+      const cur = current.get(r.id);
+      const p = prev.get(r.id);
+      if (!cur || !p) continue;
+
+      const curStats = cur.stats;
+      const prevStats = p.stats;
+
+      // 3rd net birdie of the day
+      if ((prevStats?.netBirdies ?? 0) < 3 && curStats.netBirdies >= 3) {
+        const t = `${r.last} just posted their 3rd net birdie of the day. Heating up.`;
+        await insertBroadcast(
+          "birdies",
+          t,
+          ["3rd_net_birdie", nowKeyMinute(), r.id, curStats.netBirdies, cur.holes],
+          r.id
+        );
+      }
+
+      // Bogey-free through X holes (net bogey-free)
+      // milestones to avoid spam:
+      const milestones = [6, 9, 12, 15, 18];
+      for (const m of milestones) {
+        const was = (p.holes ?? 0) >= m && prevStats?.bogeyFree;
+        const now = cur.holes >= m && curStats.bogeyFree;
+        if (!was && now) {
+          const t = `${r.last} is bogey-free through ${m}. Quietly lethal.`;
+          await insertBroadcast(
+            "bogeyfree",
+            t,
+            ["bogeyfree", m, nowKeyMinute(), r.id, cur.holes],
+            r.id
+          );
+        }
+      }
+
+      // Double / triple disaster (net)
+      if ((prevStats?.netDoubles ?? 0) < curStats.netDoubles) {
+        const t = `${r.last} just took a net double. Damage control mode.`;
+        await insertBroadcast(
+          "disaster",
+          t,
+          ["net_double", nowKeyMinute(), r.id, curStats.netDoubles, cur.holes],
+          r.id
+        );
+      }
+      if ((prevStats?.netTriplesPlus ?? 0) < curStats.netTriplesPlus) {
+        const t = `${r.last} just found a net triple (or worse). The course demanded tribute.`;
+        await insertBroadcast(
+          "disaster",
+          t,
+          ["net_triple", nowKeyMinute(), r.id, curStats.netTriplesPlus, cur.holes],
+          r.id
+        );
+      }
+
+      // Front / Back split (announce once when they complete either 9)
+      // Only announce for leader/top5 and LEX to keep it cleaner
+      const isLeaderOrTop5 = r.rank <= 5;
+      const isLex = r.id === lex.id;
+
+      if (isLeaderOrTop5 || isLex) {
+        const prevFrontDone = (prevStats?.played || []).filter((h) => h <= 9).length >= 9;
+        const curFrontDone = (curStats.played || []).filter((h) => h <= 9).length >= 9;
+
+        if (!prevFrontDone && curFrontDone && curStats.frontNetToPar != null) {
+          const t = `${r.last} turned in ${formatToPar(curStats.frontNetToPar)} on the front.`;
+          await insertBroadcast(
+            "split",
+            t,
+            ["front_split", nowKeyMinute(), r.id, curStats.frontNetToPar],
+            r.id
+          );
+        }
+
+        const prevBackDone = (prevStats?.played || []).filter((h) => h >= 10).length >= 9;
+        const curBackDone = (curStats.played || []).filter((h) => h >= 10).length >= 9;
+
+        if (!prevBackDone && curBackDone && curStats.backNetToPar != null) {
+          const t = `${r.last} played the back in ${formatToPar(curStats.backNetToPar)}.`;
+          await insertBroadcast(
+            "split",
+            t,
+            ["back_split", nowKeyMinute(), r.id, curStats.backNetToPar],
+            r.id
+          );
+        }
+      }
+
+      // Hole highlights (net birdie) only for current leader + current LEX
+      // Detect newly added hole(s) since last snapshot and check if any of those were net birdies
+      const prevPlayed = new Set(prevStats?.played || []);
+      const newHoles = (curStats.played || []).filter((h) => !prevPlayed.has(h));
+
+      const highlightAllowed = r.id === leader.id || r.id === lex.id;
+      if (highlightAllowed && newHoles.length > 0) {
+        for (const h of newHoles) {
+          const gross = r.scoresByHole[h];
+          if (gross == null) continue;
+          const net = netScoreForHole(gross, r.handicap, h);
+          const par = PARS[h - 1];
+          if (net <= par - 1) {
+            const si = STROKE_INDEX[h - 1];
+            const who = r.id === leader.id ? "Leader" : "The LEX";
+            const t = `${who} alert: ${r.last} just made a net birdie on #${h} (SI ${si}).`;
+            await insertBroadcast(
+              "highlight",
+              t,
+              ["highlight_birdie", nowKeyMinute(), r.id, h, net, par, r.rank],
+              r.id
+            );
+          }
+        }
+      }
+    }
+
+    // Refresh broadcast list after inserts
+    await loadBroadcast();
+  }
+
+  // Broadcast tick every 3 minutes
+  useEffect(() => {
+    const id = setInterval(async () => {
+      // Keep underlying data fresh for broadcasting
+      await loadPlayers();
+      await loadScores();
+      await runBroadcastTick();
+    }, 180_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [players.length]); // stable enough; avoids re-registering constantly
 
   function enterAdmin() {
     if (adminPin === "112020") {
@@ -446,7 +759,6 @@ export default function App() {
     await loadFoursomePlayers();
   }
 
-  // ✅ OPTION A: remove by composite key
   async function removePlayerFromFoursome(foursome_id, player_id) {
     if (!adminOn) return alert("Admin only.");
     const { error } = await supabase
@@ -587,7 +899,7 @@ export default function App() {
 
     for (const p of activePlayers) {
       const raw = (holeInputs[p.id] ?? "").trim();
-      if (!raw) continue; // allow blanks
+      if (!raw) continue;
       const sc = clampInt(raw, 0);
       if (sc < 1 || sc > 20) {
         alert(`Score for ${p.name} looks wrong (1–20).`);
@@ -606,6 +918,7 @@ export default function App() {
     }
 
     await loadScores();
+    await runBroadcastTick(); // immediate check after a save (still respects dedupe)
     setHole(nextHole);
   }
 
@@ -723,9 +1036,7 @@ export default function App() {
     const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
 
     const groupsNeeded = Array.from(
-      new Set(
-        teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean)
-      )
+      new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
     );
 
     const existingF = await supabase.from("foursomes").select("id,group_name,code,created_at");
@@ -768,9 +1079,7 @@ export default function App() {
       foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
     );
 
-    const existingAssign = new Set(
-      foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
-    );
+    const existingAssign = new Set(foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`));
 
     const assignmentInserts = [];
     for (const r of teeSheetRows) {
@@ -799,9 +1108,7 @@ export default function App() {
     }
 
     await initialLoad();
-    setImportMsg(
-      `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
-    );
+    setImportMsg(`Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`);
   }
 
   return (
@@ -814,9 +1121,7 @@ export default function App() {
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
                   {scorecardPlayer.name}{" "}
-                  <span style={{ opacity: 0.75, fontWeight: 700 }}>
-                    (HCP {scorecardPlayer.handicap})
-                  </span>
+                  <span style={{ opacity: 0.75, fontWeight: 700 }}>(HCP {scorecardPlayer.handicap})</span>
                 </div>
                 <div style={styles.modalSub}>
                   Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
@@ -849,11 +1154,10 @@ export default function App() {
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
                     const sc = scorecardPlayer.scoresByHole[h];
-
                     const si = STROKE_INDEX[h - 1];
                     const strokes = strokesOnHole(scorecardPlayer.handicap, h);
 
-                    // Printed cards show gross, so +/- here stays gross vs par
+                    // +/- here stays gross vs par (your printed cards are gross)
                     const diff = sc != null ? sc - par : null;
 
                     const diffStyle =
@@ -870,17 +1174,13 @@ export default function App() {
                         <td style={styles.td}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                             <span>{h}</span>
-                            {strokes > 0 && (
-                              <span style={styles.strokePill}>{`+${strokes}`}</span>
-                            )}
+                            {strokes > 0 && <span style={styles.strokePill}>{`+${strokes}`}</span>}
                           </span>
                         </td>
                         <td style={styles.td}>{si}</td>
                         <td style={styles.td}>{par}</td>
                         <td style={styles.td}>{sc != null ? sc : "—"}</td>
-                        <td style={{ ...styles.td, ...diffStyle }}>
-                          {diff == null ? "—" : formatToPar(diff)}
-                        </td>
+                        <td style={{ ...styles.td, ...diffStyle }}>{diff == null ? "—" : formatToPar(diff)}</td>
                       </tr>
                     );
                   })}
@@ -908,9 +1208,7 @@ export default function App() {
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
-              <div style={styles.homeSub}>
-                Drink Good. Play Good. Do Good.
-              </div>
+              <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
 
               <div style={styles.homeRule} />
             </div>
@@ -920,7 +1218,13 @@ export default function App() {
                 Leaderboard
               </button>
 
-              <button style={styles.bigBtn} onClick={() => setTab("broadcast")}>
+              <button
+                style={styles.bigBtn}
+                onClick={async () => {
+                  await loadBroadcast();
+                  setTab("broadcast");
+                }}
+              >
                 The Broadcast
               </button>
 
@@ -997,7 +1301,10 @@ export default function App() {
                 </button>
                 <button
                   style={tab === "broadcast" ? styles.navBtnActive : styles.navBtn}
-                  onClick={() => setTab("broadcast")}
+                  onClick={async () => {
+                    await loadBroadcast();
+                    setTab("broadcast");
+                  }}
                 >
                   The Broadcast
                 </button>
@@ -1020,22 +1327,46 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
               <div style={styles.cardTitle}>The Broadcast</div>
-              <button style={styles.smallBtn} onClick={() => setTab("home")}>
-                Home
-              </button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  style={styles.smallBtn}
+                  onClick={async () => {
+                    await loadPlayers();
+                    await loadScores();
+                    await runBroadcastTick();
+                    await loadBroadcast();
+                  }}
+                >
+                  Refresh
+                </button>
+                <button style={styles.smallBtn} onClick={() => setTab("home")}>
+                  Home
+                </button>
+              </div>
             </div>
 
             <div style={styles.helpText}>
-              Live tournament updates — leaders, movers, heaters, and unfortunate moments.
+              Fun tournament updates. Net scoring only. Trophy: <b>Agro Crag</b>. Last place: <b>The LEX</b>.
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={styles.broadcastItem}>
-                <div style={{ fontWeight: 950 }}>Welcome to The Broadcast</div>
-                <div style={{ marginTop: 6, color: THEME.textMuted, fontSize: 12 }}>
-                  Updates will appear here as scores come in.
+              {broadcastMsgs.length === 0 && (
+                <div style={styles.broadcastItem}>
+                  <div style={{ fontWeight: 950 }}>No updates yet</div>
+                  <div style={{ marginTop: 6, color: THEME.textMuted, fontSize: 12 }}>
+                    Once scores start coming in, this will fill up automatically every ~3 minutes.
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {broadcastMsgs.map((m) => (
+                <div key={m.id} style={styles.broadcastItem}>
+                  <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                    {new Date(m.created_at).toLocaleString()}
+                  </div>
+                  <div style={{ marginTop: 6, fontWeight: 950 }}>{m.text}</div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -1117,7 +1448,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ENTER SCORES (foursome hole-by-hole) */}
+        {/* ENTER SCORES */}
         {tab === "enter" && (
           <div style={styles.card}>
             <div style={styles.cardHeaderRow}>
@@ -1184,8 +1515,8 @@ export default function App() {
               </div>
 
               <div style={styles.helpText}>
-                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with{" "}
-                <b>Last Hole</b>. Leaving a box blank means “no score yet”.
+                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with <b>Last Hole</b>. Leaving
+                a box blank means “no score yet”.
               </div>
             </div>
           </div>
@@ -1196,7 +1527,6 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.cardTitle}>Admin</div>
 
-            {/* ✅ On-screen load errors */}
             {lastLoadErrors.length > 0 && (
               <div style={{ ...styles.helpText, marginTop: 10 }}>
                 <div style={{ fontWeight: 950 }}>Load Errors</div>
@@ -1238,9 +1568,7 @@ export default function App() {
                   Unlock Admin
                 </button>
 
-                <div style={styles.helpText}>
-                  Simple front-end PIN gate. (We can harden security later.)
-                </div>
+                <div style={styles.helpText}>Simple front-end PIN gate. (We can harden security later.)</div>
               </div>
             ) : (
               <>
@@ -1270,21 +1598,9 @@ export default function App() {
                     <div style={styles.subTitle}>Import Tee Sheet</div>
 
                     <div style={{ display: "grid", gap: 10 }}>
-                      <input
-                        type="file"
-                        accept=".xlsx,.xls"
-                        onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)}
-                      />
+                      <input type="file" accept=".xlsx,.xls" onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)} />
 
-                      <label
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "center",
-                          fontSize: 12,
-                          color: THEME.textMuted,
-                        }}
-                      >
+                      <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}>
                         <input
                           type="checkbox"
                           checked={importReplaceFoursomes}
@@ -1361,11 +1677,7 @@ export default function App() {
                       <div style={{ display: "grid", gap: 8 }}>
                         <div style={styles.sectionLabel}>Assign player to foursome</div>
 
-                        <select
-                          style={styles.input}
-                          value={assignFoursomeId}
-                          onChange={(e) => setAssignFoursomeId(e.target.value)}
-                        >
+                        <select style={styles.input} value={assignFoursomeId} onChange={(e) => setAssignFoursomeId(e.target.value)}>
                           <option value="">Select foursome…</option>
                           {foursomes.map((f) => (
                             <option key={f.id} value={f.id}>
@@ -1374,11 +1686,7 @@ export default function App() {
                           ))}
                         </select>
 
-                        <select
-                          style={styles.input}
-                          value={assignPlayerId}
-                          onChange={(e) => setAssignPlayerId(e.target.value)}
-                        >
+                        <select style={styles.input} value={assignPlayerId} onChange={(e) => setAssignPlayerId(e.target.value)}>
                           <option value="">Select player…</option>
                           {players.map((p) => (
                             <option key={p.id} value={p.id}>
@@ -1405,13 +1713,9 @@ export default function App() {
                                 <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 950 }}>
                                     {f.group_name}{" "}
-                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>
-                                      (Code: {f.code})
-                                    </span>
+                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
                                   </div>
-                                  <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                                    Members: {members.length}
-                                  </div>
+                                  <div style={{ fontSize: 12, color: THEME.textMuted }}>Members: {members.length}</div>
                                 </div>
                               </div>
 
@@ -1419,14 +1723,9 @@ export default function App() {
                                 {memberRows.map((fp) => {
                                   const p = players.find((x) => x.id === fp.player_id);
                                   return (
-                                    <div
-                                      key={`${fp.foursome_id}-${fp.player_id}`}
-                                      style={styles.playerRow}
-                                    >
+                                    <div key={`${fp.foursome_id}-${fp.player_id}`} style={styles.playerRow}>
                                       <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 950 }}>
-                                          {p ? p.name : fp.player_id}
-                                        </div>
+                                        <div style={{ fontWeight: 950 }}>{p ? p.name : fp.player_id}</div>
                                         {p && (
                                           <div style={styles.playerMeta}>
                                             HCP {clampInt(p.handicap, 0)}
@@ -1434,18 +1733,13 @@ export default function App() {
                                           </div>
                                         )}
                                       </div>
-                                      <button
-                                        style={styles.dangerBtn}
-                                        onClick={() => removePlayerFromFoursome(fp.foursome_id, fp.player_id)}
-                                      >
+                                      <button style={styles.dangerBtn} onClick={() => removePlayerFromFoursome(fp.foursome_id, fp.player_id)}>
                                         Remove
                                       </button>
                                     </div>
                                   );
                                 })}
-                                {memberRows.length === 0 && (
-                                  <div style={styles.helpText}>No players assigned.</div>
-                                )}
+                                {memberRows.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
                               </div>
                             </div>
                           );
@@ -1462,25 +1756,9 @@ export default function App() {
 
                     <div style={{ display: "grid", gap: 10 }}>
                       <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
-                      <input
-                        style={styles.input}
-                        placeholder="Name"
-                        value={newName}
-                        onChange={(e) => setNewName(e.target.value)}
-                      />
-                      <input
-                        style={styles.input}
-                        placeholder="Handicap"
-                        value={newHandicap}
-                        onChange={(e) => setNewHandicap(e.target.value)}
-                        inputMode="numeric"
-                      />
-                      <input
-                        style={styles.input}
-                        placeholder="Charity (optional)"
-                        value={newCharity}
-                        onChange={(e) => setNewCharity(e.target.value)}
-                      />
+                      <input style={styles.input} placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                      <input style={styles.input} placeholder="Handicap" value={newHandicap} onChange={(e) => setNewHandicap(e.target.value)} inputMode="numeric" />
+                      <input style={styles.input} placeholder="Charity (optional)" value={newCharity} onChange={(e) => setNewCharity(e.target.value)} />
                       <button style={styles.bigBtn} onClick={addPlayer}>
                         Add Player
                       </button>
@@ -1493,9 +1771,7 @@ export default function App() {
                       {players.map((p) => (
                         <div key={p.id} style={styles.playerRow}>
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {p.name}
-                            </div>
+                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                             <div style={styles.playerMeta}>
                               HCP {clampInt(p.handicap, 0)}
                               {p.charity ? ` • ${p.charity}` : ""}
@@ -1531,7 +1807,7 @@ export default function App() {
   );
 }
 
-/** Styles: phone-first, classy palette */
+/** Styles */
 const styles = {
   page: {
     minHeight: "100vh",
