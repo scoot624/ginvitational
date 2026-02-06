@@ -507,7 +507,7 @@ export default function App() {
 
     // New LEX
     if (prevLex && prevLex.id !== lex.id) {
-      const t = `${lex.last} just inherited The LEX. Someone check on them.`;
+      const t = `${lex.last} is now The LEX. Someone check on them.`;
       await insertBroadcast("lex", t, ["lex", nowKeyMinute(), lex.id, lex.netToPar, lex.holesPlayed], lex.id);
     }
 
