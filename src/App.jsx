@@ -643,7 +643,7 @@ export default function App() {
           if (net <= par - 1) {
             const si = STROKE_INDEX[h - 1];
             const who = r.id === leader.id ? "Leader" : "The LEX";
-            const t = `${who} alert: ${r.last} just made a net birdie on #${h} (SI ${si}).`;
+            const t = `${who} alert: ${r.last} just made a net birdie on #${h}.`;
             await insertBroadcast(
               "highlight",
               t,
