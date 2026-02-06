@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import * as XLSX from "xlsx";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -133,6 +134,12 @@ export default function App() {
   // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
+
+  // ✅ Admin: Excel import (tee sheet)
+  const [teeSheetFile, setTeeSheetFile] = useState(null);
+  const [teeSheetRows, setTeeSheetRows] = useState([]);
+  const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
+  const [importMsg, setImportMsg] = useState("");
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -515,6 +522,227 @@ export default function App() {
     setHole(nextHole);
   }
 
+  // ✅ Excel import helpers
+  function normKey(k) {
+    return String(k || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "_");
+  }
+
+  function fullNameFromRow(row) {
+    const first = String(row.first_name || "").trim();
+    const last = String(row.last_name || "").trim();
+    return `${first} ${last}`.trim().replace(/\s+/g, " ");
+  }
+
+  async function parseTeeSheetFile(file) {
+    setImportMsg("");
+    setTeeSheetFile(file);
+
+    if (!file) {
+      setTeeSheetRows([]);
+      return;
+    }
+
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+
+      const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+      if (!raw || raw.length === 0) {
+        setTeeSheetRows([]);
+        setImportMsg("No rows found in the spreadsheet.");
+        return;
+      }
+
+      const rows = raw.map((r) => {
+        const out = {};
+        for (const [k, v] of Object.entries(r)) out[normKey(k)] = v;
+        return out;
+      });
+
+      // Validate required cols
+      const required = ["foursome", "first_name", "last_name"];
+      const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
+      if (missing.length) {
+        setTeeSheetRows([]);
+        setImportMsg(`Missing required columns: ${missing.join(", ")}`);
+        return;
+      }
+
+      setTeeSheetRows(rows);
+      setImportMsg(`Loaded ${rows.length} rows from "${sheetName}".`);
+    } catch (e) {
+      console.error(e);
+      setTeeSheetRows([]);
+      setImportMsg("Could not read that Excel file.");
+    }
+  }
+
+  async function importFromTeeSheet() {
+    if (!adminOn) return alert("Admin only.");
+    if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
+
+    setImportMsg("Importing…");
+
+    // Replace foursomes + assignments (leave players + scores alone)
+    if (importReplaceFoursomes) {
+      await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+      await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    }
+
+    // Ensure caches are current
+    await loadPlayers();
+    await loadFoursomes();
+    await loadFoursomePlayers();
+
+    // Build players from sheet
+    const existingByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p]));
+    const desiredPlayers = [];
+
+    for (const r of teeSheetRows) {
+      const name = fullNameFromRow(r);
+      if (!name) continue;
+
+      desiredPlayers.push({
+        name,
+        handicap: clampInt(r.handicap, 0),
+        charity: String(r.charity || "").trim() || null,
+      });
+    }
+
+    // Insert missing players
+    const missingPlayers = [];
+    for (const p of desiredPlayers) {
+      const key = p.name.toLowerCase();
+      if (!existingByName.has(key)) {
+        existingByName.set(key, p);
+        missingPlayers.push(p);
+      }
+    }
+
+    if (missingPlayers.length) {
+      const { error } = await supabase.from("players").insert(missingPlayers);
+      if (error) {
+        console.error(error);
+        setImportMsg("Error inserting players. Check Supabase RLS/policies for players.");
+        return;
+      }
+    }
+
+    // Reload players to get IDs
+    await loadPlayers();
+    const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
+
+    // Read existing foursomes (fresh)
+    const existingF = await supabase
+      .from("foursomes")
+      .select("id,group_name,code,created_at")
+      .order("created_at", { ascending: true });
+
+    if (existingF.error) {
+      console.error(existingF.error);
+      setImportMsg("Error reading foursomes. Check Supabase RLS/policies.");
+      return;
+    }
+
+    const foursomeByGroup = new Map(
+      (existingF.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
+    );
+
+    // Determine groups needed
+    const groupsNeeded = Array.from(
+      new Set(
+        teeSheetRows
+          .map((r) => String(r.foursome || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    // Create missing foursomes
+    for (const group_name of groupsNeeded) {
+      const key = group_name.toLowerCase();
+      if (foursomeByGroup.has(key)) continue;
+
+      let created = null;
+      let tries = 0;
+
+      while (!created && tries < 8) {
+        tries++;
+        const code = makeCode(6);
+
+        const { data, error } = await supabase
+          .from("foursomes")
+          .insert({ group_name, code })
+          .select("id,group_name,code")
+          .single();
+
+        if (!error) {
+          created = data;
+          foursomeByGroup.set(key, created);
+          break;
+        }
+      }
+
+      if (!created) {
+        setImportMsg(`Could not create foursome "${group_name}" (RLS or code collision).`);
+        return;
+      }
+    }
+
+    // Reload foursomes + assignments to build maps
+    await loadFoursomes();
+    await loadFoursomePlayers();
+
+    const foursomeIdByGroup = new Map(
+      foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
+    );
+
+    // Avoid duplicate assignments
+    const existingAssign = new Set(
+      foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
+    );
+
+    const assignmentInserts = [];
+    for (const r of teeSheetRows) {
+      const group = String(r.foursome || "").trim();
+      const name = fullNameFromRow(r);
+      if (!group || !name) continue;
+
+      const fid = foursomeIdByGroup.get(group.toLowerCase());
+      const pid = playerIdByName.get(name.toLowerCase());
+
+      if (!fid || !pid) continue;
+
+      const key = `${fid}::${pid}`;
+      if (existingAssign.has(key)) continue;
+
+      existingAssign.add(key);
+      assignmentInserts.push({ foursome_id: fid, player_id: pid });
+    }
+
+    if (assignmentInserts.length) {
+      const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
+      if (error) {
+        console.error(error);
+        setImportMsg("Error inserting foursome assignments. Check Supabase RLS/policies for foursome_players.");
+        return;
+      }
+    }
+
+    await loadPlayers();
+    await loadFoursomes();
+    await loadFoursomePlayers();
+
+    setImportMsg(
+      `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
+    );
+  }
+
   return (
     <div style={styles.page}>
       {/* Scorecard modal (leaderboard) */}
@@ -596,25 +824,20 @@ export default function App() {
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
-          
-  <img
-  src="/logo.png"
-  alt="Ginvitational logo"
-  style={{
-    width: 210,
-    height: "auto",
-    display: "block",
-    margin: "0 auto",
-  }}
-/>
-
-
+              <img
+                src="/logo.png"
+                alt="Ginvitational logo"
+                style={{
+                  width: 210,
+                  height: "auto",
+                  display: "block",
+                  margin: "0 auto",
+                }}
+              />
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
-              <div style={styles.homeSub}>
-                Drink Good. Play Good. Do Good.
-              </div>
+              <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
 
               <div style={styles.homeRule} />
             </div>
@@ -811,7 +1034,8 @@ export default function App() {
 
             <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
               <div style={{ fontSize: 18, fontWeight: 950 }}>
-                Hole {hole} <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
+                Hole {hole}{" "}
+                <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
               </div>
 
               <div style={{ display: "grid", gap: 10 }}>
@@ -846,10 +1070,7 @@ export default function App() {
                   Last Hole
                 </button>
 
-                <button
-                  style={styles.bigBtn}
-                  onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}
-                >
+                <button style={styles.bigBtn} onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}>
                   Save & Next
                 </button>
               </div>
@@ -885,9 +1106,7 @@ export default function App() {
                   Unlock Admin
                 </button>
 
-                <div style={styles.helpText}>
-                  Simple front-end PIN gate. (We can harden security later.)
-                </div>
+                <div style={styles.helpText}>Simple front-end PIN gate. (We can harden security later.)</div>
               </div>
             ) : (
               <>
@@ -912,6 +1131,66 @@ export default function App() {
                 </div>
 
                 <div style={styles.adminGrid}>
+                  {/* ✅ Import Tee Sheet */}
+                  <div style={styles.subCard}>
+                    <div style={styles.subTitle}>Import Tee Sheet</div>
+
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls"
+                        onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)}
+                      />
+
+                      <label
+                        style={{
+                          display: "flex",
+                          gap: 10,
+                          alignItems: "center",
+                          fontSize: 12,
+                          color: THEME.textMuted,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={importReplaceFoursomes}
+                          onChange={(e) => setImportReplaceFoursomes(e.target.checked)}
+                        />
+                        Replace existing foursomes + assignments first (recommended)
+                      </label>
+
+                      <button style={styles.bigBtn} onClick={importFromTeeSheet}>
+                        Import Players + Foursomes + Assignments
+                      </button>
+
+                      {importMsg ? <div style={styles.helpText}>{importMsg}</div> : null}
+
+                      {teeSheetRows.length > 0 && (
+                        <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                          Preview (first 5 rows):
+                          <pre
+                            style={{
+                              whiteSpace: "pre-wrap",
+                              marginTop: 8,
+                              background: "rgba(7,31,19,0.22)",
+                              padding: 10,
+                              borderRadius: 12,
+                              border: `1px solid ${THEME.border}`,
+                            }}
+                          >
+                            {JSON.stringify(teeSheetRows.slice(0, 5), null, 2)}
+                          </pre>
+                        </div>
+                      )}
+
+                      {teeSheetFile ? (
+                        <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                          File: <b>{teeSheetFile.name}</b>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
                   {/* Foursomes */}
                   <div style={styles.subCard}>
                     <div style={styles.subTitle}>Foursomes</div>
@@ -992,9 +1271,7 @@ export default function App() {
                                 <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 950 }}>
                                     {f.group_name}{" "}
-                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>
-                                      (Code: {f.code})
-                                    </span>
+                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
                                   </div>
                                   <div style={{ fontSize: 12, color: THEME.textMuted }}>
                                     Members: {members.length}
@@ -1008,9 +1285,7 @@ export default function App() {
                                   return (
                                     <div key={fp.id} style={styles.playerRow}>
                                       <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 950 }}>
-                                          {p ? p.name : fp.player_id}
-                                        </div>
+                                        <div style={{ fontWeight: 950 }}>{p ? p.name : fp.player_id}</div>
                                         {p && (
                                           <div style={styles.playerMeta}>
                                             HCP {clampInt(p.handicap, 0)}
@@ -1018,18 +1293,13 @@ export default function App() {
                                           </div>
                                         )}
                                       </div>
-                                      <button
-                                        style={styles.dangerBtn}
-                                        onClick={() => removePlayerFromFoursome(fp.id)}
-                                      >
+                                      <button style={styles.dangerBtn} onClick={() => removePlayerFromFoursome(fp.id)}>
                                         Remove
                                       </button>
                                     </div>
                                   );
                                 })}
-                                {memberRows.length === 0 && (
-                                  <div style={styles.helpText}>No players assigned.</div>
-                                )}
+                                {memberRows.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
                               </div>
                             </div>
                           );
@@ -1046,12 +1316,7 @@ export default function App() {
 
                     <div style={{ display: "grid", gap: 10 }}>
                       <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
-                      <input
-                        style={styles.input}
-                        placeholder="Name"
-                        value={newName}
-                        onChange={(e) => setNewName(e.target.value)}
-                      />
+                      <input style={styles.input} placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
                       <input
                         style={styles.input}
                         placeholder="Handicap"
@@ -1193,8 +1458,7 @@ const styles = {
     fontWeight: 950,
     letterSpacing: -0.6,
     color: THEME.text,
-    fontFamily:
-      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
   },
   homeSub: {
     marginTop: 10,
@@ -1230,8 +1494,7 @@ const styles = {
     fontWeight: 950,
     letterSpacing: -0.2,
     color: THEME.text,
-    fontFamily:
-      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
   },
   helpText: { marginTop: 10, fontSize: 12, lineHeight: 1.35, color: THEME.textMuted },
 
@@ -1433,8 +1696,7 @@ const styles = {
     fontWeight: 950,
     lineHeight: 1.1,
     color: THEME.text,
-    fontFamily:
-      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
   },
   modalSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
 };
