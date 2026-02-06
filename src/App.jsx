@@ -10,7 +10,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 /** ⛳ PARS (Blues, Par 72 — hole 18 is Par 5 per your note) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
-  4, 3, 5, 3, 4, 5, 4, 4, 5
+  4, 3, 5, 3, 4, 5, 4, 4, 5,
 ];
 
 function clampInt(v, fallback = 0) {
@@ -413,7 +413,7 @@ export default function App() {
     for (let i = 0; i < groups.length; i++) {
       const groupPlayers = groups[i];
       const group_name = `Group ${i + 1}`;
-      const code = makeCode();
+      const code = makeCode(6);
 
       const { data: fData, error: fErr } = await supabase
         .from("foursomes")
@@ -583,164 +583,188 @@ export default function App() {
     }
   }
 
+  // ✅ Fetch + set + return (for import reliability)
+  async function fetchPlayers() {
+    const { data, error } = await supabase
+      .from("players")
+      .select("id,name,handicap,charity,created_at")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    setPlayers(data || []);
+    return data || [];
+  }
+
+  async function fetchFoursomes() {
+    const { data, error } = await supabase
+      .from("foursomes")
+      .select("id,group_name,code,created_at")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    setFoursomes(data || []);
+    return data || [];
+  }
+
+  async function fetchFoursomePlayers() {
+    const { data, error } = await supabase
+      .from("foursome_players")
+      .select("id,foursome_id,player_id,seat,created_at")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    setFoursomePlayers(data || []);
+    return data || [];
+  }
+
+  // ✅ FIXED importer: uses returned arrays (not stale React state)
   async function importFromTeeSheet() {
     if (!adminOn) return alert("Admin only.");
     if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
 
-    setImportMsg("Importing…");
+    try {
+      setImportMsg("Importing…");
 
-    // Replace foursomes + assignments (leave players + scores alone)
-    if (importReplaceFoursomes) {
-      await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-      await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    }
-
-    // Ensure caches are current
-    await loadPlayers();
-    await loadFoursomes();
-    await loadFoursomePlayers();
-
-    // Build players from sheet
-    const existingByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p]));
-    const desiredPlayers = [];
-
-    for (const r of teeSheetRows) {
-      const name = fullNameFromRow(r);
-      if (!name) continue;
-
-      desiredPlayers.push({
-        name,
-        handicap: clampInt(r.handicap, 0),
-        charity: String(r.charity || "").trim() || null,
-      });
-    }
-
-    // Insert missing players
-    const missingPlayers = [];
-    for (const p of desiredPlayers) {
-      const key = p.name.toLowerCase();
-      if (!existingByName.has(key)) {
-        existingByName.set(key, p);
-        missingPlayers.push(p);
+      // Replace foursomes + assignments (leave players + scores alone)
+      if (importReplaceFoursomes) {
+        await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+        await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
       }
-    }
 
-    if (missingPlayers.length) {
-      const { error } = await supabase.from("players").insert(missingPlayers);
-      if (error) {
-        console.error(error);
-        setImportMsg("Error inserting players. Check Supabase RLS/policies for players.");
-        return;
+      // Fresh data
+      let playersArr = await fetchPlayers();
+      let foursomesArr = await fetchFoursomes();
+      let foursomePlayersArr = await fetchFoursomePlayers();
+
+      // Players: insert missing
+      const existingByName = new Map(
+        playersArr.map((p) => [String(p.name || "").trim().toLowerCase(), p])
+      );
+
+      const desiredPlayers = [];
+      for (const r of teeSheetRows) {
+        const name = fullNameFromRow(r);
+        if (!name) continue;
+        desiredPlayers.push({
+          name,
+          handicap: clampInt(r.handicap, 0),
+          charity: String(r.charity || "").trim() || null,
+        });
       }
-    }
 
-    // Reload players to get IDs
-    await loadPlayers();
-    const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
-
-    // Read existing foursomes (fresh)
-    const existingF = await supabase
-      .from("foursomes")
-      .select("id,group_name,code,created_at")
-      .order("created_at", { ascending: true });
-
-    if (existingF.error) {
-      console.error(existingF.error);
-      setImportMsg("Error reading foursomes. Check Supabase RLS/policies.");
-      return;
-    }
-
-    const foursomeByGroup = new Map(
-      (existingF.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
-    );
-
-    // Determine groups needed
-    const groupsNeeded = Array.from(
-      new Set(
-        teeSheetRows
-          .map((r) => String(r.foursome || "").trim())
-          .filter(Boolean)
-      )
-    );
-
-    // Create missing foursomes
-    for (const group_name of groupsNeeded) {
-      const key = group_name.toLowerCase();
-      if (foursomeByGroup.has(key)) continue;
-
-      let created = null;
-      let tries = 0;
-
-      while (!created && tries < 8) {
-        tries++;
-        const code = makeCode(6);
-
-        const { data, error } = await supabase
-          .from("foursomes")
-          .insert({ group_name, code })
-          .select("id,group_name,code")
-          .single();
-
-        if (!error) {
-          created = data;
-          foursomeByGroup.set(key, created);
-          break;
+      const missingPlayers = [];
+      for (const p of desiredPlayers) {
+        const key = p.name.toLowerCase();
+        if (!existingByName.has(key)) {
+          existingByName.set(key, p);
+          missingPlayers.push(p);
         }
       }
 
-      if (!created) {
-        setImportMsg(`Could not create foursome "${group_name}" (RLS or code collision).`);
-        return;
+      if (missingPlayers.length) {
+        const { error } = await supabase.from("players").insert(missingPlayers);
+        if (error) {
+          console.error(error);
+          setImportMsg("Error inserting players. Check Supabase RLS/policies for players.");
+          return;
+        }
       }
-    }
 
-    // Reload foursomes + assignments to build maps
-    await loadFoursomes();
-    await loadFoursomePlayers();
+      // Reload players -> name => id
+      playersArr = await fetchPlayers();
+      const playerIdByName = new Map(
+        playersArr.map((p) => [String(p.name || "").trim().toLowerCase(), p.id])
+      );
 
-    const foursomeIdByGroup = new Map(
-      foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
-    );
+      // Foursomes: create missing by group name
+      const foursomeByGroup = new Map(
+        foursomesArr.map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
+      );
 
-    // Avoid duplicate assignments
-    const existingAssign = new Set(
-      foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
-    );
+      const groupsNeeded = Array.from(
+        new Set(
+          teeSheetRows
+            .map((r) => String(r.foursome || "").trim())
+            .filter(Boolean)
+        )
+      );
 
-    const assignmentInserts = [];
-    for (const r of teeSheetRows) {
-      const group = String(r.foursome || "").trim();
-      const name = fullNameFromRow(r);
-      if (!group || !name) continue;
+      for (const group_name of groupsNeeded) {
+        const key = group_name.toLowerCase();
+        if (foursomeByGroup.has(key)) continue;
 
-      const fid = foursomeIdByGroup.get(group.toLowerCase());
-      const pid = playerIdByName.get(name.toLowerCase());
+        let created = null;
+        let tries = 0;
 
-      if (!fid || !pid) continue;
+        while (!created && tries < 8) {
+          tries++;
+          const code = makeCode(6);
 
-      const key = `${fid}::${pid}`;
-      if (existingAssign.has(key)) continue;
+          const { data, error } = await supabase
+            .from("foursomes")
+            .insert({ group_name, code })
+            .select("id,group_name,code")
+            .single();
 
-      existingAssign.add(key);
-      assignmentInserts.push({ foursome_id: fid, player_id: pid });
-    }
+          if (!error) {
+            created = data;
+            foursomeByGroup.set(key, created);
+            break;
+          }
+        }
 
-    if (assignmentInserts.length) {
-      const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
-      if (error) {
-        console.error(error);
-        setImportMsg("Error inserting foursome assignments. Check Supabase RLS/policies for foursome_players.");
-        return;
+        if (!created) {
+          setImportMsg(`Could not create foursome "${group_name}" (RLS or code collision).`);
+          return;
+        }
       }
+
+      // Reload foursomes + assignments
+      foursomesArr = await fetchFoursomes();
+      foursomePlayersArr = await fetchFoursomePlayers();
+
+      const foursomeIdByGroup = new Map(
+        foursomesArr.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
+      );
+
+      const existingAssign = new Set(
+        foursomePlayersArr.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
+      );
+
+      const assignmentInserts = [];
+      for (const r of teeSheetRows) {
+        const group = String(r.foursome || "").trim();
+        const name = fullNameFromRow(r);
+        if (!group || !name) continue;
+
+        const fid = foursomeIdByGroup.get(group.toLowerCase());
+        const pid = playerIdByName.get(name.toLowerCase());
+        if (!fid || !pid) continue;
+
+        const key = `${fid}::${pid}`;
+        if (existingAssign.has(key)) continue;
+
+        existingAssign.add(key);
+        assignmentInserts.push({ foursome_id: fid, player_id: pid });
+      }
+
+      if (assignmentInserts.length) {
+        const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
+        if (error) {
+          console.error(error);
+          setImportMsg("Error inserting foursome assignments. Check Supabase RLS/policies for foursome_players.");
+          return;
+        }
+      }
+
+      await fetchPlayers();
+      await fetchFoursomes();
+      await fetchFoursomePlayers();
+
+      setImportMsg(
+        `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
+      );
+    } catch (e) {
+      console.error(e);
+      setImportMsg("Import failed. Check console + Supabase RLS/policies.");
     }
-
-    await loadPlayers();
-    await loadFoursomes();
-    await loadFoursomePlayers();
-
-    setImportMsg(
-      `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
-    );
   }
 
   return (
@@ -1316,7 +1340,12 @@ export default function App() {
 
                     <div style={{ display: "grid", gap: 10 }}>
                       <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
-                      <input style={styles.input} placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                      <input
+                        style={styles.input}
+                        placeholder="Name"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                      />
                       <input
                         style={styles.input}
                         placeholder="Handicap"
