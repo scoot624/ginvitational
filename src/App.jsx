@@ -1,644 +1,1446 @@
-// App.jsx
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import * as XLSX from "xlsx";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ✅ Excel columns we expect (FOURSOME everywhere) */
-const REQUIRED_COLUMNS = [
-  "foursome",
-  "tee_time",
-  "first_name",
-  "last_name",
-  "handicap",
-  "charity",
+/** ⛳ PARS (Blues, Par 72 — hole 18 is Par 5 per your note) */
+const PARS = [
+  4, 4, 4, 3, 4, 3, 5, 3, 5,
+  4, 3, 5, 3, 4, 5, 4, 4, 5
 ];
 
-/** ---------------------------
- * Helpers
- * -------------------------- */
-function normalizeHeader(h) {
-  return String(h || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_");
-}
-
-/** Convert Excel cell into "HH:MM" (24h) for Postgres TIME */
-function toTimeString(value) {
-  if (value == null || value === "") return null;
-
-  // Already a string time like "9:10" or "09:10"
-  if (typeof value === "string") {
-    const s = value.trim();
-    const m = s.match(/^(\d{1,2}):(\d{2})/);
-    if (m) return `${String(m[1]).padStart(2, "0")}:${m[2]}`;
-    return s;
-  }
-
-  // Excel can parse times as Date
-  if (value instanceof Date) {
-    const hh = String(value.getHours()).padStart(2, "0");
-    const mm = String(value.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}`;
-  }
-
-  // Excel can store time as fraction of day (0.5 = 12:00)
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const totalMinutes = Math.round(value * 24 * 60);
-    const hh = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
-    const mm = String(totalMinutes % 60).padStart(2, "0");
-    return `${hh}:${mm}`;
-  }
-
-  return null;
-}
-
-function safeInt(v) {
-  if (v == null || v === "") return null;
+function clampInt(v, fallback = 0) {
   const n = Number(v);
-  if (!Number.isFinite(n)) return null;
+  if (!Number.isFinite(n)) return fallback;
   return Math.trunc(n);
 }
 
-function keyFoursome(name, tee_time) {
-  return `${String(name)}__${String(tee_time)}`;
+function formatToPar(n) {
+  if (n === 0) return "E";
+  if (n > 0) return `+${n}`;
+  return `${n}`;
 }
 
-function keyPlayer(fn, ln) {
-  return `${String(fn)}__${String(ln)}`.toLowerCase();
+/** --- Brand palette from your style guide --- */
+const PALETTE = {
+  // Primary
+  fairwayGreen: "#1E3D34",
+  deepMeadow: "#071F13",
+  black: "#000000",
+  white: "#FFFFFF",
+
+  // Secondary
+  sandstone: "#F2EBDD",
+  teeSand: "#CBBD97",
+  puttingGreen: "#8E998B",
+  juniperLeaf: "#385230",
+  oliveGrove: "#46492B",
+
+  // Accent
+  whickerBasket: "#9F7750",
+  salmonRose: "#994B3E",
+  admiralBlue: "#243144",
+};
+
+const THEME = {
+  bg: PALETTE.sandstone,
+  ink: PALETTE.deepMeadow,
+
+  // Dark “club” surface
+  surface: "rgba(7, 31, 19, 0.86)",
+  surfaceSoft: "rgba(30, 61, 52, 0.44)",
+  surfaceUltraSoft: "rgba(30, 61, 52, 0.26)",
+
+  border: "rgba(30, 61, 52, 0.26)",
+  borderStrong: "rgba(30, 61, 52, 0.46)",
+
+  text: "rgba(242, 235, 221, 0.98)",
+  textMuted: "rgba(242, 235, 221, 0.78)",
+  textFaint: "rgba(242, 235, 221, 0.60)",
+
+  btn: "rgba(203, 189, 151, 0.14)",
+  btnBorder: "rgba(242, 235, 221, 0.30)",
+  btnStrong: "rgba(203, 189, 151, 0.20)",
+
+  accent: PALETTE.whickerBasket,
+  danger: PALETTE.salmonRose,
+
+  good: "#2F8F62",
+  bad: PALETTE.salmonRose,
+};
+
+function netColorStyle(netToPar) {
+  if (netToPar < 0) return { color: THEME.good };
+  if (netToPar > 0) return { color: THEME.bad };
+  return { color: THEME.textMuted };
 }
 
-/** ---------------------------
- * Minimal UI Components
- * -------------------------- */
-function TopBar({ view, setView }) {
-  const btn = (id, label) => (
-    <button
-      onClick={() => setView(id)}
-      style={{
-        padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid rgba(0,0,0,0.12)",
-        background: view === id ? "rgba(0,0,0,0.06)" : "white",
-        cursor: "pointer",
-        fontWeight: 600,
-      }}
-    >
-      {label}
-    </button>
-  );
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        justifyContent: "space-between",
-        marginBottom: 14,
-      }}
-    >
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Ginvitational</div>
-        <div style={{ opacity: 0.55, fontSize: 12 }}>Foursomes schema</div>
-      </div>
-      <div style={{ display: "flex", gap: 10 }}>
-        {btn("home", "Home")}
-        {btn("tee-sheet", "Tee Sheet")}
-        {btn("admin", "Admin")}
-      </div>
-    </div>
-  );
+function makeCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
 
-function Card({ title, children }) {
-  return (
-    <div
-      style={{
-        background: "white",
-        border: "1px solid rgba(0,0,0,0.12)",
-        borderRadius: 18,
-        padding: 16,
-        boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
-      }}
-    >
-      {title ? (
-        <div style={{ fontWeight: 800, marginBottom: 10 }}>{title}</div>
-      ) : null}
-      {children}
-    </div>
-  );
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
-/** ---------------------------
- * Views
- * -------------------------- */
-function HomeView() {
-  return (
-    <Card title="Home">
-      <div style={{ lineHeight: 1.5 }}>
-        <div style={{ fontWeight: 800, marginBottom: 6 }}>
-          Admin is now “Excel Upload Only”
-        </div>
-        <div style={{ opacity: 0.75 }}>
-          Upload one spreadsheet to create all players + foursomes + tee times.
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>
-          Excel columns: <code>{REQUIRED_COLUMNS.join(", ")}</code>
-        </div>
-      </div>
-    </Card>
-  );
-}
+export default function App() {
+  const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin
+  const [status, setStatus] = useState("Loading...");
 
-function TeeSheetView() {
-  const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState([]);
-  const [err, setErr] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [scores, setScores] = useState([]);
+
+  // Leaderboard scorecard modal
+  const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
+
+  // Admin gate
+  const [adminPin, setAdminPin] = useState("");
+  const [adminOn, setAdminOn] = useState(false);
+
+  // Admin: add player
+  const [newName, setNewName] = useState("");
+  const [newHandicap, setNewHandicap] = useState("");
+  const [newCharity, setNewCharity] = useState("");
+
+  // Foursomes data (admin + enter scores)
+  const [foursomes, setFoursomes] = useState([]);
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id
+
+  // Admin: manual foursome
+  const [manualGroupName, setManualGroupName] = useState("");
+  const [manualCode, setManualCode] = useState("");
+
+  // Admin: assign
+  const [assignFoursomeId, setAssignFoursomeId] = useState("");
+  const [assignPlayerId, setAssignPlayerId] = useState("");
+
+  // Enter Scores: foursome code gate
+  const [entryCode, setEntryCode] = useState("");
+  const [activeFoursome, setActiveFoursome] = useState(null); // {id, group_name, code}
+  const [activePlayers, setActivePlayers] = useState([]); // players in the foursome
+
+  // Enter Scores: hole-by-hole typing UI
+  const [hole, setHole] = useState(1);
+  const [holeInputs, setHoleInputs] = useState({}); // {player_id: "4"}
+
+  async function loadPlayers() {
+    const { data, error } = await supabase
+      .from("players")
+      .select("id,name,handicap,charity,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
+    }
+    setPlayers(data || []);
+    return { ok: true };
+  }
+
+  async function loadScores() {
+    const { data, error } = await supabase
+      .from("scores")
+      .select("id,player_id,hole,score,created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
+    }
+    setScores(data || []);
+    return { ok: true };
+  }
+
+  async function loadFoursomes() {
+    const { data, error } = await supabase
+      .from("foursomes")
+      .select("id,group_name,code,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
+    }
+    setFoursomes(data || []);
+    return { ok: true };
+  }
+
+  async function loadFoursomePlayers() {
+    const { data, error } = await supabase
+      .from("foursome_players")
+      .select("id,foursome_id,player_id,seat,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return { ok: false };
+    }
+    setFoursomePlayers(data || []);
+    return { ok: true };
+  }
+
+  async function initialLoad() {
+    setStatus("Loading...");
+    const a = await loadPlayers();
+    const b = await loadScores();
+    const c = await loadFoursomes();
+    const d = await loadFoursomePlayers();
+    setStatus(a.ok && b.ok && c.ok && d.ok ? "Connected ✅" : "Connected, but some data failed ❗");
+  }
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      setErr("");
-      try {
-        // Pull foursomes + linked players
-        const { data: foursomes, error: fErr } = await supabase
-          .from("foursomes")
-          .select("id,name,tee_time")
-          .order("tee_time", { ascending: true })
-          .order("name", { ascending: true });
-
-        if (fErr) throw fErr;
-
-        const { data: links, error: lErr } = await supabase
-          .from("foursome_players")
-          .select("foursome_id, player_id");
-
-        if (lErr) throw lErr;
-
-        const playerIds = Array.from(new Set((links || []).map((x) => x.player_id)));
-        let playersById = new Map();
-
-        if (playerIds.length) {
-          const { data: players, error: pErr } = await supabase
-            .from("players")
-            .select("id,first_name,last_name,handicap,charity")
-            .in("id", playerIds);
-
-          if (pErr) throw pErr;
-
-          playersById = new Map((players || []).map((p) => [p.id, p]));
-        }
-
-        const playerIdsByFoursome = new Map();
-        for (const l of links || []) {
-          if (!playerIdsByFoursome.has(l.foursome_id)) playerIdsByFoursome.set(l.foursome_id, []);
-          playerIdsByFoursome.get(l.foursome_id).push(l.player_id);
-        }
-
-        const built = (foursomes || []).map((f) => {
-          const pids = playerIdsByFoursome.get(f.id) || [];
-          const players = pids
-            .map((pid) => playersById.get(pid))
-            .filter(Boolean)
-            .sort((a, b) => (a.last_name || "").localeCompare(b.last_name || ""));
-          return { ...f, players };
-        });
-
-        if (alive) setRows(built);
-      } catch (e) {
-        console.error(e);
-        if (alive) setErr(e?.message || "Failed to load tee sheet.");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    initialLoad();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return (
-    <Card title="Tee Sheet">
-      {loading ? (
-        <div>Loading…</div>
-      ) : err ? (
-        <div style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{err}</div>
-      ) : rows.length === 0 ? (
-        <div style={{ opacity: 0.75 }}>
-          No foursomes found yet. Go to <b>Admin</b> and upload your Excel tee sheet.
-        </div>
-      ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          {rows.map((f) => (
-            <div
-              key={f.id}
-              style={{
-                border: "1px solid rgba(0,0,0,0.10)",
-                borderRadius: 16,
-                padding: 12,
-                background: "rgba(0,0,0,0.02)",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                <div style={{ fontWeight: 900 }}>{f.name}</div>
-                <div style={{ fontWeight: 800, opacity: 0.75 }}>{String(f.tee_time).slice(0, 5)}</div>
-              </div>
-              <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-                {f.players.length ? (
-                  f.players.map((p) => (
-                    <div
-                      key={p.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 10,
-                        padding: "8px 10px",
-                        borderRadius: 12,
-                        background: "white",
-                        border: "1px solid rgba(0,0,0,0.08)",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700 }}>
-                        {p.first_name} {p.last_name}
-                        {p.charity ? (
-                          <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.65 }}>
-                            ({p.charity})
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ fontWeight: 800, opacity: 0.8 }}>
-                        {p.handicap == null ? "—" : p.handicap}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={{ opacity: 0.7, fontSize: 13 }}>No players linked.</div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
+  // Leaderboard auto-refresh every minute while on leaderboard tab
+  useEffect(() => {
+    if (tab !== "leaderboard") return;
+    const id = setInterval(async () => {
+      await loadPlayers();
+      await loadScores();
+    }, 60_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
-function AdminView() {
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  const [preview, setPreview] = useState(null);
-
-  const exampleText = useMemo(
-    () => `foursome | tee_time | first_name | last_name | handicap | charity`,
-    []
-  );
-
-  async function parseExcel(file) {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-
-    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-    if (!raw.length) throw new Error("Sheet is empty.");
-
-    const headerRow = raw[0].map(normalizeHeader);
-    const missing = REQUIRED_COLUMNS.filter((c) => !headerRow.includes(c));
-    if (missing.length) {
-      throw new Error(`Missing required columns: ${missing.join(", ")}`);
+  const leaderboardRows = useMemo(() => {
+    // build last-write-wins map for scores by player/hole
+    const scoresByPlayer = new Map();
+    for (const s of scores) {
+      const pid = s.player_id;
+      const h = clampInt(s.hole, 0);
+      const sc = clampInt(s.score, 0);
+      if (h < 1 || h > 18) continue;
+      if (!scoresByPlayer.has(pid)) scoresByPlayer.set(pid, {});
+      const blob = scoresByPlayer.get(pid);
+      if (!blob.scoresByHole) blob.scoresByHole = {};
+      blob.scoresByHole[h] = sc;
     }
 
-    const rows = raw
-      .slice(1)
-      .filter((r) => r.some((cell) => String(cell).trim() !== ""))
-      .map((r) => {
-        const obj = {};
-        headerRow.forEach((h, idx) => (obj[h] = r[idx]));
-        return obj;
-      })
-      .map((r) => ({
-        foursome: String(r.foursome).trim(),
-        tee_time: toTimeString(r.tee_time),
-        first_name: String(r.first_name).trim(),
-        last_name: String(r.last_name).trim(),
-        handicap: safeInt(r.handicap),
-        charity: String(r.charity || "").trim() || null,
-      }));
+    const rows = players.map((p) => {
+      const blob = scoresByPlayer.get(p.id) || {};
+      const scoresByHole = blob.scoresByHole || {};
 
-    const bad = rows.find(
-      (r) => !r.foursome || !r.tee_time || !r.first_name || !r.last_name
-    );
-    if (bad) {
-      throw new Error(
-        `Bad row found. Required: foursome, tee_time, first_name, last_name.\nExample bad row: ${JSON.stringify(
-          bad
-        )}`
-      );
-    }
+      const playedHoles = Object.keys(scoresByHole)
+        .map((x) => clampInt(x, 0))
+        .filter((h) => h >= 1 && h <= 18)
+        .sort((a, b) => a - b);
 
-    return rows;
-  }
+      const holesPlayed = playedHoles.length;
+      const handicap = clampInt(p.handicap, 0);
 
-  async function ensureTables() {
-    // Optional safety check: not creating tables here (Supabase client can’t run DDL easily)
-    // This exists to give a clearer error if tables are missing.
-    const checks = [
-      supabase.from("players").select("id").limit(1),
-      supabase.from("foursomes").select("id").limit(1),
-      supabase.from("foursome_players").select("foursome_id").limit(1),
-    ];
-    const results = await Promise.all(checks);
-    for (const r of results) {
-      if (r.error) throw r.error;
-    }
-  }
+      const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
+      const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-  async function upload(rows) {
-    setBusy(true);
-    setStatus("Checking tables…");
-    await ensureTables();
+      const proratedHandicap = (handicap * holesPlayed) / 18;
+      const netGross = gross - proratedHandicap;
+      const netToPar = holesPlayed === 0 ? 9999 : Math.round(netGross - parPlayed);
 
-    setStatus(`Parsed ${rows.length} rows. Upserting foursomes…`);
-
-    // 1) Upsert foursomes (unique on name+tee_time)
-    const foursomesToUpsert = Array.from(
-      new Map(
-        rows.map((r) => [
-          keyFoursome(r.foursome, r.tee_time),
-          { name: r.foursome, tee_time: r.tee_time },
-        ])
-      ).values()
-    );
-
-    const { data: foursomes, error: fErr } = await supabase
-      .from("foursomes")
-      .upsert(foursomesToUpsert, { onConflict: "name,tee_time" })
-      .select("id,name,tee_time");
-
-    if (fErr) throw fErr;
-
-    const foursomeIdByKey = new Map(
-      (foursomes || []).map((f) => [keyFoursome(f.name, String(f.tee_time).slice(0, 5)), f.id])
-    );
-
-    // 2) Insert players (we insert every time; if you want de-dupe/upsert, tell me)
-    setStatus("Inserting players…");
-
-    const { data: insertedPlayers, error: pErr } = await supabase
-      .from("players")
-      .insert(
-        rows.map((r) => ({
-          first_name: r.first_name,
-          last_name: r.last_name,
-          handicap: r.handicap,
-          charity: r.charity,
-        }))
-      )
-      .select("id,first_name,last_name");
-
-    if (pErr) throw pErr;
-
-    const playerIdByName = new Map(
-      (insertedPlayers || []).map((p) => [keyPlayer(p.first_name, p.last_name), p.id])
-    );
-
-    // 3) Link players to foursomes
-    setStatus("Linking players to foursomes…");
-
-    const links = rows.map((r) => {
-      const fKey = keyFoursome(r.foursome, r.tee_time);
-      // tee_time from DB might include seconds; normalize to HH:MM for key match
-      // We built the map with slice(0,5) above, so do the same here:
-      const fId =
-        foursomeIdByKey.get(keyFoursome(r.foursome, String(r.tee_time).slice(0, 5))) ||
-        foursomeIdByKey.get(fKey);
-
-      const pId = playerIdByName.get(keyPlayer(r.first_name, r.last_name));
-
-      return { foursome_id: fId, player_id: pId };
+      return {
+        id: p.id,
+        name: p.name,
+        handicap,
+        charity: p.charity,
+        holesPlayed,
+        netToPar,
+        scoresByHole,
+      };
     });
 
-    const missingLink = links.find((l) => !l.foursome_id || !l.player_id);
-    if (missingLink) {
-      throw new Error(
-        `Linking failed (missing id). This usually means duplicate names or a tee_time mismatch.\nExample: ${JSON.stringify(
-          missingLink
-        )}`
-      );
-    }
+    // Sort: scored first, then netToPar, then holesPlayed desc, then name
+    rows.sort((a, b) => {
+      const aHas = a.holesPlayed > 0;
+      const bHas = b.holesPlayed > 0;
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      if (a.netToPar !== b.netToPar) return a.netToPar - b.netToPar;
+      if (a.holesPlayed !== b.holesPlayed) return b.holesPlayed - a.holesPlayed;
+      return a.name.localeCompare(b.name);
+    });
 
-    const { error: lErr } = await supabase.from("foursome_players").insert(links);
-    if (lErr) throw lErr;
+    return rows;
+  }, [players, scores]);
 
-    setStatus(
-      `✅ Done. Upserted ${foursomesToUpsert.length} foursomes and uploaded ${rows.length} players.`
-    );
-  }
+  const scorecardPlayer = useMemo(() => {
+    if (!scorecardPlayerId) return null;
+    return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
+  }, [scorecardPlayerId, leaderboardRows]);
 
-  async function handleFile(file) {
-    setStatus("");
-    setPreview(null);
-    try {
-      setBusy(true);
-      setStatus("Reading Excel…");
-      const rows = await parseExcel(file);
-      setPreview(rows.slice(0, 12));
-      await upload(rows);
-    } catch (e) {
-      console.error(e);
-      setStatus(`❌ ${e?.message || "Upload failed"}`);
-    } finally {
-      setBusy(false);
+  function enterAdmin() {
+    if (adminPin === "112020") {
+      setAdminOn(true);
+      setAdminPin("");
+      setTab("admin");
+    } else {
+      alert("Wrong PIN");
     }
   }
 
-  // Optional: “wipe tournament” helpers (kept here because you asked for Excel-only setup)
-  async function wipeTournament() {
-    if (!confirm("This will delete ALL foursomes + links (players stay). Continue?")) return;
-    try {
-      setBusy(true);
-      setStatus("Deleting foursome links…");
-      const { error: a } = await supabase.from("foursome_players").delete().neq("foursome_id", "00000000-0000-0000-0000-000000000000");
-      if (a) throw a;
+  async function addPlayer() {
+    if (!adminOn) return alert("Admin only.");
+    const name = newName.trim();
+    const handicap = clampInt(newHandicap, 0);
+    const charity = newCharity.trim() || null;
+    if (!name) return alert("Name required.");
 
-      setStatus("Deleting foursomes…");
-      const { error: b } = await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-      if (b) throw b;
-
-      setStatus("✅ Tournament wiped (players left intact).");
-    } catch (e) {
-      console.error(e);
-      setStatus(`❌ ${e?.message || "Wipe failed"}`);
-    } finally {
-      setBusy(false);
+    const { error } = await supabase.from("players").insert({ name, handicap, charity });
+    if (error) {
+      console.error(error);
+      alert("Error adding player.");
+      return;
     }
+    setNewName("");
+    setNewHandicap("");
+    setNewCharity("");
+    await loadPlayers();
   }
 
-  async function wipePlayers() {
-    if (!confirm("This will delete ALL players + links. Continue?")) return;
-    try {
-      setBusy(true);
-      setStatus("Deleting links…");
-      const { error: a } = await supabase.from("foursome_players").delete().neq("foursome_id", "00000000-0000-0000-0000-000000000000");
-      if (a) throw a;
+  async function deletePlayer(id) {
+    if (!adminOn) return alert("Admin only.");
+    if (!confirm("Delete this player? This will also delete their scores and foursome assignment.")) return;
 
-      setStatus("Deleting players…");
-      const { error: b } = await supabase.from("players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-      if (b) throw b;
+    await supabase.from("scores").delete().eq("player_id", id);
+    await supabase.from("foursome_players").delete().eq("player_id", id);
 
-      setStatus("✅ Players wiped.");
-    } catch (e) {
-      console.error(e);
-      setStatus(`❌ ${e?.message || "Wipe failed"}`);
-    } finally {
-      setBusy(false);
+    const { error } = await supabase.from("players").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("Error deleting player.");
+      return;
     }
+    await loadPlayers();
+    await loadScores();
+    await loadFoursomes();
+    await loadFoursomePlayers();
+  }
+
+  function playersInFoursome(fid) {
+    const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
+    return players.filter((p) => pids.includes(p.id));
+  }
+
+  async function createManualFoursome() {
+    if (!adminOn) return alert("Admin only.");
+    const group_name = manualGroupName.trim() || "Group";
+    const code = (manualCode.trim() || makeCode()).toUpperCase();
+
+    if (code.length !== 6) return alert("Code must be exactly 6 characters.");
+
+    const { error } = await supabase.from("foursomes").insert({ group_name, code });
+    if (error) {
+      console.error(error);
+      alert("Error creating foursome (code may already exist).");
+      return;
+    }
+    setManualGroupName("");
+    setManualCode("");
+    await loadFoursomes();
+  }
+
+  async function assignPlayerToFoursome() {
+    if (!adminOn) return alert("Admin only.");
+    if (!assignFoursomeId) return alert("Pick a foursome.");
+    if (!assignPlayerId) return alert("Pick a player.");
+
+    const { error } = await supabase.from("foursome_players").insert({
+      foursome_id: assignFoursomeId,
+      player_id: assignPlayerId,
+    });
+
+    if (error) {
+      console.error(error);
+      alert("Error assigning player (maybe already assigned?).");
+      return;
+    }
+
+    setAssignPlayerId("");
+    await loadFoursomePlayers();
+  }
+
+  async function removePlayerFromFoursome(fpRowId) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("foursome_players").delete().eq("id", fpRowId);
+    if (error) {
+      console.error(error);
+      alert("Error removing player.");
+      return;
+    }
+    await loadFoursomePlayers();
+  }
+
+  async function clearFoursomes() {
+    if (!adminOn) return alert("Admin only.");
+    if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
+
+    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+
+    await loadFoursomes();
+    await loadFoursomePlayers();
+  }
+
+  async function generateRandomFoursomes() {
+    if (!adminOn) return alert("Admin only.");
+    if (players.length < 2) return alert("Need at least 2 players.");
+
+    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+
+    const shuffled = shuffle(players);
+    const groups = [];
+    for (let i = 0; i < shuffled.length; i += 4) {
+      groups.push(shuffled.slice(i, i + 4));
+    }
+
+    for (let i = 0; i < groups.length; i++) {
+      const groupPlayers = groups[i];
+      const group_name = `Group ${i + 1}`;
+      const code = makeCode();
+
+      const { data: fData, error: fErr } = await supabase
+        .from("foursomes")
+        .insert({ group_name, code })
+        .select("id")
+        .single();
+
+      if (fErr) {
+        console.error(fErr);
+        alert("Error creating foursomes (check RLS/policies).");
+        return;
+      }
+
+      const fid = fData.id;
+      const inserts = groupPlayers.map((p) => ({ foursome_id: fid, player_id: p.id }));
+      const { error: fpErr } = await supabase.from("foursome_players").insert(inserts);
+
+      if (fpErr) {
+        console.error(fpErr);
+        alert("Error assigning players (check RLS/policies).");
+        return;
+      }
+    }
+
+    await loadFoursomes();
+    await loadFoursomePlayers();
+    alert("Foursomes generated ✅");
+  }
+
+  async function enterWithCode() {
+    const code = entryCode.trim().toUpperCase();
+    if (code.length !== 6) return alert("Enter a 6-character code.");
+
+    const { data: f, error } = await supabase
+      .from("foursomes")
+      .select("id,group_name,code")
+      .eq("code", code)
+      .maybeSingle();
+
+    if (error) {
+      console.error(error);
+      alert("Error checking code.");
+      return;
+    }
+    if (!f) {
+      alert("Code not found.");
+      return;
+    }
+
+    const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
+    const memberIds = memberRows.map((x) => x.player_id);
+    const memberPlayers = players.filter((p) => memberIds.includes(p.id));
+
+    if (memberPlayers.length === 0) {
+      alert("This foursome has no players assigned yet.");
+      return;
+    }
+
+    setActiveFoursome(f);
+    setActivePlayers(memberPlayers);
+    setHole(1);
+    setHoleInputs({});
+    setTab("enter");
+  }
+
+  function getExistingScore(pid, holeNum) {
+    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
+    return row ? clampInt(row.score, 0) : null;
+  }
+
+  useEffect(() => {
+    if (!activeFoursome) return;
+    const obj = {};
+    for (const p of activePlayers) {
+      const existing = getExistingScore(p.id, hole);
+      obj[p.id] = existing != null ? String(existing) : "";
+    }
+    setHoleInputs(obj);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFoursome?.id, hole]);
+
+  async function saveHoleThenNavigate(nextHole) {
+    if (!activeFoursome) return;
+
+    for (const p of activePlayers) {
+      const raw = (holeInputs[p.id] ?? "").trim();
+      if (!raw) continue; // allow blanks
+      const sc = clampInt(raw, 0);
+      if (sc < 1 || sc > 20) {
+        alert(`Score for ${p.name} looks wrong (1–20).`);
+        return;
+      }
+
+      const { error } = await supabase
+        .from("scores")
+        .upsert({ player_id: p.id, hole, score: sc }, { onConflict: "player_id,hole" });
+
+      if (error) {
+        console.error(error);
+        alert("Error saving scores. (Check scores RLS + unique constraint player_id,hole.)");
+        return;
+      }
+    }
+
+    await loadScores();
+    setHole(nextHole);
   }
 
   return (
-    <Card title="Admin: Upload Tee Sheet (Excel Only)">
-      <div style={{ lineHeight: 1.55 }}>
-        <div style={{ opacity: 0.8 }}>
-          Upload an Excel file with columns:
-        </div>
-        <div style={{ marginTop: 6 }}>
-          <code style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(0,0,0,0.04)" }}>
-            {exampleText}
-          </code>
-        </div>
-
-        <div style={{ marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <label
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.12)",
-              background: busy ? "rgba(0,0,0,0.05)" : "white",
-              cursor: busy ? "not-allowed" : "pointer",
-              fontWeight: 700,
-            }}
-          >
-            {busy ? "Working…" : "Choose Excel File"}
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              disabled={busy}
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleFile(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
-
-          <button
-            onClick={wipeTournament}
-            disabled={busy}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.12)",
-              background: "white",
-              cursor: busy ? "not-allowed" : "pointer",
-              fontWeight: 700,
-            }}
-            title="Deletes foursomes + links (players remain)"
-          >
-            Wipe Tournament
-          </button>
-
-          <button
-            onClick={wipePlayers}
-            disabled={busy}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(0,0,0,0.12)",
-              background: "white",
-              cursor: busy ? "not-allowed" : "pointer",
-              fontWeight: 700,
-            }}
-            title="Deletes ALL players + links"
-          >
-            Wipe Players
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>
-          {status ? status : <span style={{ opacity: 0.65 }}>No file uploaded yet.</span>}
-        </div>
-
-        {preview?.length ? (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>Preview (first {preview.length} rows)</div>
-            <div style={{ display: "grid", gap: 8 }}>
-              {preview.map((r, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    border: "1px solid rgba(0,0,0,0.10)",
-                    borderRadius: 12,
-                    background: "rgba(0,0,0,0.02)",
-                    padding: 10,
-                    fontSize: 13,
-                  }}
-                >
-                  <div style={{ fontWeight: 800 }}>
-                    {r.first_name} {r.last_name}{" "}
-                    <span style={{ opacity: 0.65 }}>
-                      (hcp {r.handicap ?? "—"})
-                    </span>
-                  </div>
-                  <div style={{ opacity: 0.75 }}>
-                    Foursome: <b>{r.foursome}</b> • Tee time: <b>{r.tee_time}</b>
-                    {r.charity ? <> • Charity: <b>{r.charity}</b></> : null}
-                  </div>
+    <div style={styles.page}>
+      {/* Scorecard modal (leaderboard) */}
+      {scorecardPlayer && (
+        <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={{ minWidth: 0 }}>
+                <div style={styles.modalTitle}>
+                  {scorecardPlayer.name}{" "}
+                  <span style={{ opacity: 0.75, fontWeight: 700 }}>
+                    (HCP {scorecardPlayer.handicap})
+                  </span>
                 </div>
-              ))}
+                <div style={styles.modalSub}>
+                  Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
+                  {scorecardPlayer.holesPlayed === 0 ? (
+                    <span style={{ opacity: 0.75 }}>—</span>
+                  ) : (
+                    <span style={{ fontWeight: 950, ...netColorStyle(scorecardPlayer.netToPar) }}>
+                      {formatToPar(scorecardPlayer.netToPar)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
+                Close
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12, overflowX: "auto" }}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Hole</th>
+                    <th style={styles.th}>Par</th>
+                    <th style={styles.th}>Score</th>
+                    <th style={styles.th}>+/-</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
+                    const par = PARS[h - 1];
+                    const sc = scorecardPlayer.scoresByHole[h];
+                    const diff = sc != null ? sc - par : null;
+                    const diffStyle =
+                      diff == null
+                        ? {}
+                        : diff < 0
+                        ? { color: THEME.good, fontWeight: 900 }
+                        : diff > 0
+                        ? { color: THEME.bad, fontWeight: 900 }
+                        : { opacity: 0.9, fontWeight: 900 };
+
+                    return (
+                      <tr key={h}>
+                        <td style={styles.td}>{h}</td>
+                        <td style={styles.td}>{par}</td>
+                        <td style={styles.td}>{sc != null ? sc : "—"}</td>
+                        <td style={{ ...styles.td, ...diffStyle }}>
+                          {diff == null ? "—" : formatToPar(diff)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
+              Net is computed as gross minus <b>pro-rated handicap</b> for holes played.
             </div>
           </div>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
-/** ---------------------------
- * App
- * -------------------------- */
-export default function App() {
-  const [view, setView] = useState("home");
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        padding: 18,
-        background:
-          "radial-gradient(1200px 800px at 50% 20%, #ffffff 0%, #fbf4e6 55%, #f3e2c6 100%)",
-        color: "#1a1a1a",
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-      }}
-    >
-      <div style={{ maxWidth: 860, margin: "0 auto" }}>
-        <TopBar view={view} setView={setView} />
-
-        {view === "home" ? <HomeView /> : null}
-        {view === "tee-sheet" ? <TeeSheetView /> : null}
-        {view === "admin" ? <AdminView /> : null}
-
-        <div style={{ marginTop: 14, fontSize: 12, opacity: 0.6 }}>
-          Tip: If the Admin upload says tables are missing, create:{" "}
-          <code>players</code>, <code>foursomes</code>, <code>foursome_players</code> in Supabase first.
         </div>
+      )}
+
+      <div style={styles.shell}>
+        {/* HOME (no top nav) */}
+        {tab === "home" && (
+          <div style={styles.homeCard}>
+            <div style={{ textAlign: "center" }}>
+          
+  <img
+  src="/logo.png"
+  alt="Ginvitational logo"
+  style={{
+    width: 210,
+    height: "auto",
+    display: "block",
+    margin: "0 auto",
+  }}
+/>
+
+
+
+              <div style={styles.homeTitle}>The Ginvitational</div>
+
+              <div style={styles.homeSub}>
+                Drink Good. Play Good. Do Good.
+              </div>
+
+              <div style={styles.homeRule} />
+            </div>
+
+            <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
+              <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
+                Leaderboard
+              </button>
+
+              <button style={styles.bigBtn} onClick={() => setTab("code")}>
+                Enter Scores
+              </button>
+
+              <button style={styles.bigBtn} onClick={() => setTab("admin")}>
+                Admin
+              </button>
+            </div>
+
+            <div style={{ marginTop: 14, textAlign: "center", fontSize: 12, color: THEME.textMuted }}>
+              Manufacturers Golf &amp; CC • May 2026
+            </div>
+          </div>
+        )}
+
+        {/* CODE GATE SCREEN (enter scores) */}
+        {tab === "code" && (
+          <div style={styles.card}>
+            <div style={styles.headerRow}>
+              <button style={styles.smallBtn} onClick={() => setTab("home")}>
+                Home
+              </button>
+              <div style={{ fontSize: 12, color: THEME.textMuted }}>{status}</div>
+            </div>
+
+            <div style={{ marginTop: 12, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
+              Enter Scores
+            </div>
+            <div style={styles.helpText}>
+              Enter your <b>6-character foursome code</b> to score your group.
+            </div>
+
+            <div style={{ marginTop: 14, display: "grid", gap: 10, maxWidth: 520 }}>
+              <input
+                style={styles.input}
+                value={entryCode}
+                onChange={(e) => setEntryCode(e.target.value.toUpperCase())}
+                placeholder="Enter 6-character code"
+                maxLength={6}
+                autoCapitalize="characters"
+              />
+              <button style={styles.bigBtn} onClick={enterWithCode}>
+                Continue
+              </button>
+
+              <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                You can only enter scores for your foursome code.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TOP NAV (all non-home pages) */}
+        {tab !== "home" && tab !== "code" && (
+          <header style={styles.header}>
+            <div style={styles.headerTop}>
+              <div style={styles.brand}>
+                <div style={styles.brandTitle}>Ginvitational</div>
+                <div style={styles.brandSub}>{status}</div>
+              </div>
+
+              <nav style={styles.nav}>
+                <button style={styles.navBtn} onClick={() => setTab("home")}>
+                  Home
+                </button>
+                <button
+                  style={tab === "leaderboard" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("leaderboard")}
+                >
+                  Leaderboard
+                </button>
+                <button style={styles.navBtn} onClick={() => setTab("code")}>
+                  Enter Scores
+                </button>
+                <button
+                  style={tab === "admin" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("admin")}
+                >
+                  Admin
+                </button>
+              </nav>
+            </div>
+          </header>
+        )}
+
+        {/* LEADERBOARD */}
+        {tab === "leaderboard" && (
+          <div style={styles.card}>
+            <div style={styles.cardHeaderRow}>
+              <div style={styles.cardTitle}>Leaderboard</div>
+              <button
+                style={styles.smallBtn}
+                onClick={async () => {
+                  await loadPlayers();
+                  await loadScores();
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+
+            <div style={styles.helpText}>
+              Tap a player name to view their scorecard. Auto-refreshes every minute.
+            </div>
+
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>#</th>
+                    <th style={styles.th}>Player</th>
+                    <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
+                    <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {leaderboardRows.map((r, idx) => {
+                    const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
+                    const netStyle =
+                      r.holesPlayed === 0
+                        ? { opacity: 0.6, color: THEME.textMuted }
+                        : { fontWeight: 950, ...netColorStyle(r.netToPar) };
+
+                    return (
+                      <tr key={r.id}>
+                        <td style={styles.td}>{idx + 1}</td>
+
+                        <td style={{ ...styles.td, minWidth: 180 }}>
+                          <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                            {r.name}
+                          </button>
+                          <div style={styles.playerMeta}>
+                            HCP {r.handicap}
+                            {r.charity ? ` • ${r.charity}` : ""}
+                          </div>
+                        </td>
+
+                        <td style={{ ...styles.td, textAlign: "center" }}>
+                          <span style={styles.pill}>{r.holesPlayed}</span>
+                        </td>
+
+                        <td style={{ ...styles.td, textAlign: "center" }}>
+                          <span style={netStyle}>{displayNet}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {leaderboardRows.length === 0 && (
+                    <tr>
+                      <td style={styles.td} colSpan={4}>
+                        No players yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ENTER SCORES (foursome hole-by-hole) */}
+        {tab === "enter" && (
+          <div style={styles.card}>
+            <div style={styles.cardHeaderRow}>
+              <div>
+                <div style={styles.cardTitle}>Enter Scores</div>
+                <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                  Foursome: <b>{activeFoursome?.group_name}</b> • Code: <b>{activeFoursome?.code}</b>
+                </div>
+              </div>
+              <button
+                style={styles.smallBtn}
+                onClick={() => {
+                  setActiveFoursome(null);
+                  setActivePlayers([]);
+                  setEntryCode("");
+                  setTab("code");
+                }}
+              >
+                Change Code
+              </button>
+            </div>
+
+            <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>
+                Hole {hole} <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                {activePlayers.map((p) => (
+                  <div key={p.id} style={styles.scoreRow}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                        HCP {clampInt(p.handicap, 0)}
+                      </div>
+                    </div>
+
+                    <input
+                      style={{ ...styles.input, width: 92, textAlign: "center", fontSize: 16, fontWeight: 900 }}
+                      inputMode="numeric"
+                      placeholder="—"
+                      value={holeInputs[p.id] ?? ""}
+                      onChange={(e) => setHoleInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div style={styles.navRow}>
+                <button
+                  style={styles.smallBtn}
+                  disabled={hole === 1}
+                  onClick={() => saveHoleThenNavigate(hole - 1)}
+                >
+                  Last Hole
+                </button>
+
+                <button
+                  style={styles.bigBtn}
+                  onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}
+                >
+                  Save & Next
+                </button>
+              </div>
+
+              <div style={styles.helpText}>
+                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with{" "}
+                <b>Last Hole</b>. Leaving a box blank means “no score yet”.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ADMIN */}
+        {tab === "admin" && (
+          <div style={styles.card}>
+            <div style={styles.cardTitle}>Admin</div>
+
+            {!adminOn ? (
+              <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
+                <label style={styles.label}>
+                  Enter Admin PIN
+                  <input
+                    style={styles.input}
+                    type="password"
+                    value={adminPin}
+                    onChange={(e) => setAdminPin(e.target.value)}
+                    inputMode="numeric"
+                    placeholder="••••••"
+                  />
+                </label>
+
+                <button style={styles.bigBtn} onClick={enterAdmin}>
+                  Unlock Admin
+                </button>
+
+                <div style={styles.helpText}>
+                  Simple front-end PIN gate. (We can harden security later.)
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                  <button
+                    style={styles.smallBtn}
+                    onClick={() => {
+                      setAdminOn(false);
+                      setTab("home");
+                    }}
+                  >
+                    Exit Admin
+                  </button>
+
+                  <button style={styles.smallBtn} onClick={() => initialLoad()}>
+                    Reload Data
+                  </button>
+
+                  <button style={styles.dangerBtn} onClick={clearFoursomes}>
+                    Clear Foursomes
+                  </button>
+                </div>
+
+                <div style={styles.adminGrid}>
+                  {/* Foursomes */}
+                  <div style={styles.subCard}>
+                    <div style={styles.subTitle}>Foursomes</div>
+
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <button style={styles.bigBtn} onClick={generateRandomFoursomes}>
+                        Generate Foursomes (Random)
+                      </button>
+
+                      <div style={styles.hr} />
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={styles.sectionLabel}>Manual create</div>
+                        <input
+                          style={styles.input}
+                          placeholder='Group name (ex: "Group A")'
+                          value={manualGroupName}
+                          onChange={(e) => setManualGroupName(e.target.value)}
+                        />
+                        <input
+                          style={styles.input}
+                          placeholder="Code (6 chars) — leave blank to auto-generate"
+                          value={manualCode}
+                          onChange={(e) => setManualCode(e.target.value.toUpperCase())}
+                          maxLength={6}
+                        />
+                        <button style={styles.smallBtn} onClick={createManualFoursome}>
+                          Create Foursome
+                        </button>
+                      </div>
+
+                      <div style={styles.hr} />
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={styles.sectionLabel}>Assign player to foursome</div>
+
+                        <select
+                          style={styles.input}
+                          value={assignFoursomeId}
+                          onChange={(e) => setAssignFoursomeId(e.target.value)}
+                        >
+                          <option value="">Select foursome…</option>
+                          {foursomes.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.group_name} — {f.code}
+                            </option>
+                          ))}
+                        </select>
+
+                        <select
+                          style={styles.input}
+                          value={assignPlayerId}
+                          onChange={(e) => setAssignPlayerId(e.target.value)}
+                        >
+                          <option value="">Select player…</option>
+                          {players.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} (HCP {clampInt(p.handicap, 0)})
+                            </option>
+                          ))}
+                        </select>
+
+                        <button style={styles.smallBtn} onClick={assignPlayerToFoursome}>
+                          Add Player to Foursome
+                        </button>
+                      </div>
+
+                      <div style={styles.hr} />
+
+                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>View codes + members</div>
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {foursomes.map((f) => {
+                          const members = playersInFoursome(f.id);
+                          const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
+                          return (
+                            <div key={f.id} style={styles.foursomeCard}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 950 }}>
+                                    {f.group_name}{" "}
+                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>
+                                      (Code: {f.code})
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                                    Members: {members.length}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                                {memberRows.map((fp) => {
+                                  const p = players.find((x) => x.id === fp.player_id);
+                                  return (
+                                    <div key={fp.id} style={styles.playerRow}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontWeight: 950 }}>
+                                          {p ? p.name : fp.player_id}
+                                        </div>
+                                        {p && (
+                                          <div style={styles.playerMeta}>
+                                            HCP {clampInt(p.handicap, 0)}
+                                            {p.charity ? ` • ${p.charity}` : ""}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <button
+                                        style={styles.dangerBtn}
+                                        onClick={() => removePlayerFromFoursome(fp.id)}
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                                {memberRows.length === 0 && (
+                                  <div style={styles.helpText}>No players assigned.</div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Players */}
+                  <div style={styles.subCard}>
+                    <div style={styles.subTitle}>Players</div>
+
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
+                      <input
+                        style={styles.input}
+                        placeholder="Name"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                      />
+                      <input
+                        style={styles.input}
+                        placeholder="Handicap"
+                        value={newHandicap}
+                        onChange={(e) => setNewHandicap(e.target.value)}
+                        inputMode="numeric"
+                      />
+                      <input
+                        style={styles.input}
+                        placeholder="Charity (optional)"
+                        value={newCharity}
+                        onChange={(e) => setNewCharity(e.target.value)}
+                      />
+                      <button style={styles.bigBtn} onClick={addPlayer}>
+                        Add Player
+                      </button>
+                    </div>
+
+                    <div style={styles.hr} />
+
+                    <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Player List</div>
+                    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                      {players.map((p) => (
+                        <div key={p.id} style={styles.playerRow}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {p.name}
+                            </div>
+                            <div style={styles.playerMeta}>
+                              HCP {clampInt(p.handicap, 0)}
+                              {p.charity ? ` • ${p.charity}` : ""}
+                            </div>
+                          </div>
+
+                          <button style={styles.dangerBtn} onClick={() => deletePlayer(p.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                      {players.length === 0 && <div style={styles.helpText}>No players.</div>}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Router fallback */}
+        {tab === "enter" && !activeFoursome && (
+          <div style={styles.card}>
+            <div style={styles.cardTitle}>Enter Scores</div>
+            <div style={styles.helpText}>No foursome loaded. Go back and enter your code.</div>
+            <button style={styles.smallBtn} onClick={() => setTab("code")}>
+              Back to Code
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+/** Styles: phone-first, classy palette */
+const styles = {
+  page: {
+    minHeight: "100vh",
+    padding: 14,
+    background: `radial-gradient(circle at 20% 10%, ${PALETTE.teeSand} 0%, ${PALETTE.sandstone} 34%, ${PALETTE.fairwayGreen} 140%)`,
+    color: THEME.text,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+  },
+  shell: {
+    maxWidth: 980,
+    margin: "0 auto",
+    display: "grid",
+    gap: 12,
+  },
+
+  header: { marginBottom: 6 },
+  headerTop: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  headerRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+
+  brand: { minWidth: 240 },
+  brandTitle: {
+    fontSize: 34,
+    fontWeight: 950,
+    letterSpacing: -0.6,
+    lineHeight: 1.05,
+    color: THEME.text,
+  },
+  brandSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
+
+  nav: { display: "flex", gap: 10, flexWrap: "wrap" },
+  navBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(7,31,19,0.40)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 850,
+    backdropFilter: "blur(8px)",
+  },
+  navBtnActive: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: THEME.btnStrong,
+    border: `1px solid ${THEME.borderStrong}`,
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 950,
+    backdropFilter: "blur(8px)",
+  },
+
+  homeCard: {
+    background: THEME.surfaceSoft,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 22,
+    padding: 18,
+    backdropFilter: "blur(14px)",
+    boxShadow: "0 18px 55px rgba(7,31,19,0.35)",
+  },
+  homeTitle: {
+    marginTop: 10,
+    fontSize: 38,
+    fontWeight: 950,
+    letterSpacing: -0.6,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  homeSub: {
+    marginTop: 10,
+    fontSize: 13,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: THEME.textMuted,
+  },
+  homeRule: {
+    margin: "16px auto 0",
+    width: "72%",
+    height: 1,
+    background: "rgba(242,235,221,0.32)",
+  },
+
+  card: {
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 18,
+    padding: 16,
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 16px 48px rgba(7,31,19,0.35)",
+  },
+  cardHeaderRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  cardTitle: {
+    fontSize: 22,
+    fontWeight: 950,
+    letterSpacing: -0.2,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  helpText: { marginTop: 10, fontSize: 12, lineHeight: 1.35, color: THEME.textMuted },
+
+  bigBtn: {
+    padding: "14px 14px",
+    borderRadius: 16,
+    background: THEME.btn,
+    border: `1px solid ${THEME.btnBorder}`,
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 950,
+    fontSize: 16,
+    letterSpacing: 0.2,
+  },
+  smallBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(242,235,221,0.08)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 900,
+    letterSpacing: 0.2,
+  },
+  dangerBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "rgba(153,75,62,0.16)",
+    border: "1px solid rgba(153,75,62,0.40)",
+    color: THEME.text,
+    cursor: "pointer",
+    fontWeight: 950,
+    letterSpacing: 0.2,
+  },
+
+  label: { display: "grid", gap: 6, fontSize: 12, color: THEME.textMuted },
+
+  input: {
+    background: "rgba(7,31,19,0.34)",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.text,
+    padding: "12px 12px",
+    borderRadius: 12,
+    outline: "none",
+    fontSize: 14,
+  },
+
+  tableWrap: {
+    marginTop: 12,
+    overflowX: "auto",
+    borderRadius: 14,
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.20)",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    minWidth: 520,
+  },
+  th: {
+    textAlign: "left",
+    padding: "10px 10px",
+    fontSize: 12,
+    background: "rgba(203,189,151,0.10)",
+    borderBottom: `1px solid ${THEME.border}`,
+    whiteSpace: "nowrap",
+    color: THEME.text,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  td: {
+    padding: "10px 10px",
+    borderBottom: `1px solid ${THEME.border}`,
+    fontSize: 14,
+    verticalAlign: "top",
+    whiteSpace: "nowrap",
+    color: THEME.text,
+  },
+
+  playerLink: {
+    background: "transparent",
+    border: "none",
+    color: THEME.text,
+    cursor: "pointer",
+    textDecoration: "underline",
+    fontWeight: 950,
+    padding: 0,
+    fontSize: 15,
+    textAlign: "left",
+    textUnderlineOffset: 3,
+    textDecorationColor: "rgba(242,235,221,0.45)",
+  },
+  playerMeta: { marginTop: 4, fontSize: 12, color: THEME.textMuted, whiteSpace: "normal" },
+
+  pill: {
+    display: "inline-block",
+    minWidth: 28,
+    padding: "4px 10px",
+    borderRadius: 999,
+    background: "rgba(203,189,151,0.14)",
+    border: `1px solid ${THEME.border}`,
+    fontWeight: 950,
+    fontSize: 12,
+    color: THEME.text,
+  },
+
+  adminGrid: {
+    marginTop: 14,
+    display: "grid",
+    gap: 12,
+    gridTemplateColumns: "1fr",
+  },
+  subCard: {
+    background: THEME.surfaceUltraSoft,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 14,
+    padding: 14,
+  },
+  subTitle: {
+    fontWeight: 950,
+    marginBottom: 10,
+    fontSize: 16,
+    color: THEME.text,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  sectionLabel: {
+    fontWeight: 950,
+    opacity: 0.9,
+    color: THEME.text,
+    letterSpacing: 0.2,
+  },
+  hr: { height: 1, background: "rgba(242,235,221,0.16)", margin: "8px 0" },
+
+  playerRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 10px",
+    borderRadius: 12,
+    background: "rgba(7,31,19,0.18)",
+    border: `1px solid ${THEME.border}`,
+  },
+
+  foursomeCard: {
+    padding: 12,
+    borderRadius: 14,
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.16)",
+  },
+
+  scoreRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "10px 10px",
+    borderRadius: 14,
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.16)",
+  },
+  navRow: {
+    marginTop: 10,
+    display: "grid",
+    gap: 10,
+    gridTemplateColumns: "1fr 1fr",
+  },
+
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(7,31,19,0.72)",
+    display: "grid",
+    placeItems: "center",
+    padding: 14,
+    zIndex: 50,
+  },
+  modalCard: {
+    width: "min(920px, 96vw)",
+    maxHeight: "86vh",
+    overflow: "auto",
+    background: "rgba(7,31,19,0.92)",
+    border: `1px solid ${THEME.borderStrong}`,
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 22px 70px rgba(7,31,19,0.55)",
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 950,
+    lineHeight: 1.1,
+    color: THEME.text,
+    fontFamily:
+      'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  modalSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
+};
+
+// Wider screens
+const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
+if (media && media.matches) {
+  styles.adminGrid.gridTemplateColumns = "1fr 1fr";
 }
