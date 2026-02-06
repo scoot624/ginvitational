@@ -7,10 +7,34 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blues, Par 72 — hole 18 is Par 5 per your note) */
+/** ⛳ PARS (Blue tees, Par 72 — hole 18 is Par 5 per your note) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
+];
+
+/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s)
+ *  1 = hardest hole
+ */
+const STROKE_INDEX = [
+  12, // Hole 1
+  10, // Hole 2
+  4,  // Hole 3
+  14, // Hole 4
+  2,  // Hole 5
+  8,  // Hole 6
+  6,  // Hole 7
+  18, // Hole 8
+  16, // Hole 9
+  9,  // Hole 10
+  3,  // Hole 11
+  17, // Hole 12
+  13, // Hole 13
+  5,  // Hole 14
+  15, // Hole 15
+  1,  // Hole 16
+  11, // Hole 17
+  7,  // Hole 18
 ];
 
 function clampInt(v, fallback = 0) {
@@ -95,9 +119,41 @@ function shuffle(arr) {
   return a;
 }
 
+function errToText(err) {
+  if (!err) return "";
+  if (typeof err === "string") return err;
+  if (err.message) return err.message;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+/** ✅ Real stroke allocation (hardest holes) */
+function strokesOnHole(courseHcp, holeNum) {
+  const h = clampInt(courseHcp, 0);
+  if (h <= 0) return 0;
+
+  const full = Math.floor(h / 18);      // strokes on every hole
+  const rem = h % 18;                   // extra strokes on hardest rem holes
+  const si = STROKE_INDEX[holeNum - 1]; // 1..18 (1 hardest)
+
+  return full + (rem > 0 && si <= rem ? 1 : 0);
+}
+
+function netScoreForHole(grossScore, courseHcp, holeNum) {
+  const strokes = strokesOnHole(courseHcp, holeNum);
+  return grossScore - strokes;
+}
+
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin
   const [status, setStatus] = useState("Loading...");
+
+  // ✅ On-screen diagnostics so you don’t need DevTools
+  const [lastLoadErrors, setLastLoadErrors] = useState([]);
+  const [lastLoadAt, setLastLoadAt] = useState(null);
 
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
@@ -116,7 +172,7 @@ export default function App() {
 
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // rows with foursome_id, player_id
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // composite key rows
 
   // Admin: manual foursome
   const [manualGroupName, setManualGroupName] = useState("");
@@ -141,6 +197,9 @@ export default function App() {
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
 
+  // ---------------------------
+  // LOADERS (capture errors)
+  // ---------------------------
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
@@ -148,11 +207,11 @@ export default function App() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
-      return { ok: false };
+      console.error("loadPlayers error:", error);
+      return { ok: false, where: "players", error: errToText(error) };
     }
     setPlayers(data || []);
-    return { ok: true };
+    return { ok: true, where: "players" };
   }
 
   async function loadScores() {
@@ -162,11 +221,11 @@ export default function App() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error(error);
-      return { ok: false };
+      console.error("loadScores error:", error);
+      return { ok: false, where: "scores", error: errToText(error) };
     }
     setScores(data || []);
-    return { ok: true };
+    return { ok: true, where: "scores" };
   }
 
   async function loadFoursomes() {
@@ -176,34 +235,49 @@ export default function App() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
-      return { ok: false };
+      console.error("loadFoursomes error:", error);
+      return { ok: false, where: "foursomes", error: errToText(error) };
     }
     setFoursomes(data || []);
-    return { ok: true };
+    return { ok: true, where: "foursomes" };
   }
 
+  // ✅ OPTION A: composite PK table (no id column)
   async function loadFoursomePlayers() {
     const { data, error } = await supabase
       .from("foursome_players")
-      .select("id,foursome_id,player_id,seat,created_at")
+      .select("foursome_id,player_id,seat,created_at")
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
-      return { ok: false };
+      console.error("loadFoursomePlayers error:", error);
+      return { ok: false, where: "foursome_players", error: errToText(error) };
     }
     setFoursomePlayers(data || []);
-    return { ok: true };
+    return { ok: true, where: "foursome_players" };
   }
 
   async function initialLoad() {
     setStatus("Loading...");
-    const a = await loadPlayers();
-    const b = await loadScores();
-    const c = await loadFoursomes();
-    const d = await loadFoursomePlayers();
-    setStatus(a.ok && b.ok && c.ok && d.ok ? "Connected ✅" : "Connected, but some data failed ❗");
+    setLastLoadErrors([]);
+
+    const results = [];
+    results.push(await loadPlayers());
+    results.push(await loadScores());
+    results.push(await loadFoursomes());
+    results.push(await loadFoursomePlayers());
+
+    const fails = results.filter((r) => !r.ok);
+    setLastLoadErrors(fails);
+    setLastLoadAt(new Date().toISOString());
+
+    if (fails.length === 0) {
+      setStatus("Connected ✅");
+      return;
+    }
+
+    const first = fails[0];
+    setStatus(`FAIL: ${first.where} → ${first.error}`);
   }
 
   useEffect(() => {
@@ -251,9 +325,14 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      const proratedHandicap = (handicap * holesPlayed) / 18;
-      const netGross = gross - proratedHandicap;
-      const netToPar = holesPlayed === 0 ? 9999 : Math.round(netGross - parPlayed);
+      // ✅ Real handicap allocation by stroke index (works mid-round)
+      const netGross = playedHoles.reduce((acc, h) => {
+        const grossHole = scoresByHole[h];
+        const netHole = netScoreForHole(grossHole, handicap, h);
+        return acc + netHole;
+      }, 0);
+
+      const netToPar = holesPlayed === 0 ? 9999 : (netGross - parPlayed);
 
       return {
         id: p.id,
@@ -304,7 +383,7 @@ export default function App() {
     const { error } = await supabase.from("players").insert({ name, handicap, charity });
     if (error) {
       console.error(error);
-      alert("Error adding player.");
+      alert(`Error adding player: ${errToText(error)}`);
       return;
     }
     setNewName("");
@@ -323,13 +402,10 @@ export default function App() {
     const { error } = await supabase.from("players").delete().eq("id", id);
     if (error) {
       console.error(error);
-      alert("Error deleting player.");
+      alert(`Error deleting player: ${errToText(error)}`);
       return;
     }
-    await loadPlayers();
-    await loadScores();
-    await loadFoursomes();
-    await loadFoursomePlayers();
+    await initialLoad();
   }
 
   function playersInFoursome(fid) {
@@ -347,7 +423,7 @@ export default function App() {
     const { error } = await supabase.from("foursomes").insert({ group_name, code });
     if (error) {
       console.error(error);
-      alert("Error creating foursome (code may already exist).");
+      alert(`Error creating foursome: ${errToText(error)}`);
       return;
     }
     setManualGroupName("");
@@ -367,7 +443,7 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error assigning player (maybe already assigned?).");
+      alert(`Error assigning player: ${errToText(error)}`);
       return;
     }
 
@@ -375,12 +451,18 @@ export default function App() {
     await loadFoursomePlayers();
   }
 
-  async function removePlayerFromFoursome(fpRowId) {
+  // ✅ OPTION A: remove by composite key
+  async function removePlayerFromFoursome(foursome_id, player_id) {
     if (!adminOn) return alert("Admin only.");
-    const { error } = await supabase.from("foursome_players").delete().eq("id", fpRowId);
+    const { error } = await supabase
+      .from("foursome_players")
+      .delete()
+      .eq("foursome_id", foursome_id)
+      .eq("player_id", player_id);
+
     if (error) {
       console.error(error);
-      alert("Error removing player.");
+      alert(`Error removing player: ${errToText(error)}`);
       return;
     }
     await loadFoursomePlayers();
@@ -390,19 +472,32 @@ export default function App() {
     if (!adminOn) return alert("Admin only.");
     if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
 
-    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase
+      .from("foursome_players")
+      .delete()
+      .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
 
-    await loadFoursomes();
-    await loadFoursomePlayers();
+    await supabase
+      .from("foursomes")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+
+    await initialLoad();
   }
 
   async function generateRandomFoursomes() {
     if (!adminOn) return alert("Admin only.");
     if (players.length < 2) return alert("Need at least 2 players.");
 
-    await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    await supabase
+      .from("foursome_players")
+      .delete()
+      .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
+
+    await supabase
+      .from("foursomes")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
 
     const shuffled = shuffle(players);
     const groups = [];
@@ -413,7 +508,7 @@ export default function App() {
     for (let i = 0; i < groups.length; i++) {
       const groupPlayers = groups[i];
       const group_name = `Group ${i + 1}`;
-      const code = makeCode(6);
+      const code = makeCode();
 
       const { data: fData, error: fErr } = await supabase
         .from("foursomes")
@@ -423,7 +518,7 @@ export default function App() {
 
       if (fErr) {
         console.error(fErr);
-        alert("Error creating foursomes (check RLS/policies).");
+        alert(`Error creating foursomes: ${errToText(fErr)}`);
         return;
       }
 
@@ -433,13 +528,12 @@ export default function App() {
 
       if (fpErr) {
         console.error(fpErr);
-        alert("Error assigning players (check RLS/policies).");
+        alert(`Error assigning players: ${errToText(fpErr)}`);
         return;
       }
     }
 
-    await loadFoursomes();
-    await loadFoursomePlayers();
+    await initialLoad();
     alert("Foursomes generated ✅");
   }
 
@@ -455,7 +549,7 @@ export default function App() {
 
     if (error) {
       console.error(error);
-      alert("Error checking code.");
+      alert(`Error checking code: ${errToText(error)}`);
       return;
     }
     if (!f) {
@@ -513,7 +607,7 @@ export default function App() {
 
       if (error) {
         console.error(error);
-        alert("Error saving scores. (Check scores RLS + unique constraint player_id,hole.)");
+        alert(`Error saving scores: ${errToText(error)}`);
         return;
       }
     }
@@ -522,12 +616,11 @@ export default function App() {
     setHole(nextHole);
   }
 
-  // ✅ Excel import helpers
+  // ---------------------------
+  // EXCEL IMPORT
+  // ---------------------------
   function normKey(k) {
-    return String(k || "")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, "_");
+    return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
 
   function fullNameFromRow(row) {
@@ -552,7 +645,6 @@ export default function App() {
       const ws = wb.Sheets[sheetName];
 
       const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
-
       if (!raw || raw.length === 0) {
         setTeeSheetRows([]);
         setImportMsg("No rows found in the spreadsheet.");
@@ -565,7 +657,6 @@ export default function App() {
         return out;
       });
 
-      // Validate required cols
       const required = ["foursome", "first_name", "last_name"];
       const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
       if (missing.length) {
@@ -583,188 +674,138 @@ export default function App() {
     }
   }
 
-  // ✅ Fetch + set + return (for import reliability)
-  async function fetchPlayers() {
-    const { data, error } = await supabase
-      .from("players")
-      .select("id,name,handicap,charity,created_at")
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    setPlayers(data || []);
-    return data || [];
-  }
-
-  async function fetchFoursomes() {
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select("id,group_name,code,created_at")
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    setFoursomes(data || []);
-    return data || [];
-  }
-
-  async function fetchFoursomePlayers() {
-    const { data, error } = await supabase
-      .from("foursome_players")
-      .select("id,foursome_id,player_id,seat,created_at")
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    setFoursomePlayers(data || []);
-    return data || [];
-  }
-
-  // ✅ FIXED importer: uses returned arrays (not stale React state)
   async function importFromTeeSheet() {
     if (!adminOn) return alert("Admin only.");
     if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
 
-    try {
-      setImportMsg("Importing…");
+    setImportMsg("Importing…");
 
-      // Replace foursomes + assignments (leave players + scores alone)
-      if (importReplaceFoursomes) {
-        await supabase.from("foursome_players").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-        await supabase.from("foursomes").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-      }
+    if (importReplaceFoursomes) {
+      await supabase
+        .from("foursome_players")
+        .delete()
+        .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
 
-      // Fresh data
-      let playersArr = await fetchPlayers();
-      let foursomesArr = await fetchFoursomes();
-      let foursomePlayersArr = await fetchFoursomePlayers();
-
-      // Players: insert missing
-      const existingByName = new Map(
-        playersArr.map((p) => [String(p.name || "").trim().toLowerCase(), p])
-      );
-
-      const desiredPlayers = [];
-      for (const r of teeSheetRows) {
-        const name = fullNameFromRow(r);
-        if (!name) continue;
-        desiredPlayers.push({
-          name,
-          handicap: clampInt(r.handicap, 0),
-          charity: String(r.charity || "").trim() || null,
-        });
-      }
-
-      const missingPlayers = [];
-      for (const p of desiredPlayers) {
-        const key = p.name.toLowerCase();
-        if (!existingByName.has(key)) {
-          existingByName.set(key, p);
-          missingPlayers.push(p);
-        }
-      }
-
-      if (missingPlayers.length) {
-        const { error } = await supabase.from("players").insert(missingPlayers);
-        if (error) {
-          console.error(error);
-          setImportMsg("Error inserting players. Check Supabase RLS/policies for players.");
-          return;
-        }
-      }
-
-      // Reload players -> name => id
-      playersArr = await fetchPlayers();
-      const playerIdByName = new Map(
-        playersArr.map((p) => [String(p.name || "").trim().toLowerCase(), p.id])
-      );
-
-      // Foursomes: create missing by group name
-      const foursomeByGroup = new Map(
-        foursomesArr.map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
-      );
-
-      const groupsNeeded = Array.from(
-        new Set(
-          teeSheetRows
-            .map((r) => String(r.foursome || "").trim())
-            .filter(Boolean)
-        )
-      );
-
-      for (const group_name of groupsNeeded) {
-        const key = group_name.toLowerCase();
-        if (foursomeByGroup.has(key)) continue;
-
-        let created = null;
-        let tries = 0;
-
-        while (!created && tries < 8) {
-          tries++;
-          const code = makeCode(6);
-
-          const { data, error } = await supabase
-            .from("foursomes")
-            .insert({ group_name, code })
-            .select("id,group_name,code")
-            .single();
-
-          if (!error) {
-            created = data;
-            foursomeByGroup.set(key, created);
-            break;
-          }
-        }
-
-        if (!created) {
-          setImportMsg(`Could not create foursome "${group_name}" (RLS or code collision).`);
-          return;
-        }
-      }
-
-      // Reload foursomes + assignments
-      foursomesArr = await fetchFoursomes();
-      foursomePlayersArr = await fetchFoursomePlayers();
-
-      const foursomeIdByGroup = new Map(
-        foursomesArr.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
-      );
-
-      const existingAssign = new Set(
-        foursomePlayersArr.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
-      );
-
-      const assignmentInserts = [];
-      for (const r of teeSheetRows) {
-        const group = String(r.foursome || "").trim();
-        const name = fullNameFromRow(r);
-        if (!group || !name) continue;
-
-        const fid = foursomeIdByGroup.get(group.toLowerCase());
-        const pid = playerIdByName.get(name.toLowerCase());
-        if (!fid || !pid) continue;
-
-        const key = `${fid}::${pid}`;
-        if (existingAssign.has(key)) continue;
-
-        existingAssign.add(key);
-        assignmentInserts.push({ foursome_id: fid, player_id: pid });
-      }
-
-      if (assignmentInserts.length) {
-        const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
-        if (error) {
-          console.error(error);
-          setImportMsg("Error inserting foursome assignments. Check Supabase RLS/policies for foursome_players.");
-          return;
-        }
-      }
-
-      await fetchPlayers();
-      await fetchFoursomes();
-      await fetchFoursomePlayers();
-
-      setImportMsg(
-        `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
-      );
-    } catch (e) {
-      console.error(e);
-      setImportMsg("Import failed. Check console + Supabase RLS/policies.");
+      await supabase
+        .from("foursomes")
+        .delete()
+        .neq("id", "00000000-0000-0000-0000-000000000000");
     }
+
+    await initialLoad();
+
+    const existingByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p]));
+    const desiredPlayers = [];
+
+    for (const r of teeSheetRows) {
+      const name = fullNameFromRow(r);
+      if (!name) continue;
+
+      desiredPlayers.push({
+        name,
+        handicap: clampInt(r.handicap, 0),
+        charity: String(r.charity || "").trim() || null,
+      });
+    }
+
+    const missingPlayers = [];
+    for (const p of desiredPlayers) {
+      const key = p.name.toLowerCase();
+      if (!existingByName.has(key)) {
+        existingByName.set(key, p);
+        missingPlayers.push(p);
+      }
+    }
+
+    if (missingPlayers.length) {
+      const { error } = await supabase.from("players").insert(missingPlayers);
+      if (error) {
+        console.error(error);
+        setImportMsg(`Error inserting players: ${errToText(error)}`);
+        return;
+      }
+    }
+
+    await loadPlayers();
+    const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
+
+    const groupsNeeded = Array.from(
+      new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
+    );
+
+    // Create missing foursomes
+    const existingF = await supabase.from("foursomes").select("id,group_name,code,created_at");
+    if (existingF.error) {
+      console.error(existingF.error);
+      setImportMsg(`Error reading foursomes: ${errToText(existingF.error)}`);
+      return;
+    }
+
+    const foursomeByGroup = new Map(
+      (existingF.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
+    );
+
+    for (const group_name of groupsNeeded) {
+      const key = group_name.toLowerCase();
+      if (foursomeByGroup.has(key)) continue;
+
+      let created = null;
+      for (let tries = 0; tries < 10 && !created; tries++) {
+        const code = makeCode(6);
+        const { data, error } = await supabase
+          .from("foursomes")
+          .insert({ group_name, code })
+          .select("id,group_name,code")
+          .single();
+
+        if (!error) created = data;
+      }
+
+      if (!created) {
+        setImportMsg(`Could not create foursome "${group_name}". (RLS / code unique / schema issue)`);
+        return;
+      }
+    }
+
+    await loadFoursomes();
+    await loadFoursomePlayers();
+
+    const foursomeIdByGroup = new Map(
+      foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
+    );
+
+    const existingAssign = new Set(foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`));
+
+    const assignmentInserts = [];
+    for (const r of teeSheetRows) {
+      const group = String(r.foursome || "").trim();
+      const name = fullNameFromRow(r);
+      if (!group || !name) continue;
+
+      const fid = foursomeIdByGroup.get(group.toLowerCase());
+      const pid = playerIdByName.get(name.toLowerCase());
+      if (!fid || !pid) continue;
+
+      const key = `${fid}::${pid}`;
+      if (existingAssign.has(key)) continue;
+
+      existingAssign.add(key);
+      assignmentInserts.push({ foursome_id: fid, player_id: pid });
+    }
+
+    if (assignmentInserts.length) {
+      const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
+      if (error) {
+        console.error(error);
+        setImportMsg(`Error inserting foursome assignments: ${errToText(error)}`);
+        return;
+      }
+    }
+
+    await initialLoad();
+    setImportMsg(
+      `Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`
+    );
   }
 
   return (
@@ -802,6 +843,7 @@ export default function App() {
                 <thead>
                   <tr>
                     <th style={styles.th}>Hole</th>
+                    <th style={styles.th}>SI</th>
                     <th style={styles.th}>Par</th>
                     <th style={styles.th}>Score</th>
                     <th style={styles.th}>+/-</th>
@@ -811,7 +853,13 @@ export default function App() {
                   {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
                     const par = PARS[h - 1];
                     const sc = scorecardPlayer.scoresByHole[h];
+
+                    const si = STROKE_INDEX[h - 1];
+                    const strokes = strokesOnHole(scorecardPlayer.handicap, h);
+
+                    // ✅ Keep gross +/- for the modal row (as requested: printed cards show gross)
                     const diff = sc != null ? sc - par : null;
+
                     const diffStyle =
                       diff == null
                         ? {}
@@ -823,7 +871,15 @@ export default function App() {
 
                     return (
                       <tr key={h}>
-                        <td style={styles.td}>{h}</td>
+                        <td style={styles.td}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                            <span>{h}</span>
+                            {strokes > 0 && (
+                              <span style={styles.strokePill}>{`+${strokes}`}</span>
+                            )}
+                          </span>
+                        </td>
+                        <td style={styles.td}>{si}</td>
                         <td style={styles.td}>{par}</td>
                         <td style={styles.td}>{sc != null ? sc : "—"}</td>
                         <td style={{ ...styles.td, ...diffStyle }}>
@@ -837,7 +893,8 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
-              Net is computed as gross minus <b>pro-rated handicap</b> for holes played.
+              Net is computed using <b>stroke index allocation</b>. The <b>+1/+2</b> badges mark holes where the
+              player receives strokes.
             </div>
           </div>
         </div>
@@ -1112,6 +1169,30 @@ export default function App() {
           <div style={styles.card}>
             <div style={styles.cardTitle}>Admin</div>
 
+            {/* ✅ On-screen load errors */}
+            {lastLoadErrors.length > 0 && (
+              <div style={{ ...styles.helpText, marginTop: 10 }}>
+                <div style={{ fontWeight: 950 }}>Load Errors</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: THEME.textMuted }}>
+                  Last load: {lastLoadAt || "—"}
+                </div>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    marginTop: 8,
+                    background: "rgba(7,31,19,0.22)",
+                    padding: 10,
+                    borderRadius: 12,
+                    border: `1px solid ${THEME.border}`,
+                    fontSize: 12,
+                    color: THEME.text,
+                  }}
+                >
+                  {JSON.stringify(lastLoadErrors, null, 2)}
+                </pre>
+              </div>
+            )}
+
             {!adminOn ? (
               <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
                 <label style={styles.label}>
@@ -1155,7 +1236,7 @@ export default function App() {
                 </div>
 
                 <div style={styles.adminGrid}>
-                  {/* ✅ Import Tee Sheet */}
+                  {/* Import Tee Sheet */}
                   <div style={styles.subCard}>
                     <div style={styles.subTitle}>Import Tee Sheet</div>
 
@@ -1295,7 +1376,9 @@ export default function App() {
                                 <div style={{ minWidth: 0 }}>
                                   <div style={{ fontWeight: 950 }}>
                                     {f.group_name}{" "}
-                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
+                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>
+                                      (Code: {f.code})
+                                    </span>
                                   </div>
                                   <div style={{ fontSize: 12, color: THEME.textMuted }}>
                                     Members: {members.length}
@@ -1307,9 +1390,11 @@ export default function App() {
                                 {memberRows.map((fp) => {
                                   const p = players.find((x) => x.id === fp.player_id);
                                   return (
-                                    <div key={fp.id} style={styles.playerRow}>
+                                    <div key={`${fp.foursome_id}-${fp.player_id}`} style={styles.playerRow}>
                                       <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 950 }}>{p ? p.name : fp.player_id}</div>
+                                        <div style={{ fontWeight: 950 }}>
+                                          {p ? p.name : fp.player_id}
+                                        </div>
                                         {p && (
                                           <div style={styles.playerMeta}>
                                             HCP {clampInt(p.handicap, 0)}
@@ -1317,7 +1402,10 @@ export default function App() {
                                           </div>
                                         )}
                                       </div>
-                                      <button style={styles.dangerBtn} onClick={() => removePlayerFromFoursome(fp.id)}>
+                                      <button
+                                        style={styles.dangerBtn}
+                                        onClick={() => removePlayerFromFoursome(fp.foursome_id, fp.player_id)}
+                                      >
                                         Remove
                                       </button>
                                     </div>
@@ -1628,6 +1716,17 @@ const styles = {
     border: `1px solid ${THEME.border}`,
     fontWeight: 950,
     fontSize: 12,
+    color: THEME.text,
+  },
+
+  strokePill: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 950,
+    background: "rgba(203,189,151,0.18)",
+    border: `1px solid ${THEME.border}`,
     color: THEME.text,
   },
 
