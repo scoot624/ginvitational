@@ -7,15 +7,13 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-/** ⛳ PARS (Blue tees, Par 72 — hole 18 is Par 5 per your note) */
+/** ⛳ PARS (Blue tees, Par 72; hole 18 is Par 5 per your note) */
 const PARS = [
   4, 4, 4, 3, 4, 3, 5, 3, 5,
   4, 3, 5, 3, 4, 5, 4, 4, 5,
 ];
 
-/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s)
- *  1 = hardest hole
- */
+/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s) (1 = hardest) */
 const STROKE_INDEX = [
   12, // Hole 1
   10, // Hole 2
@@ -32,7 +30,7 @@ const STROKE_INDEX = [
   13, // Hole 13
   5,  // Hole 14
   15, // Hole 15
-  1,  // Hole 16
+  1,  // Hole 16 (hardest)
   11, // Hole 17
   7,  // Hole 18
 ];
@@ -47,6 +45,22 @@ function formatToPar(n) {
   if (n === 0) return "E";
   if (n > 0) return `+${n}`;
   return `${n}`;
+}
+
+/** Real handicap allocation by stroke index */
+function strokesOnHole(courseHcp, holeNum) {
+  const h = clampInt(courseHcp, 0);
+  if (h <= 0) return 0;
+
+  const full = Math.floor(h / 18);      // strokes on every hole
+  const rem = h % 18;                   // extra strokes on hardest rem holes
+  const si = STROKE_INDEX[holeNum - 1]; // 1..18 (1 hardest)
+
+  return full + (rem > 0 && si <= rem ? 1 : 0);
+}
+
+function netScoreForHole(grossScore, courseHcp, holeNum) {
+  return grossScore - strokesOnHole(courseHcp, holeNum);
 }
 
 /** --- Brand palette from your style guide --- */
@@ -130,28 +144,11 @@ function errToText(err) {
   }
 }
 
-/** ✅ Real stroke allocation (hardest holes) */
-function strokesOnHole(courseHcp, holeNum) {
-  const h = clampInt(courseHcp, 0);
-  if (h <= 0) return 0;
-
-  const full = Math.floor(h / 18);      // strokes on every hole
-  const rem = h % 18;                   // extra strokes on hardest rem holes
-  const si = STROKE_INDEX[holeNum - 1]; // 1..18 (1 hardest)
-
-  return full + (rem > 0 && si <= rem ? 1 : 0);
-}
-
-function netScoreForHole(grossScore, courseHcp, holeNum) {
-  const strokes = strokesOnHole(courseHcp, holeNum);
-  return grossScore - strokes;
-}
-
 export default function App() {
-  const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin
+  const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
 
-  // ✅ On-screen diagnostics so you don’t need DevTools
+  // ✅ On-screen diagnostics (no DevTools needed)
   const [lastLoadErrors, setLastLoadErrors] = useState([]);
   const [lastLoadAt, setLastLoadAt] = useState(null);
 
@@ -172,7 +169,7 @@ export default function App() {
 
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
-  const [foursomePlayers, setFoursomePlayers] = useState([]); // composite key rows
+  const [foursomePlayers, setFoursomePlayers] = useState([]); // {foursome_id, player_id, seat, created_at}
 
   // Admin: manual foursome
   const [manualGroupName, setManualGroupName] = useState("");
@@ -197,9 +194,6 @@ export default function App() {
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
 
-  // ---------------------------
-  // LOADERS (capture errors)
-  // ---------------------------
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
@@ -325,7 +319,7 @@ export default function App() {
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
-      // ✅ Real handicap allocation by stroke index (works mid-round)
+      // ✅ Real net (stroke index allocation), works mid-round
       const netGross = playedHoles.reduce((acc, h) => {
         const grossHole = scoresByHole[h];
         const netHole = netScoreForHole(grossHole, handicap, h);
@@ -342,6 +336,7 @@ export default function App() {
         holesPlayed,
         netToPar,
         scoresByHole,
+        gross,
       };
     });
 
@@ -501,9 +496,7 @@ export default function App() {
 
     const shuffled = shuffle(players);
     const groups = [];
-    for (let i = 0; i < shuffled.length; i += 4) {
-      groups.push(shuffled.slice(i, i + 4));
-    }
+    for (let i = 0; i < shuffled.length; i += 4) groups.push(shuffled.slice(i, i + 4));
 
     for (let i = 0; i < groups.length; i++) {
       const groupPlayers = groups[i];
@@ -730,10 +723,11 @@ export default function App() {
     const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
 
     const groupsNeeded = Array.from(
-      new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
+      new Set(
+        teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean)
+      )
     );
 
-    // Create missing foursomes
     const existingF = await supabase.from("foursomes").select("id,group_name,code,created_at");
     if (existingF.error) {
       console.error(existingF.error);
@@ -774,7 +768,9 @@ export default function App() {
       foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
     );
 
-    const existingAssign = new Set(foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`));
+    const existingAssign = new Set(
+      foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`)
+    );
 
     const assignmentInserts = [];
     for (const r of teeSheetRows) {
@@ -857,7 +853,7 @@ export default function App() {
                     const si = STROKE_INDEX[h - 1];
                     const strokes = strokesOnHole(scorecardPlayer.handicap, h);
 
-                    // ✅ Keep gross +/- for the modal row (as requested: printed cards show gross)
+                    // Printed cards show gross, so +/- here stays gross vs par
                     const diff = sc != null ? sc - par : null;
 
                     const diffStyle =
@@ -893,8 +889,7 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
-              Net is computed using <b>stroke index allocation</b>. The <b>+1/+2</b> badges mark holes where the
-              player receives strokes.
+              Net uses real handicap allocation by Stroke Index; printed cards remain gross.
             </div>
           </div>
         </div>
@@ -908,17 +903,14 @@ export default function App() {
               <img
                 src="/logo.png"
                 alt="Ginvitational logo"
-                style={{
-                  width: 210,
-                  height: "auto",
-                  display: "block",
-                  margin: "0 auto",
-                }}
+                style={{ width: 210, height: "auto", display: "block", margin: "0 auto" }}
               />
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
-              <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
+              <div style={styles.homeSub}>
+                Drink Good. Play Good. Do Good.
+              </div>
 
               <div style={styles.homeRule} />
             </div>
@@ -926,6 +918,10 @@ export default function App() {
             <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
               <button style={styles.bigBtn} onClick={() => setTab("leaderboard")}>
                 Leaderboard
+              </button>
+
+              <button style={styles.bigBtn} onClick={() => setTab("broadcast")}>
+                The Broadcast
               </button>
 
               <button style={styles.bigBtn} onClick={() => setTab("code")}>
@@ -999,6 +995,12 @@ export default function App() {
                 >
                   Leaderboard
                 </button>
+                <button
+                  style={tab === "broadcast" ? styles.navBtnActive : styles.navBtn}
+                  onClick={() => setTab("broadcast")}
+                >
+                  The Broadcast
+                </button>
                 <button style={styles.navBtn} onClick={() => setTab("code")}>
                   Enter Scores
                 </button>
@@ -1011,6 +1013,31 @@ export default function App() {
               </nav>
             </div>
           </header>
+        )}
+
+        {/* BROADCAST */}
+        {tab === "broadcast" && (
+          <div style={styles.card}>
+            <div style={styles.cardHeaderRow}>
+              <div style={styles.cardTitle}>The Broadcast</div>
+              <button style={styles.smallBtn} onClick={() => setTab("home")}>
+                Home
+              </button>
+            </div>
+
+            <div style={styles.helpText}>
+              Live tournament updates — leaders, movers, heaters, and unfortunate moments.
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <div style={styles.broadcastItem}>
+                <div style={{ fontWeight: 950 }}>Welcome to The Broadcast</div>
+                <div style={{ marginTop: 6, color: THEME.textMuted, fontSize: 12 }}>
+                  Updates will appear here as scores come in.
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* LEADERBOARD */}
@@ -1211,7 +1238,9 @@ export default function App() {
                   Unlock Admin
                 </button>
 
-                <div style={styles.helpText}>Simple front-end PIN gate. (We can harden security later.)</div>
+                <div style={styles.helpText}>
+                  Simple front-end PIN gate. (We can harden security later.)
+                </div>
               </div>
             ) : (
               <>
@@ -1390,7 +1419,10 @@ export default function App() {
                                 {memberRows.map((fp) => {
                                   const p = players.find((x) => x.id === fp.player_id);
                                   return (
-                                    <div key={`${fp.foursome_id}-${fp.player_id}`} style={styles.playerRow}>
+                                    <div
+                                      key={`${fp.foursome_id}-${fp.player_id}`}
+                                      style={styles.playerRow}
+                                    >
                                       <div style={{ minWidth: 0 }}>
                                         <div style={{ fontWeight: 950 }}>
                                           {p ? p.name : fp.player_id}
@@ -1411,7 +1443,9 @@ export default function App() {
                                     </div>
                                   );
                                 })}
-                                {memberRows.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
+                                {memberRows.length === 0 && (
+                                  <div style={styles.helpText}>No players assigned.</div>
+                                )}
                               </div>
                             </div>
                           );
@@ -1728,6 +1762,13 @@ const styles = {
     background: "rgba(203,189,151,0.18)",
     border: `1px solid ${THEME.border}`,
     color: THEME.text,
+  },
+
+  broadcastItem: {
+    padding: 12,
+    borderRadius: 14,
+    border: `1px solid ${THEME.border}`,
+    background: "rgba(7,31,19,0.16)",
   },
 
   adminGrid: {
