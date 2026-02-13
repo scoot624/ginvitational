@@ -137,6 +137,14 @@ function shuffle(arr) {
 
 /** Broadcast helpers */
 function nowKeyMinute() {
+ function nowKeyHour() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}`;
+}
+
+ 
   const d = new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
     d.getUTCDate()
@@ -455,6 +463,39 @@ export default function App() {
       backNetToPar,
     };
   }
+function buildHourlyRecapText(ranked) {
+  const fmt = (r, place) => {
+    const hole = r.holesPlayed ?? 0;
+    const score = formatToPar(r.netToPar);
+    return `${place}. ${r.last} ${score} (${hole})`;
+  };
+
+  const top = ranked.slice(0, 5);
+  const bottom = ranked.slice(Math.max(0, ranked.length - 5));
+
+  const topLines = top.map((r, i) => fmt(r, i + 1)).join("  •  ");
+  const bottomLines = bottom
+    .map((r, i) => fmt(r, ranked.length - bottom.length + i + 1))
+    .join("  •  ");
+
+  return `Hourly update — The Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`;
+}
+async function runHourlyRecap() {
+  const ranked = leaderboardRows
+    .filter((r) => r.holesPlayed > 0)
+    .map((r, idx) => ({ ...r, rank: idx + 1 }));
+
+  if (ranked.length === 0) return;
+
+  const text = buildHourlyRecapText(ranked);
+
+  // one recap per hour max
+  const hourKey = nowKeyHour();
+  const dedupeParts = ["hourly_recap", hourKey];
+
+  await insertBroadcast("hourly", text, dedupeParts, null);
+  await loadBroadcast();
+}
 
   async function runBroadcastTick() {
     // need leaderboard computed
@@ -680,6 +721,39 @@ export default function App() {
       alert("Wrong PIN");
     }
   }
+
+useEffect(() => {
+  // run exactly at the top of the next hour, then every hour
+  const msToNextHour = (() => {
+    const d = new Date();
+    const next = new Date(d);
+    next.setMinutes(60, 0, 0); // next hour
+    return next.getTime() - d.getTime();
+  })();
+
+  let hourlyIntervalId = null;
+
+  const timeoutId = setTimeout(async () => {
+    await loadPlayers();
+    await loadScores();
+    await runBroadcastTick(); // optional, keeps other events moving
+    await runHourlyRecap();
+
+    hourlyIntervalId = setInterval(async () => {
+      await loadPlayers();
+      await loadScores();
+      await runBroadcastTick();
+      await runHourlyRecap();
+    }, 20 * 60 * 1000);
+  }, msToNextHour);
+
+  return () => {
+    clearTimeout(timeoutId);
+    if (hourlyIntervalId) clearInterval(hourlyIntervalId);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [leaderboardRows.length]);
+
 
   async function addPlayer() {
     if (!adminOn) return alert("Admin only.");
