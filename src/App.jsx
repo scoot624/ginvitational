@@ -1420,7 +1420,7 @@ useEffect(() => {
             </div>
 
             <div style={styles.helpText}>
-              Fun tournament updates. Net scoring only. Trophy: <b>Agro Crag</b>. Last place: <b>The LEX</b>.
+              Moe!!! Give us the updates.
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
