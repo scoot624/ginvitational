@@ -396,78 +396,155 @@ export default function App() {
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
 
-  /** -----------------------
-   *  BROADCAST ENGINE
-   *  Runs every 3 minutes
-   * ----------------------*/
-  async function insertBroadcast(kind, text, dedupeParts, player_id = null) {
-    const dedupe_key = safeDedupeKey(dedupeParts);
+/** -----------------------
+ *  BROADCAST ENGINE
+ *  Runs every 3 minutes
+ * ----------------------*/
 
-    const { error } = await supabase
-      .from("broadcast_messages")
-      .insert({ kind, text, player_id, dedupe_key });
+/** Broadcast helpers */
+function nowKeyMinute() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
 
-    // Ignore duplicates (unique dedupe_key)
-    if (error) {
-      const msg = errToText(error);
-      if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) return;
-      console.error("insertBroadcast error:", error);
-    }
+function nowKeyHour() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}`;
+}
+
+// ✅ 20-minute bucket key: 00, 20, 40 (UTC)
+function nowKey20Min() {
+  const d = new Date();
+  const m = d.getUTCMinutes();
+  const bucket = String(Math.floor(m / 20) * 20).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${bucket}`;
+}
+
+function safeDedupeKey(parts) {
+  return parts
+    .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
+    .join("|")
+    .slice(0, 240);
+}
+
+// Deterministic variant selection (same seed => same template)
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function pickVariant(templates, seedParts) {
+  if (!templates || templates.length === 0) return "";
+  const seed = safeDedupeKey(seedParts);
+  const idx = fnv1a(seed) % templates.length;
+  return templates[idx];
+}
+
+/** Template library */
+const BROADCAST_TEMPLATES = {
+  leader: [
+    ({ last, net, holes }) => `${last} takes the lead — net ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `New leader: ${last}. Net ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `${last} is on top. ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `${last} out front — ${net} through ${holes} holes.`,
+  ],
+  lex: [
+    ({ last, net, holes }) =>
+      `${last} is now The LEX — net ${net} through ${holes} holes. Someone check on them.`,
+    ({ last, net, holes }) => `The LEX crown goes to ${last}. ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `${last} drops to The LEX. Net ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `It’s ${last} at The LEX. ${net} through ${holes} holes.`,
+  ],
+  top5: [
+    ({ last, net, holes }) => `${last} just cracked the Top 5 — ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `Top 5 alert: ${last} is in. Net ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `${last} climbs into the Top 5 — ${net} through ${holes} holes.`,
+    ({ last, net, holes }) => `${last} joins the Leaders. ${net} through ${holes} holes.`,
+  ],
+  move: [
+    ({ last, dir, spots, rank, holes }) =>
+      `${last} moved ${dir} ${spots} spot${spots === 1 ? "" : "s"} to #${rank} through ${holes} holes.`,
+    ({ last, dir, spots, rank, holes }) =>
+      `${last} is ${dir} ${spots} to #${rank} — through ${holes} holes.`,
+    ({ last, dir, spots, rank, holes }) =>
+      `Movement: ${last} goes ${dir} ${spots}, now #${rank} through ${holes} holes.`,
+  ],
+  recap: [
+    ({ topLines, bottomLines }) => `Recap — The Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`,
+    ({ topLines, bottomLines }) => `Scoreboard check: The Leaders — ${topLines}.  The LEX — ${bottomLines}.`,
+    ({ topLines, bottomLines }) => `Broadcast Recap: Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`,
+  ],
+};
+
+async function insertBroadcast(kind, text, dedupeParts, player_id = null) {
+  const dedupe_key = safeDedupeKey(dedupeParts);
+
+  const { error } = await supabase.from("broadcast_messages").insert({ kind, text, player_id, dedupe_key });
+
+  // Ignore duplicates (unique dedupe_key)
+  if (error) {
+    const msg = errToText(error);
+    if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) return;
+    console.error("insertBroadcast error:", error);
+  }
+}
+
+function computeNetStats(row) {
+  const played = Object.keys(row.scoresByHole || {})
+    .map((x) => clampInt(x, 0))
+    .filter((h) => h >= 1 && h <= 18)
+    .sort((a, b) => a - b);
+
+  let netBirdies = 0;
+  let bogeyFree = true;
+  let netDoubles = 0;
+  let netTriplesPlus = 0;
+
+  for (const h of played) {
+    const gross = row.scoresByHole[h];
+    const net = netScoreForHole(gross, row.handicap, h);
+    const par = PARS[h - 1];
+
+    if (net <= par - 1) netBirdies += 1;
+    if (net > par) bogeyFree = false;
+
+    const over = net - par;
+    if (over >= 2 && over < 3) netDoubles += 1;
+    if (over >= 3) netTriplesPlus += 1;
   }
 
-  function computeNetStats(row) {
-    const played = Object.keys(row.scoresByHole || {})
-      .map((x) => clampInt(x, 0))
-      .filter((h) => h >= 1 && h <= 18)
-      .sort((a, b) => a - b);
+  const front = played.filter((h) => h >= 1 && h <= 9);
+  const back = played.filter((h) => h >= 10 && h <= 18);
 
-    let netBirdies = 0;
-    let bogeyFree = true;
-    let netDoubles = 0;
-    let netTriplesPlus = 0;
+  const frontNetToPar =
+    front.length === 0
+      ? null
+      : front.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
 
-    for (const h of played) {
-      const gross = row.scoresByHole[h];
-      const net = netScoreForHole(gross, row.handicap, h);
-      const par = PARS[h - 1];
+  const backNetToPar =
+    back.length === 0
+      ? null
+      : back.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
 
-      if (net <= par - 1) netBirdies += 1;
-      if (net > par) bogeyFree = false;
+  return { played, netBirdies, bogeyFree, netDoubles, netTriplesPlus, frontNetToPar, backNetToPar };
+}
 
-      const over = net - par;
-      if (over >= 2 && over < 3) netDoubles += 1;
-      if (over >= 3) netTriplesPlus += 1;
-    }
-
-    // Front/back splits (net to par)
-    const front = played.filter((h) => h >= 1 && h <= 9);
-    const back = played.filter((h) => h >= 10 && h <= 18);
-
-    const frontNetToPar =
-      front.length === 0
-        ? null
-        : front.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
-
-    const backNetToPar =
-      back.length === 0
-        ? null
-        : back.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
-
-    return {
-      played,
-      netBirdies,
-      bogeyFree,
-      netDoubles,
-      netTriplesPlus,
-      frontNetToPar,
-      backNetToPar,
-    };
-  }
-function buildHourlyRecapText(ranked) {
+/** Recap builder (Top 5 + Bottom 5) */
+function buildRecapText(ranked, seedParts) {
   const fmt = (r, place) => {
-    const hole = r.holesPlayed ?? 0;
+    const holes = r.holesPlayed ?? 0;
     const score = formatToPar(r.netToPar);
-    return `${place}. ${r.last} ${score} (${hole})`;
+    return `${place}. ${r.last} ${score} (through ${holes})`;
   };
 
   const top = ranked.slice(0, 5);
@@ -478,239 +555,239 @@ function buildHourlyRecapText(ranked) {
     .map((r, i) => fmt(r, ranked.length - bottom.length + i + 1))
     .join("  •  ");
 
-  return `Hourly update — The Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`;
+  const template = pickVariant(BROADCAST_TEMPLATES.recap, seedParts);
+  return template({ topLines, bottomLines });
 }
-async function runHourlyRecap() {
+
+/** ✅ Runs every 20 minutes (deduped per 20-min bucket) */
+async function run20MinRecap() {
   const ranked = leaderboardRows
     .filter((r) => r.holesPlayed > 0)
     .map((r, idx) => ({ ...r, rank: idx + 1 }));
 
   if (ranked.length === 0) return;
 
-  const text = buildHourlyRecapText(ranked);
+  const k20 = nowKey20Min();
+  const dedupeParts = ["recap_20", k20];
 
-  // one recap per hour max
-  const hourKey = nowKeyHour();
-  const dedupeParts = ["hourly_recap", hourKey];
+  const text = buildRecapText(ranked, dedupeParts);
 
-  await insertBroadcast("hourly", text, dedupeParts, null);
+  await insertBroadcast("recap", text, dedupeParts, null);
   await loadBroadcast();
 }
 
-  async function runBroadcastTick() {
-    // need leaderboard computed
-    if (!leaderboardRows || leaderboardRows.length === 0) return;
+async function runBroadcastTick() {
+  if (!leaderboardRows || leaderboardRows.length === 0) return;
 
-    // Snapshot current ranks
-    const ranked = leaderboardRows
-      .filter((r) => r.holesPlayed > 0) // only consider players with scores
-      .map((r, idx) => ({ ...r, rank: idx + 1 }));
+  const ranked = leaderboardRows
+    .filter((r) => r.holesPlayed > 0)
+    .map((r, idx) => ({ ...r, rank: idx + 1 }));
 
-    if (ranked.length === 0) return;
+  if (ranked.length === 0) return;
 
-    const current = new Map();
-    for (const r of ranked) {
-      const stats = computeNetStats(r);
-      current.set(r.id, {
-        id: r.id,
-        last: r.last,
-        name: r.name,
-        rank: r.rank,
-        holes: r.holesPlayed,
-        netToPar: r.netToPar,
-        stats,
-      });
-    }
-
-    const prev = lastSnapshotRef.current;
-    lastSnapshotRef.current = current;
-
-    // First run: don't spam historical events; just set baseline
-    if (!prev) return;
-
-    // Determine leader + LEX (last among scored)
-    const leader = ranked[0];
-    const lex = ranked[ranked.length - 1];
-
-    const prevLeader = Array.from(prev.values()).find((x) => x.rank === 1);
-    const prevLex = Array.from(prev.values()).reduce((acc, x) => (!acc || x.rank > acc.rank ? x : acc), null);
-
-    // New overall leader
-    if (prevLeader && prevLeader.id !== leader.id) {
-      const t = `${leader.last} takes the lead. Net ${formatToPar(leader.netToPar)}.`;
-      await insertBroadcast(
-        "leader",
-        t,
-        ["leader", nowKeyMinute(), leader.id, leader.netToPar, leader.holesPlayed],
-        leader.id
-      );
-    }
-
-    // New LEX
-    if (prevLex && prevLex.id !== lex.id) {
-      const t = `${lex.last} is now The LEX. Someone check on them.`;
-      await insertBroadcast("lex", t, ["lex", nowKeyMinute(), lex.id, lex.netToPar, lex.holesPlayed], lex.id);
-    }
-
-    // New Top 5 entrant (someone who wasn't in top 5 before, now is)
-    const prevTop5 = new Set(Array.from(prev.values()).filter((x) => x.rank <= 5).map((x) => x.id));
-    for (const r of ranked.filter((x) => x.rank <= 5)) {
-      if (!prevTop5.has(r.id)) {
-        const t = `${r.last} just cracked the Top 5. Net ${formatToPar(r.netToPar)}.`;
-        await insertBroadcast("top5", t, ["top5_in", nowKeyMinute(), r.id, r.rank, r.netToPar], r.id);
-      }
-    }
-
-    // Moved up/down X spots (only if absolute change >= 2)
-    for (const r of ranked) {
-      const p = prev.get(r.id);
-      if (!p) continue;
-      const delta = p.rank - r.rank; // positive means moved up
-      if (Math.abs(delta) >= 2) {
-        const dir = delta > 0 ? "up" : "down";
-        const spots = Math.abs(delta);
-        const t = `${r.last} moved ${dir} ${spots} spot${spots === 1 ? "" : "s"} to #${r.rank}.`;
-        await insertBroadcast(
-          "move",
-          t,
-          ["move", nowKeyMinute(), r.id, p.rank, r.rank, r.netToPar],
-          r.id
-        );
-      }
-    }
-
-    // Player-specific triggers
-    for (const r of ranked) {
-      const cur = current.get(r.id);
-      const p = prev.get(r.id);
-      if (!cur || !p) continue;
-
-      const curStats = cur.stats;
-      const prevStats = p.stats;
-
-      // 3rd net birdie of the day
-      if ((prevStats?.netBirdies ?? 0) < 3 && curStats.netBirdies >= 3) {
-        const t = `${r.last} just posted their 3rd net birdie of the day. Heating up.`;
-        await insertBroadcast(
-          "birdies",
-          t,
-          ["3rd_net_birdie", nowKeyMinute(), r.id, curStats.netBirdies, cur.holes],
-          r.id
-        );
-      }
-
-      // Bogey-free through X holes (net bogey-free)
-      // milestones to avoid spam:
-      const milestones = [6, 9, 12, 15, 18];
-      for (const m of milestones) {
-        const was = (p.holes ?? 0) >= m && prevStats?.bogeyFree;
-        const now = cur.holes >= m && curStats.bogeyFree;
-        if (!was && now) {
-          const t = `${r.last} is bogey-free through ${m}. Quietly lethal.`;
-          await insertBroadcast(
-            "bogeyfree",
-            t,
-            ["bogeyfree", m, nowKeyMinute(), r.id, cur.holes],
-            r.id
-          );
-        }
-      }
-
-      // Double / triple disaster (net)
-      if ((prevStats?.netDoubles ?? 0) < curStats.netDoubles) {
-        const t = `${r.last} just took a net double. Damage control mode.`;
-        await insertBroadcast(
-          "disaster",
-          t,
-          ["net_double", nowKeyMinute(), r.id, curStats.netDoubles, cur.holes],
-          r.id
-        );
-      }
-      if ((prevStats?.netTriplesPlus ?? 0) < curStats.netTriplesPlus) {
-        const t = `${r.last} just found a net triple (or worse). The course demanded tribute.`;
-        await insertBroadcast(
-          "disaster",
-          t,
-          ["net_triple", nowKeyMinute(), r.id, curStats.netTriplesPlus, cur.holes],
-          r.id
-        );
-      }
-
-      // Front / Back split (announce once when they complete either 9)
-      // Only announce for leader/top5 and LEX to keep it cleaner
-      const isLeaderOrTop5 = r.rank <= 5;
-      const isLex = r.id === lex.id;
-
-      if (isLeaderOrTop5 || isLex) {
-        const prevFrontDone = (prevStats?.played || []).filter((h) => h <= 9).length >= 9;
-        const curFrontDone = (curStats.played || []).filter((h) => h <= 9).length >= 9;
-
-        if (!prevFrontDone && curFrontDone && curStats.frontNetToPar != null) {
-          const t = `${r.last} turned in ${formatToPar(curStats.frontNetToPar)} on the front.`;
-          await insertBroadcast(
-            "split",
-            t,
-            ["front_split", nowKeyMinute(), r.id, curStats.frontNetToPar],
-            r.id
-          );
-        }
-
-        const prevBackDone = (prevStats?.played || []).filter((h) => h >= 10).length >= 9;
-        const curBackDone = (curStats.played || []).filter((h) => h >= 10).length >= 9;
-
-        if (!prevBackDone && curBackDone && curStats.backNetToPar != null) {
-          const t = `${r.last} played the back in ${formatToPar(curStats.backNetToPar)}.`;
-          await insertBroadcast(
-            "split",
-            t,
-            ["back_split", nowKeyMinute(), r.id, curStats.backNetToPar],
-            r.id
-          );
-        }
-      }
-
-      // Hole highlights (net birdie) only for current leader + current LEX
-      // Detect newly added hole(s) since last snapshot and check if any of those were net birdies
-      const prevPlayed = new Set(prevStats?.played || []);
-      const newHoles = (curStats.played || []).filter((h) => !prevPlayed.has(h));
-
-      const highlightAllowed = r.id === leader.id || r.id === lex.id;
-      if (highlightAllowed && newHoles.length > 0) {
-        for (const h of newHoles) {
-          const gross = r.scoresByHole[h];
-          if (gross == null) continue;
-          const net = netScoreForHole(gross, r.handicap, h);
-          const par = PARS[h - 1];
-          if (net <= par - 1) {
-            const si = STROKE_INDEX[h - 1];
-            const who = r.id === leader.id ? "Leader" : "The LEX";
-            const t = `${who} alert: ${r.last} just made a net birdie on #${h}.`;
-            await insertBroadcast(
-              "highlight",
-              t,
-              ["highlight_birdie", nowKeyMinute(), r.id, h, net, par, r.rank],
-              r.id
-            );
-          }
-        }
-      }
-    }
-
-    // Refresh broadcast list after inserts
-    await loadBroadcast();
+  const current = new Map();
+  for (const r of ranked) {
+    const stats = computeNetStats(r);
+    current.set(r.id, {
+      id: r.id,
+      last: r.last,
+      name: r.name,
+      rank: r.rank,
+      holes: r.holesPlayed,
+      netToPar: r.netToPar,
+      stats,
+    });
   }
 
-  // Broadcast tick every 3 minutes
-  useEffect(() => {
-    const id = setInterval(async () => {
-      // Keep underlying data fresh for broadcasting
+  const prev = lastSnapshotRef.current;
+  lastSnapshotRef.current = current;
+
+  // First run: baseline only
+  if (!prev) return;
+
+  const leader = ranked[0];
+  const lex = ranked[ranked.length - 1];
+
+  const prevLeader = Array.from(prev.values()).find((x) => x.rank === 1) || null;
+  const prevLex = Array.from(prev.values()).reduce((acc, x) => (!acc || x.rank > acc.rank ? x : acc), null);
+
+  // New leader
+  if (prevLeader && prevLeader.id !== leader.id) {
+    const dedupeParts = ["leader", nowKeyMinute(), leader.id, leader.netToPar, leader.holesPlayed];
+    const template = pickVariant(BROADCAST_TEMPLATES.leader, dedupeParts);
+    const t = template({
+      last: leader.last,
+      net: formatToPar(leader.netToPar),
+      holes: leader.holesPlayed,
+    });
+    await insertBroadcast("leader", t, dedupeParts, leader.id);
+  }
+
+  // New LEX
+  if (prevLex && prevLex.id !== lex.id) {
+    const dedupeParts = ["lex", nowKeyMinute(), lex.id, lex.netToPar, lex.holesPlayed];
+    const template = pickVariant(BROADCAST_TEMPLATES.lex, dedupeParts);
+    const t = template({
+      last: lex.last,
+      net: formatToPar(lex.netToPar),
+      holes: lex.holesPlayed,
+    });
+    await insertBroadcast("lex", t, dedupeParts, lex.id);
+  }
+
+  // New Top 5 entrant
+  const prevTop5 = new Set(Array.from(prev.values()).filter((x) => x.rank <= 5).map((x) => x.id));
+  for (const r of ranked.filter((x) => x.rank <= 5)) {
+    if (!prevTop5.has(r.id)) {
+      const dedupeParts = ["top5_in", nowKeyMinute(), r.id, r.rank, r.netToPar, r.holesPlayed];
+      const template = pickVariant(BROADCAST_TEMPLATES.top5, dedupeParts);
+      const t = template({
+        last: r.last,
+        net: formatToPar(r.netToPar),
+        holes: r.holesPlayed,
+      });
+      await insertBroadcast("top5", t, dedupeParts, r.id);
+    }
+  }
+
+  // Moved up/down >= 2 spots
+  for (const r of ranked) {
+    const p = prev.get(r.id);
+    if (!p) continue;
+    const delta = p.rank - r.rank;
+    if (Math.abs(delta) >= 2) {
+      const dir = delta > 0 ? "up" : "down";
+      const spots = Math.abs(delta);
+
+      const dedupeParts = ["move", nowKeyMinute(), r.id, p.rank, r.rank, r.netToPar, r.holesPlayed];
+      const template = pickVariant(BROADCAST_TEMPLATES.move, dedupeParts);
+      const t = template({ last: r.last, dir, spots, rank: r.rank, holes: r.holesPlayed });
+
+      await insertBroadcast("move", t, dedupeParts, r.id);
+    }
+  }
+
+  // Player-specific triggers (unchanged text except minor “through holes” where rank-based)
+  for (const r of ranked) {
+    const cur = current.get(r.id);
+    const p = prev.get(r.id);
+    if (!cur || !p) continue;
+
+    const curStats = cur.stats;
+    const prevStats = p.stats;
+
+    if ((prevStats?.netBirdies ?? 0) < 3 && curStats.netBirdies >= 3) {
+      const t = `${r.last} just posted their 3rd net birdie of the day. Heating up.`;
+      await insertBroadcast("birdies", t, ["3rd_net_birdie", nowKeyMinute(), r.id, curStats.netBirdies, cur.holes], r.id);
+    }
+
+    const milestones = [6, 9, 12, 15, 18];
+    for (const m of milestones) {
+      const was = (p.holes ?? 0) >= m && prevStats?.bogeyFree;
+      const now = cur.holes >= m && curStats.bogeyFree;
+      if (!was && now) {
+        const t = `${r.last} is bogey-free through ${m}. Quietly lethal.`;
+        await insertBroadcast("bogeyfree", t, ["bogeyfree", m, nowKeyMinute(), r.id, cur.holes], r.id);
+      }
+    }
+
+    if ((prevStats?.netDoubles ?? 0) < curStats.netDoubles) {
+      const t = `${r.last} just took a net double. Damage control mode.`;
+      await insertBroadcast("disaster", t, ["net_double", nowKeyMinute(), r.id, curStats.netDoubles, cur.holes], r.id);
+    }
+    if ((prevStats?.netTriplesPlus ?? 0) < curStats.netTriplesPlus) {
+      const t = `${r.last} just found a net triple (or worse). The course demanded tribute.`;
+      await insertBroadcast("disaster", t, ["net_triple", nowKeyMinute(), r.id, curStats.netTriplesPlus, cur.holes], r.id);
+    }
+
+    const isLeaderOrTop5 = r.rank <= 5;
+    const isLex = r.id === lex.id;
+
+    if (isLeaderOrTop5 || isLex) {
+      const prevFrontDone = (prevStats?.played || []).filter((h) => h <= 9).length >= 9;
+      const curFrontDone = (curStats.played || []).filter((h) => h <= 9).length >= 9;
+
+      if (!prevFrontDone && curFrontDone && curStats.frontNetToPar != null) {
+        const t = `${r.last} turned in ${formatToPar(curStats.frontNetToPar)} on the front.`;
+        await insertBroadcast("split", t, ["front_split", nowKeyMinute(), r.id, curStats.frontNetToPar], r.id);
+      }
+
+      const prevBackDone = (prevStats?.played || []).filter((h) => h >= 10).length >= 9;
+      const curBackDone = (curStats.played || []).filter((h) => h >= 10).length >= 9;
+
+      if (!prevBackDone && curBackDone && curStats.backNetToPar != null) {
+        const t = `${r.last} played the back in ${formatToPar(curStats.backNetToPar)}.`;
+        await insertBroadcast("split", t, ["back_split", nowKeyMinute(), r.id, curStats.backNetToPar], r.id);
+      }
+    }
+
+    const prevPlayed = new Set(prevStats?.played || []);
+    const newHoles = (curStats.played || []).filter((h) => !prevPlayed.has(h));
+
+    const highlightAllowed = r.id === leader.id || r.id === lex.id;
+    if (highlightAllowed && newHoles.length > 0) {
+      for (const h of newHoles) {
+        const gross = r.scoresByHole[h];
+        if (gross == null) continue;
+        const net = netScoreForHole(gross, r.handicap, h);
+        const par = PARS[h - 1];
+        if (net <= par - 1) {
+          const who = r.id === leader.id ? "Leader" : "The LEX";
+          const t = `${who} alert: ${r.last} just made a net birdie on #${h}.`;
+          await insertBroadcast("highlight", t, ["highlight_birdie", nowKeyMinute(), r.id, h, net, par, r.rank], r.id);
+        }
+      }
+    }
+  }
+
+  await loadBroadcast();
+}
+
+// Broadcast tick every 3 minutes
+useEffect(() => {
+  const id = setInterval(async () => {
+    await loadPlayers();
+    await loadScores();
+    await runBroadcastTick();
+  }, 180_000);
+  return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [players.length]);
+
+// ✅ Recap exactly at next 20-min boundary (UTC), then every 20 minutes
+useEffect(() => {
+  const msToNext20 = (() => {
+    const d = new Date();
+    const minutesToNext = (20 - (d.getUTCMinutes() % 20)) % 20;
+    const ms =
+      minutesToNext * 60 * 1000 +
+      (60 - d.getUTCSeconds()) * 1000 -
+      d.getUTCMilliseconds();
+    return ms === 0 ? 20 * 60 * 1000 : ms;
+  })();
+
+  let intervalId = null;
+
+  const timeoutId = setTimeout(async () => {
+    await loadPlayers();
+    await loadScores();
+    await runBroadcastTick(); // optional
+    await run20MinRecap();
+
+    intervalId = setInterval(async () => {
       await loadPlayers();
       await loadScores();
       await runBroadcastTick();
-    }, 180_000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [players.length]); // stable enough; avoids re-registering constantly
+      await run20MinRecap();
+    }, 20 * 60 * 1000);
+  }, msToNext20);
+
+  return () => {
+    clearTimeout(timeoutId);
+    if (intervalId) clearInterval(intervalId);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [leaderboardRows.length]);
 
   function enterAdmin() {
     if (adminPin === "112020") {
