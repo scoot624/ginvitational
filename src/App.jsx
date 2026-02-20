@@ -724,20 +724,39 @@ async function runBroadcastTick() {
     const prevPlayed = new Set(prevStats?.played || []);
     const newHoles = (curStats.played || []).filter((h) => !prevPlayed.has(h));
 
-    const highlightAllowed = r.id === leader.id || r.id === lex.id;
-    if (highlightAllowed && newHoles.length > 0) {
-      for (const h of newHoles) {
-        const gross = r.scoresByHole[h];
-        if (gross == null) continue;
-        const net = netScoreForHole(gross, r.handicap, h);
-        const par = PARS[h - 1];
-        if (net <= par - 1) {
-          const who = r.id === leader.id ? "Leader" : "The LEX";
-          const t = `${who} alert: ${r.last} just made a net birdie on #${h}.`;
-          await insertBroadcast("highlight", t, ["highlight_birdie", nowKeyMinute(), r.id, h, net, par, r.rank], r.id);
-        }
+const highlightAllowed = r.id === leader.id || r.id === lex.id;
+
+if (highlightAllowed && newHoles.length > 0) {
+  for (const h of newHoles) {
+    const gross = r.scoresByHole[h];
+    if (gross == null) continue;
+
+    const net = netScoreForHole(gross, r.handicap, h);
+    const par = PARS[h - 1];
+
+    if (net <= par - 1) {
+      const who = r.id === leader.id ? "Leader" : "The LEX";
+      const diff = net - par;
+
+      let t;
+
+      if (diff === -1) {
+        // Only call it birdie if exactly -1
+        t = `${who} alert: ${r.last} made a net birdie on #${h}.`;
+      } else {
+        // -2 or better → show actual net score
+        t = `${who} alert: ${r.last} posted a net ${net} on #${h}.`;
       }
+
+      await insertBroadcast(
+        "highlight",
+        t,
+        ["highlight_score", nowKeyMinute(), r.id, h, net, par, r.rank],
+        r.id
+      );
     }
+  }
+}
   }
 
   await loadBroadcast();
