@@ -1327,17 +1327,29 @@ useEffect(() => {
                     const si = STROKE_INDEX[h - 1];
                     const strokes = strokesOnHole(scorecardPlayer.handicap, h);
 
-                    // +/- here stays gross vs par (your printed cards are gross)
-                    const diff = sc != null ? sc - par : null;
+                    // ✅ Net +/- per hole + cumulative net-to-par
+const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.handicap, h) : null;
+const netDiff = netSc != null ? netSc - par : null;
 
-                    const diffStyle =
-                      diff == null
-                        ? {}
-                        : diff < 0
-                        ? { color: THEME.good, fontWeight: 900 }
-                        : diff > 0
-                        ? { color: THEME.bad, fontWeight: 900 }
-                        : { opacity: 0.9, fontWeight: 900 };
+// running cumulative net-to-par through this hole
+if (!window.__gin_cum) window.__gin_cum = { v: 0, lastHole: 0, pid: scorecardPlayer.id };
+
+// reset cumulative when player changes or hole loop restarts
+if (window.__gin_cum.pid !== scorecardPlayer.id || h === 1) {
+  window.__gin_cum = { v: 0, lastHole: 0, pid: scorecardPlayer.id };
+}
+
+if (netDiff != null) window.__gin_cum.v += netDiff;
+const cum = netDiff != null ? window.__gin_cum.v : null;
+
+const diffStyle =
+  netDiff == null
+    ? {}
+    : netDiff < 0
+    ? { color: THEME.good, fontWeight: 900 }
+    : netDiff > 0
+    ? { color: THEME.bad, fontWeight: 900 }
+    : { opacity: 0.9, fontWeight: 900 };
 
                     return (
                       <tr key={h}>
