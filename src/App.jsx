@@ -1284,98 +1284,106 @@ useEffect(() => {
   return (
     <div style={styles.page}>
       {/* Scorecard modal (leaderboard) */}
-      {scorecardPlayer && (
-        <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
-          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <div style={{ minWidth: 0 }}>
-                <div style={styles.modalTitle}>
-                  {scorecardPlayer.name}{" "}
-                  <span style={{ opacity: 0.75, fontWeight: 700 }}>(HCP {scorecardPlayer.handicap})</span>
-                </div>
-                <div style={styles.modalSub}>
-                  Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
-                  {scorecardPlayer.holesPlayed === 0 ? (
-                    <span style={{ opacity: 0.75 }}>—</span>
-                  ) : (
-                    <span style={{ fontWeight: 950, ...netColorStyle(scorecardPlayer.netToPar) }}>
-                      {formatToPar(scorecardPlayer.netToPar)}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
-                Close
-              </button>
-            </div>
-
-            <div style={{ marginTop: 12, overflowX: "auto" }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Hole</th>
-                    <th style={styles.th}>SI</th>
-                    <th style={styles.th}>Par</th>
-                    <th style={styles.th}>Score</th>
-                    <th style={styles.th}>+/-</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
-                    const par = PARS[h - 1];
-                    const sc = scorecardPlayer.scoresByHole[h];
-                    const si = STROKE_INDEX[h - 1];
-                    const strokes = strokesOnHole(scorecardPlayer.handicap, h);
-
-                    // ✅ Net +/- per hole + cumulative net-to-par
-const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.handicap, h) : null;
-const netDiff = netSc != null ? netSc - par : null;
-
-// running cumulative net-to-par through this hole
-if (!window.__gin_cum) window.__gin_cum = { v: 0, lastHole: 0, pid: scorecardPlayer.id };
-
-// reset cumulative when player changes or hole loop restarts
-if (window.__gin_cum.pid !== scorecardPlayer.id || h === 1) {
-  window.__gin_cum = { v: 0, lastHole: 0, pid: scorecardPlayer.id };
-}
-
-if (netDiff != null) window.__gin_cum.v += netDiff;
-const cum = netDiff != null ? window.__gin_cum.v : null;
-
-const diffStyle =
-  netDiff == null
-    ? {}
-    : netDiff < 0
-    ? { color: THEME.good, fontWeight: 900 }
-    : netDiff > 0
-    ? { color: THEME.bad, fontWeight: 900 }
-    : { opacity: 0.9, fontWeight: 900 };
-
-                    return (
-                      <tr key={h}>
-                        <td style={styles.td}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                            <span>{h}</span>
-                            {strokes > 0 && <span style={styles.strokeDot} />}
-                          </span>
-                        </td>
-                        <td style={styles.td}>{si}</td>
-                        <td style={styles.td}>{par}</td>
-                        <td style={styles.td}>{sc != null ? sc : "—"}</td>
-                        <td style={{ ...styles.td, ...diffStyle }}>{diff == null ? "—" : formatToPar(diff)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
-              Net uses real handicap allocation by Stroke Index; printed cards remain gross.
-            </div>
+{scorecardPlayer && (
+  <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
+    <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+      <div style={styles.modalHeader}>
+        <div style={{ minWidth: 0 }}>
+          <div style={styles.modalTitle}>
+            {scorecardPlayer.name}{" "}
+            <span style={{ opacity: 0.75, fontWeight: 700 }}>(HCP {scorecardPlayer.handicap})</span>
+          </div>
+          <div style={styles.modalSub}>
+            Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
+            {scorecardPlayer.holesPlayed === 0 ? (
+              <span style={{ opacity: 0.75 }}>—</span>
+            ) : (
+              <span style={{ fontWeight: 950, ...netColorStyle(scorecardPlayer.netToPar) }}>
+                {formatToPar(scorecardPlayer.netToPar)}
+              </span>
+            )}
           </div>
         </div>
-      )}
+        <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
+          Close
+        </button>
+      </div>
+
+      <div style={{ marginTop: 12, overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              <th style={styles.th}>Hole</th>
+              <th style={styles.th}>SI</th>
+              <th style={styles.th}>Par</th>
+              <th style={styles.th}>Score</th>
+              <th style={styles.th}>Net +/-</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {(() => {
+              // running cumulative NET-to-par across holes
+              let cum = 0;
+
+              return Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
+                const par = PARS[h - 1];
+                const sc = scorecardPlayer.scoresByHole[h];
+                const si = STROKE_INDEX[h - 1];
+                const strokes = strokesOnHole(scorecardPlayer.handicap, h);
+
+                const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.handicap, h) : null;
+                const netDiff = netSc != null ? netSc - par : null;
+
+                if (netDiff != null) cum += netDiff;
+
+                const diffStyle =
+                  netDiff == null
+                    ? {}
+                    : netDiff < 0
+                    ? { color: THEME.good, fontWeight: 900 }
+                    : netDiff > 0
+                    ? { color: THEME.bad, fontWeight: 900 }
+                    : { opacity: 0.9, fontWeight: 900 };
+
+                return (
+                  <tr key={h}>
+                    <td style={styles.td}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <span>{h}</span>
+                        {strokes > 0 && <span style={styles.strokeDot} />}
+                      </span>
+                    </td>
+                    <td style={styles.td}>{si}</td>
+                    <td style={styles.td}>{par}</td>
+                    <td style={styles.td}>{sc != null ? sc : "—"}</td>
+
+                    <td style={{ ...styles.td, ...diffStyle }}>
+                      {netDiff == null ? (
+                        "—"
+                      ) : (
+                        <>
+                          {formatToPar(netDiff)}
+                          <div style={{ fontSize: 11, opacity: 0.78, marginTop: 2, color: THEME.textMuted }}>
+                            Cum: {formatToPar(cum)}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              });
+            })()}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
+        Net +/- uses real handicap allocation by Stroke Index.
+      </div>
+    </div>
+  </div>
+)}
 
       <div style={styles.shell}>
         {/* HOME (no top nav) */}
