@@ -1365,7 +1365,7 @@ useEffect(() => {
                         <>
                           {formatToPar(netDiff)}
                           <div style={{ fontSize: 11, opacity: 0.78, marginTop: 2, color: THEME.textMuted }}>
-                            Cum: {formatToPar(cum)}
+                            {formatToPar(cum)}
                           </div>
                         </>
                       )}
