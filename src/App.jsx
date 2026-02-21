@@ -388,7 +388,29 @@ export default function App() {
       return a.name.localeCompare(b.name);
     });
 
-    return rows;
+    // ✅ Assign display ranks with tie handling: 1, 1, 3...
+// Tie rule: same netToPar AND same holesPlayed
+let lastKey = null;
+
+for (let i = 0; i < rows.length; i++) {
+  const r = rows[i];
+
+  // Only tie players who have scores; otherwise don't tie the "—" rows
+  const key = r.holesPlayed > 0 ? `${r.netToPar}|${r.holesPlayed}` : `noscore|${r.id}`;
+
+  if (i === 0) {
+    r.displayRank = 1;
+  } else if (key === lastKey) {
+    r.displayRank = rows[i - 1].displayRank; // same rank as previous row
+  } else {
+    r.displayRank = i + 1; // competition ranking jump
+  }
+
+  lastKey = key;
+}
+
+return rows;
+
   }, [players, scores]);
 
   const scorecardPlayer = useMemo(() => {
@@ -1602,7 +1624,7 @@ useEffect(() => {
 
                     return (
                       <tr key={r.id}>
-                        <td style={styles.td}>{idx + 1}</td>
+                        <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
 
                         <td style={{ ...styles.td, minWidth: 180 }}>
                           <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
