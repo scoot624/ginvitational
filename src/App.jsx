@@ -562,11 +562,15 @@ function computeNetStats(row) {
 }
 
 /** Recap builder (Top 5 + Bottom 5) */
-function buildRecapText(ranked, seedParts) {
+function nowKeyDateUTC() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function buildMilestoneRecapText(ranked, throughHoles) {
   const fmt = (r, place) => {
-    const holes = r.holesPlayed ?? 0;
     const score = formatToPar(r.netToPar);
-    return `${place}. ${r.last} ${score} (through ${holes})`;
+    return `${place}. ${r.last} ${score}`;
   };
 
   const top = ranked.slice(0, 5);
@@ -577,17 +581,39 @@ function buildRecapText(ranked, seedParts) {
     .map((r, i) => fmt(r, ranked.length - bottom.length + i + 1))
     .join("  •  ");
 
-  const template = pickVariant(BROADCAST_TEMPLATES.recap, seedParts);
-  return template({ topLines, bottomLines });
+  return `Update — through ${throughHoles} holes.  The Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`;
 }
 
-/** ✅ Runs every 20 minutes (deduped per 20-min bucket) */
-async function run20MinRecap() {
+async function runMilestoneRecap(ranked) {
+  // ranked is already holesPlayed > 0
+  if (!ranked || ranked.length === 0) return;
+
+  // Milestones you asked for
+  const milestones = [5, 9, 14, 18];
+
+  // "Everyone" = everyone who has started (holesPlayed > 0)
+  const minHoles = Math.min(...ranked.map((r) => r.holesPlayed || 0));
+  if (!Number.isFinite(minHoles) || minHoles <= 0) return;
+
+  // highest milestone achieved by the slowest player
+  const achieved = milestones.filter((m) => minHoles >= m).pop() || 0;
+  if (!achieved) return;
+
+  // Cross-device dedupe: once per (day + milestone)
+  const dayKey = nowKeyDateUTC();
+  const dedupeParts = ["milestone_recap", dayKey, `through_${achieved}`];
+
+  const text = buildMilestoneRecapText(ranked, achieved);
+
+  await insertBroadcast("recap", text, dedupeParts, null);
+  await loadBroadcast();
+}
   const ranked = leaderboardRows
     .filter((r) => r.holesPlayed > 0)
     .map((r, idx) => ({ ...r, rank: idx + 1 }));
 
   if (ranked.length === 0) return;
+await runMilestoneRecap(ranked);
 
   const k20 = nowKey20Min();
   const dedupeParts = ["recap_20", k20];
@@ -840,37 +866,7 @@ useEffect(() => {
     }
   }
 
-useEffect(() => {
-  // run exactly at the top of the next hour, then every hour
-  const msToNextHour = (() => {
-    const d = new Date();
-    const next = new Date(d);
-    next.setMinutes(60, 0, 0); // next hour
-    return next.getTime() - d.getTime();
-  })();
 
-  let hourlyIntervalId = null;
-
-  const timeoutId = setTimeout(async () => {
-    await loadPlayers();
-    await loadScores();
-    await runBroadcastTick(); // optional, keeps other events moving
-    await runHourlyRecap();
-
-    hourlyIntervalId = setInterval(async () => {
-      await loadPlayers();
-      await loadScores();
-      await runBroadcastTick();
-      await runHourlyRecap();
-    }, 20 * 60 * 1000);
-  }, msToNextHour);
-
-  return () => {
-    clearTimeout(timeoutId);
-    if (hourlyIntervalId) clearInterval(hourlyIntervalId);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [leaderboardRows.length]);
 
 
   async function addPlayer() {
