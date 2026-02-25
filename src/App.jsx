@@ -1876,250 +1876,153 @@ async function importFromTeeSheet() {
           </div>
         )}
 
-        {/* ADMIN */}
-        {tab === "admin" && (
-          <div style={styles.card}>
-            <div style={styles.cardTitle}>Admin</div>
+    {/* ADMIN */}
+{tab === "admin" && (
+  <div style={styles.card}>
+    <div style={styles.cardTitle}>Admin</div>
 
-            {lastLoadErrors.length > 0 && (
-              <div style={{ ...styles.helpText, marginTop: 10 }}>
-                <div style={{ fontWeight: 950 }}>Load Errors</div>
-                <div style={{ marginTop: 6, fontSize: 12, color: THEME.textMuted }}>
-                  Last load: {lastLoadAt || "—"}
-                </div>
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    marginTop: 8,
-                    background: "rgba(7,31,19,0.22)",
-                    padding: 10,
-                    borderRadius: 12,
-                    border: `1px solid ${THEME.border}`,
-                    fontSize: 12,
-                    color: THEME.text,
-                  }}
-                >
-                  {JSON.stringify(lastLoadErrors, null, 2)}
-                </pre>
-              </div>
-            )}
+    {lastLoadErrors.length > 0 && (
+      <div style={{ ...styles.helpText, marginTop: 10 }}>
+        <div style={{ fontWeight: 950 }}>Load Errors</div>
+        <div style={{ marginTop: 6, fontSize: 12, color: THEME.textMuted }}>
+          Last load: {lastLoadAt || "—"}
+        </div>
+        <pre
+          style={{
+            whiteSpace: "pre-wrap",
+            marginTop: 8,
+            background: "rgba(7,31,19,0.22)",
+            padding: 10,
+            borderRadius: 12,
+            border: `1px solid ${THEME.border}`,
+            fontSize: 12,
+            color: THEME.text,
+          }}
+        >
+          {JSON.stringify(lastLoadErrors, null, 2)}
+        </pre>
+      </div>
+    )}
 
-            {!adminOn ? (
-              <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
-                <label style={styles.label}>
-                  Enter Admin PIN
-                  <input
-                    style={styles.input}
-                    type="password"
-                    value={adminPin}
-                    onChange={(e) => setAdminPin(e.target.value)}
-                    inputMode="numeric"
-                    placeholder="••••••"
-                  />
-                </label>
+    {!adminOn ? (
+      <div style={{ marginTop: 12, display: "grid", gap: 10, maxWidth: 420 }}>
+        <label style={styles.label}>
+          Enter Admin PIN
+          <input
+            style={styles.input}
+            type="password"
+            value={adminPin}
+            onChange={(e) => setAdminPin(e.target.value)}
+            inputMode="numeric"
+            placeholder="••••••"
+          />
+        </label>
 
-                <button style={styles.bigBtn} onClick={enterAdmin}>
-                  Unlock Admin
-                </button>
+        <button style={styles.bigBtn} onClick={enterAdmin}>
+          Unlock Admin
+        </button>
 
-                <div style={styles.helpText}>Simple front-end PIN gate. (We can harden security later.)</div>
-              </div>
-            ) : (
-              <>
-                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-                  <button
-                    style={styles.smallBtn}
-                    onClick={() => {
-                      setAdminOn(false);
-                      setTab("home");
+        <div style={styles.helpText}>Simple front-end PIN gate. (We can harden security later.)</div>
+      </div>
+    ) : (
+      <>
+        <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+          <button
+            style={styles.smallBtn}
+            onClick={() => {
+              setAdminOn(false);
+              setTab("home");
+            }}
+          >
+            Exit Admin
+          </button>
+
+          <button style={styles.smallBtn} onClick={() => initialLoad()}>
+            Reload Data
+          </button>
+
+          <button style={styles.dangerBtn} onClick={clearFoursomes}>
+            Clear Foursomes
+          </button>
+        </div>
+
+        <div style={styles.adminGrid}>
+          {/* Import Tee Sheet */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Import Tee Sheet</div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)}
+              />
+
+              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}>
+                <input
+                  type="checkbox"
+                  checked={importReplaceFoursomes}
+                  onChange={(e) => setImportReplaceFoursomes(e.target.checked)}
+                />
+                Replace existing foursomes + assignments first (recommended)
+              </label>
+
+              <button style={styles.bigBtn} onClick={importFromTeeSheet}>
+                Import Tee Sheet
+              </button>
+
+              {importMsg ? <div style={styles.helpText}>{importMsg}</div> : null}
+
+              {teeSheetRows.length > 0 && (
+                <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                  Preview (first 5 rows):
+                  <pre
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      marginTop: 8,
+                      background: "rgba(7,31,19,0.22)",
+                      padding: 10,
+                      borderRadius: 12,
+                      border: `1px solid ${THEME.border}`,
                     }}
                   >
-                    Exit Admin
-                  </button>
-
-                  <button style={styles.smallBtn} onClick={() => initialLoad()}>
-                    Reload Data
-                  </button>
-
-                  <button style={styles.dangerBtn} onClick={clearFoursomes}>
-                    Clear Foursomes
-                  </button>
+                    {JSON.stringify(teeSheetRows.slice(0, 5), null, 2)}
+                  </pre>
                 </div>
+              )}
 
-                <div style={styles.adminGrid}>
-                  {/* Import Tee Sheet */}
-                  <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Import Tee Sheet</div>
+              {teeSheetFile ? (
+                <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                  File: <b>{teeSheetFile.name}</b>
+                </div>
+              ) : null}
+            </div>
+          </div>
 
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <input type="file" accept=".xlsx,.xls" onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)} />
+          {/* Foursomes sanity check */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Foursomes</div>
 
-                      <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}>
-                        <input
-                          type="checkbox"
-                          checked={importReplaceFoursomes}
-                          onChange={(e) => setImportReplaceFoursomes(e.target.checked)}
-                        />
-                        Replace existing foursomes + assignments first (recommended)
-                      </label>
+            <div style={styles.helpText}>
+              Sanity check after import: codes, tee time, starting hole, and members.
+            </div>
 
-                      <button style={styles.bigBtn} onClick={importFromTeeSheet}>
-                        Import Players + Foursomes + Assignments
-                      </button>
-
-                      {importMsg ? <div style={styles.helpText}>{importMsg}</div> : null}
-
-                      {teeSheetRows.length > 0 && (
-                        <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                          Preview (first 5 rows):
-                          <pre
-                            style={{
-                              whiteSpace: "pre-wrap",
-                              marginTop: 8,
-                              background: "rgba(7,31,19,0.22)",
-                              padding: 10,
-                              borderRadius: 12,
-                              border: `1px solid ${THEME.border}`,
-                            }}
-                          >
-                            {JSON.stringify(teeSheetRows.slice(0, 5), null, 2)}
-                          </pre>
-                        </div>
-                      )}
-
-                      {teeSheetFile ? (
-                        <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                          File: <b>{teeSheetFile.name}</b>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {/* Foursomes */}
-                  <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Foursomes</div>
-
-                    <div style={{ display: "grid", gap: 10 }}>
-                    
-                      <div style={styles.hr} />
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={styles.sectionLabel}>Manual create</div>
-                        <input
-                          style={styles.input}
-                          placeholder='Group name (ex: "Group A")'
-                          value={manualGroupName}
-                          onChange={(e) => setManualGroupName(e.target.value)}
-                        />
-                        <input
-                          style={styles.input}
-                          placeholder="Code (6 chars) — leave blank to auto-generate"
-                          value={manualCode}
-                          onChange={(e) => setManualCode(e.target.value.toUpperCase())}
-                          maxLength={6}
-                        />
-                        <button style={styles.smallBtn} onClick={createManualFoursome}>
-                          Create Foursome
-                        </button>
-                      </div>
-
-                      <div style={styles.hr} />
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={styles.sectionLabel}>Assign player to foursome</div>
-
-                        <select style={styles.input} value={assignFoursomeId} onChange={(e) => setAssignFoursomeId(e.target.value)}>
-                          <option value="">Select foursome…</option>
-                          {foursomes.map((f) => (
-                            <option key={f.id} value={f.id}>
-                              {f.group_name} — {f.code}
-                            </option>
-                          ))}
-                        </select>
-
-                        <select style={styles.input} value={assignPlayerId} onChange={(e) => setAssignPlayerId(e.target.value)}>
-                          <option value="">Select player…</option>
-                          {players.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} (HCP {clampInt(p.handicap, 0)})
-                            </option>
-                          ))}
-                        </select>
-
-                        <button style={styles.smallBtn} onClick={assignPlayerToFoursome}>
-                          Add Player to Foursome
-                        </button>
-                      </div>
-
-                      <div style={styles.hr} />
-
-                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>View codes + members</div>
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {foursomes.map((f) => {
-                          const members = playersInFoursome(f.id);
-                          const memberRows = foursomePlayers.filter((fp) => fp.foursome_id === f.id);
-                          return (
-                            <div key={f.id} style={styles.foursomeCard}>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950 }}>
-                                    {f.group_name}{" "}
-                                    <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
-                                  </div>
-                                  <div style={{ fontSize: 12, color: THEME.textMuted }}>Members: {members.length}</div>
-                                </div>
-                              </div>
-
-                              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                                {memberRows.map((fp) => {
-                                  const p = players.find((x) => x.id === fp.player_id);
-                                  return (
-                                    <div key={`${fp.foursome_id}-${fp.player_id}`} style={styles.playerRow}>
-                                      <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 950 }}>{p ? p.name : fp.player_id}</div>
-                                        {p && (
-                                          <div style={styles.playerMeta}>
-                                            HCP {clampInt(p.handicap, 0)}
-                                            {p.charity ? ` • ${p.charity}` : ""}
-                                          </div>
-                                        )}
-                                      </div>
-                                      <button style={styles.dangerBtn} onClick={() => removePlayerFromFoursome(fp.foursome_id, fp.player_id)}>
-                                        Remove
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                                {memberRows.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Players */}
-                  <div style={styles.subCard}>
-                    <div style={styles.subTitle}>Players</div>
-
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Add Player</div>
-                      <input style={styles.input} placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
-                      <input style={styles.input} placeholder="Handicap" value={newHandicap} onChange={(e) => setNewHandicap(e.target.value)} inputMode="numeric" />
-                      <input style={styles.input} placeholder="Charity (optional)" value={newCharity} onChange={(e) => setNewCharity(e.target.value)} />
-                      <button style={styles.bigBtn} onClick={addPlayer}>
-                        Add Player
-                      </button>
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {foursomes.map((f) => {
+                const members = playersInFoursome(f.id);
+                return (
+                  <div key={f.id} style={styles.foursomeCard}>
+                    <div style={{ fontWeight: 950 }}>
+                      {f.group_name} <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
                     </div>
 
-                    <div style={styles.hr} />
+                    <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                      Tee: <b>{f.tee_time || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
+                      <b>{members.length}</b>
+                    </div>
 
-                    <div style={{ fontWeight: 950, letterSpacing: 0.2 }}>Player List</div>
-                    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                      {players.map((p) => (
+                    <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                      {members.map((p) => (
                         <div key={p.id} style={styles.playerRow}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
@@ -2128,20 +2031,23 @@ async function importFromTeeSheet() {
                               {p.charity ? ` • ${p.charity}` : ""}
                             </div>
                           </div>
-
-                          <button style={styles.dangerBtn} onClick={() => deletePlayer(p.id)}>
-                            Delete
-                          </button>
                         </div>
                       ))}
-                      {players.length === 0 && <div style={styles.helpText}>No players.</div>}
+                      {members.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
                     </div>
                   </div>
-                </div>
-              </>
-            )}
+                );
+              })}
+
+              {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+            </div>
           </div>
-        )}
+        </div>
+      </>
+    )}
+  </div>
+)}
+        
 
         {/* Router fallback */}
         {tab === "enter" && !activeFoursome && (
