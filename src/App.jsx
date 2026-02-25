@@ -246,7 +246,7 @@ export default function App() {
   async function loadFoursomes() {
     const { data, error } = await supabase
       .from("foursomes")
-      .select("id,group_name,code,created_at")
+      .select("id,group_name,code,tee_time,starting_hole,created_at")
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -920,7 +920,12 @@ useEffect(() => {
 
     if (code.length !== 6) return alert("Code must be exactly 6 characters.");
 
-    const { error } = await supabase.from("foursomes").insert({ group_name, code });
+    const { error } = await supabase.from("foursomes").insert({
+  group_name,
+  code,
+  tee_time: excelTimeToDbTime(r.tee_time),
+  starting_hole: clampInt(r.starting_hole, 1),
+});
     if (error) {
       console.error(error);
       alert(`Error creating foursome: ${errToText(error)}`);
@@ -984,63 +989,13 @@ useEffect(() => {
     await initialLoad();
   }
 
-  async function generateRandomFoursomes() {
-    if (!adminOn) return alert("Admin only.");
-    if (players.length < 2) return alert("Need at least 2 players.");
-
-    await supabase
-      .from("foursome_players")
-      .delete()
-      .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
-
-    await supabase
-      .from("foursomes")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-
-    const shuffled = shuffle(players);
-    const groups = [];
-    for (let i = 0; i < shuffled.length; i += 4) groups.push(shuffled.slice(i, i + 4));
-
-    for (let i = 0; i < groups.length; i++) {
-      const groupPlayers = groups[i];
-      const group_name = `Group ${i + 1}`;
-      const code = makeCode();
-
-      const { data: fData, error: fErr } = await supabase
-        .from("foursomes")
-        .insert({ group_name, code })
-        .select("id")
-        .single();
-
-      if (fErr) {
-        console.error(fErr);
-        alert(`Error creating foursomes: ${errToText(fErr)}`);
-        return;
-      }
-
-      const fid = fData.id;
-      const inserts = groupPlayers.map((p) => ({ foursome_id: fid, player_id: p.id }));
-      const { error: fpErr } = await supabase.from("foursome_players").insert(inserts);
-
-      if (fpErr) {
-        console.error(fpErr);
-        alert(`Error assigning players: ${errToText(fpErr)}`);
-        return;
-      }
-    }
-
-    await initialLoad();
-    alert("Foursomes generated ✅");
-  }
-
   async function enterWithCode() {
     const code = entryCode.trim().toUpperCase();
     if (code.length !== 6) return alert("Enter a 6-character code.");
 
     const { data: f, error } = await supabase
       .from("foursomes")
-      .select("id,group_name,code")
+      .select("id,group_name,code,tee_time,starting_hole")
       .eq("code", code)
       .maybeSingle();
 
@@ -1065,7 +1020,7 @@ useEffect(() => {
 
     setActiveFoursome(f);
     setActivePlayers(memberPlayers);
-    setHole(1);
+    setHole(clampInt(f.starting_hole, 1));
     setHoleInputs({});
     setTab("enter");
   }
@@ -1117,6 +1072,44 @@ useEffect(() => {
   // ---------------------------
   // EXCEL IMPORT
   // ---------------------------
+ function excelTimeToDbTime(v) {
+  // Return "HH:MM:SS" or null
+  if (v == null || v === "") return null;
+
+  // If sheet_to_json gives a Date
+  if (v instanceof Date && Number.isFinite(v.getTime())) {
+    const hh = String(v.getHours()).padStart(2, "0");
+    const mm = String(v.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  // If Excel time fraction
+  const n = Number(v);
+  if (Number.isFinite(n)) {
+    const totalSeconds = Math.round(n * 24 * 60 * 60);
+    const hh = String(Math.floor(totalSeconds / 3600) % 24).padStart(2, "0");
+    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  // If string like "9:00 AM" or "09:00"
+  const s = String(v).trim();
+  if (!s) return null;
+
+  if (/^\d{1,2}:\d{2}$/.test(s)) {
+    const [h, m] = s.split(":");
+    return `${String(h).padStart(2, "0")}:${m}:00`;
+  }
+
+  const d = new Date(`1970-01-01 ${s}`);
+  if (Number.isFinite(d.getTime())) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  return null;
+}
   function normKey(k) {
     return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
@@ -1230,8 +1223,20 @@ useEffect(() => {
     const groupsNeeded = Array.from(
       new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
     );
+// Map group -> tee_time + starting_hole from the sheet
+const groupMeta = new Map();
+for (const r of teeSheetRows) {
+  const group_name = String(r.foursome || "").trim();
+  if (!group_name) continue;
 
-    const existingF = await supabase.from("foursomes").select("id,group_name,code,created_at");
+  if (!groupMeta.has(group_name.toLowerCase())) {
+    groupMeta.set(group_name.toLowerCase(), {
+      tee_time: excelTimeToDbTime(r.tee_time),
+      starting_hole: clampInt(r.starting_hole, 1),
+    });
+  }
+}
+    const existingF = await supabase.from("foursomes").select("id,group_name,code,tee_time,starting_hole,created_at");
     if (existingF.error) {
       console.error(existingF.error);
       setImportMsg(`Error reading foursomes: ${errToText(existingF.error)}`);
@@ -1251,8 +1256,13 @@ useEffect(() => {
         const code = makeCode(6);
         const { data, error } = await supabase
           .from("foursomes")
-          .insert({ group_name, code })
-          .select("id,group_name,code")
+          .insert({
+  group_name,
+  code,
+  tee_time: excelTimeToDbTime(r.tee_time),
+  starting_hole: clampInt(r.starting_hole, 1),
+})
+          .select("id,group_name,code,tee_time,starting_hole")
           .single();
 
         if (!error) created = data;
@@ -1858,10 +1868,7 @@ useEffect(() => {
                     <div style={styles.subTitle}>Foursomes</div>
 
                     <div style={{ display: "grid", gap: 10 }}>
-                      <button style={styles.bigBtn} onClick={generateRandomFoursomes}>
-                        Generate Foursomes (Random)
-                      </button>
-
+                    
                       <div style={styles.hr} />
 
                       <div style={{ display: "grid", gap: 8 }}>
