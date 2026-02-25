@@ -1120,74 +1120,131 @@ useEffect(() => {
     return `${first} ${last}`.trim().replace(/\s+/g, " ");
   }
 
-  async function parseTeeSheetFile(file) {
-    setImportMsg("");
-    setTeeSheetFile(file);
 
-    if (!file) {
+  // ============================
+// EXCEL IMPORT (REPLACEMENT)
+// ============================
+
+function excelTimeToDbTime(v) {
+  // Return "HH:MM:SS" or null
+  if (v == null || v === "") return null;
+
+  // If sheet_to_json gives a Date
+  if (v instanceof Date && Number.isFinite(v.getTime())) {
+    const hh = String(v.getHours()).padStart(2, "0");
+    const mm = String(v.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  // If Excel time fraction (e.g., 0.375)
+  const n = Number(v);
+  if (Number.isFinite(n)) {
+    const totalSeconds = Math.round(n * 24 * 60 * 60);
+    const hh = String(Math.floor(totalSeconds / 3600) % 24).padStart(2, "0");
+    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  // If string like "9:00 AM" or "09:00"
+  const s = String(v).trim();
+  if (!s) return null;
+
+  if (/^\d{1,2}:\d{2}$/.test(s)) {
+    const [h, m] = s.split(":");
+    return `${String(h).padStart(2, "0")}:${m}:00`;
+  }
+
+  const d = new Date(`1970-01-01 ${s}`);
+  if (Number.isFinite(d.getTime())) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}:00`;
+  }
+
+  return null;
+}
+
+async function parseTeeSheetFile(file) {
+  setImportMsg("");
+  setTeeSheetFile(file);
+
+  if (!file) {
+    setTeeSheetRows([]);
+    return;
+  }
+
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+
+    const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    if (!raw || raw.length === 0) {
       setTeeSheetRows([]);
+      setImportMsg("No rows found in the spreadsheet.");
       return;
     }
 
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
+    const rows = raw.map((r) => {
+      const out = {};
+      for (const [k, v] of Object.entries(r)) out[normKey(k)] = v;
+      return out;
+    });
 
-      const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
-      if (!raw || raw.length === 0) {
-        setTeeSheetRows([]);
-        setImportMsg("No rows found in the spreadsheet.");
-        return;
-      }
-
-      const rows = raw.map((r) => {
-        const out = {};
-        for (const [k, v] of Object.entries(r)) out[normKey(k)] = v;
-        return out;
-      });
-
-      const required = ["foursome", "first_name", "last_name"];
-      const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
-      if (missing.length) {
-        setTeeSheetRows([]);
-        setImportMsg(`Missing required columns: ${missing.join(", ")}`);
-        return;
-      }
-
-      setTeeSheetRows(rows);
-      setImportMsg(`Loaded ${rows.length} rows from "${sheetName}".`);
-    } catch (e) {
-      console.error(e);
+    // Require these columns (matches your sheet)
+    const required = ["foursome", "tee_time", "starting_hole", "first_name", "last_name"];
+    const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
+    if (missing.length) {
       setTeeSheetRows([]);
-      setImportMsg("Could not read that Excel file.");
+      setImportMsg(`Missing required columns: ${missing.join(", ")}`);
+      return;
     }
+
+    setTeeSheetRows(rows);
+    setImportMsg(`Loaded ${rows.length} rows from "${sheetName}".`);
+  } catch (e) {
+    console.error(e);
+    setTeeSheetRows([]);
+    setImportMsg("Could not read that Excel file.");
   }
+}
 
-  async function importFromTeeSheet() {
-    if (!adminOn) return alert("Admin only.");
-    if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
+async function importFromTeeSheet() {
+  if (!adminOn) return alert("Admin only.");
+  if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
 
-    setImportMsg("Importing…");
+  setImportMsg("Importing…");
 
+  try {
+    // Optional wipe (you have this checkbox already)
     if (importReplaceFoursomes) {
-      await supabase
+      // Delete assignments first, then foursomes
+      const delFP = await supabase
         .from("foursome_players")
         .delete()
         .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
 
-      await supabase
+      if (delFP.error) {
+        console.error(delFP.error);
+        setImportMsg(`Error clearing assignments: ${errToText(delFP.error)}`);
+        return;
+      }
+
+      const delF = await supabase
         .from("foursomes")
         .delete()
         .neq("id", "00000000-0000-0000-0000-000000000000");
+
+      if (delF.error) {
+        console.error(delF.error);
+        setImportMsg(`Error clearing foursomes: ${errToText(delF.error)}`);
+        return;
+      }
     }
 
-    await initialLoad();
-
-    const existingByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p]));
+    // ---------- Build desired players list from sheet ----------
     const desiredPlayers = [];
-
     for (const r of teeSheetRows) {
       const name = fullNameFromRow(r);
       if (!name) continue;
@@ -1199,6 +1256,22 @@ useEffect(() => {
       });
     }
 
+    // ---------- Read fresh players from DB ----------
+    const playersBefore = await supabase
+      .from("players")
+      .select("id,name")
+      .order("created_at", { ascending: true });
+
+    if (playersBefore.error) {
+      console.error(playersBefore.error);
+      setImportMsg(`Error reading players: ${errToText(playersBefore.error)}`);
+      return;
+    }
+
+    const existingByName = new Map(
+      (playersBefore.data || []).map((p) => [String(p.name || "").trim().toLowerCase(), p])
+    );
+
     const missingPlayers = [];
     for (const p of desiredPlayers) {
       const key = p.name.toLowerCase();
@@ -1209,34 +1282,56 @@ useEffect(() => {
     }
 
     if (missingPlayers.length) {
-      const { error } = await supabase.from("players").insert(missingPlayers);
-      if (error) {
-        console.error(error);
-        setImportMsg(`Error inserting players: ${errToText(error)}`);
+      const insPlayers = await supabase.from("players").insert(missingPlayers);
+      if (insPlayers.error) {
+        console.error(insPlayers.error);
+        setImportMsg(`Error inserting players: ${errToText(insPlayers.error)}`);
         return;
       }
     }
 
-    await loadPlayers();
-    const playerIdByName = new Map(players.map((p) => [String(p.name || "").trim().toLowerCase(), p.id]));
+    // Re-read players (fresh IDs)
+    const playersAfter = await supabase
+      .from("players")
+      .select("id,name")
+      .order("created_at", { ascending: true });
 
+    if (playersAfter.error) {
+      console.error(playersAfter.error);
+      setImportMsg(`Error reloading players: ${errToText(playersAfter.error)}`);
+      return;
+    }
+
+    const playerIdByName = new Map(
+      (playersAfter.data || []).map((p) => [String(p.name || "").trim().toLowerCase(), p.id])
+    );
+
+    // ---------- Build group list + metadata from sheet ----------
     const groupsNeeded = Array.from(
       new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
     );
-// Map group -> tee_time + starting_hole from the sheet
-const groupMeta = new Map();
-for (const r of teeSheetRows) {
-  const group_name = String(r.foursome || "").trim();
-  if (!group_name) continue;
 
-  if (!groupMeta.has(group_name.toLowerCase())) {
-    groupMeta.set(group_name.toLowerCase(), {
-      tee_time: excelTimeToDbTime(r.tee_time),
-      starting_hole: clampInt(r.starting_hole, 1),
-    });
-  }
-}
-    const existingF = await supabase.from("foursomes").select("id,group_name,code,tee_time,starting_hole,created_at");
+    const groupMeta = new Map();
+    for (const r of teeSheetRows) {
+      const group_name = String(r.foursome || "").trim();
+      if (!group_name) continue;
+
+      if (!groupMeta.has(group_name.toLowerCase())) {
+        const rawStart = Number(r.starting_hole);
+        const safeStart = rawStart >= 1 && rawStart <= 18 ? Math.trunc(rawStart) : 1;
+
+        groupMeta.set(group_name.toLowerCase(), {
+          tee_time: excelTimeToDbTime(r.tee_time),
+          starting_hole: safeStart,
+        });
+      }
+    }
+
+    // Read existing foursomes (fresh)
+    const existingF = await supabase
+      .from("foursomes")
+      .select("id,group_name,code,tee_time,starting_hole,created_at");
+
     if (existingF.error) {
       console.error(existingF.error);
       setImportMsg(`Error reading foursomes: ${errToText(existingF.error)}`);
@@ -1247,41 +1342,70 @@ for (const r of teeSheetRows) {
       (existingF.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
     );
 
+    // ---------- Create missing foursomes using metadata ----------
+    let newFoursomes = 0;
+
     for (const group_name of groupsNeeded) {
       const key = group_name.toLowerCase();
       if (foursomeByGroup.has(key)) continue;
 
       let created = null;
+      const meta = groupMeta.get(key) || {};
+
       for (let tries = 0; tries < 10 && !created; tries++) {
         const code = makeCode(6);
-        const { data, error } = await supabase
+        const res = await supabase
           .from("foursomes")
           .insert({
-  group_name,
-  code,
-  tee_time: excelTimeToDbTime(r.tee_time),
-  starting_hole: clampInt(r.starting_hole, 1),
-})
-          .select("id,group_name,code,tee_time,starting_hole")
+            group_name,
+            code,
+            tee_time: meta.tee_time ?? null,
+            starting_hole: meta.starting_hole ?? 1,
+          })
+          .select("id,group_name,code")
           .single();
 
-        if (!error) created = data;
+        if (!res.error) created = res.data;
       }
 
       if (!created) {
         setImportMsg(`Could not create foursome "${group_name}". (RLS / code unique / schema issue)`);
         return;
       }
+
+      newFoursomes += 1;
     }
 
-    await loadFoursomes();
-    await loadFoursomePlayers();
+    // Re-read foursomes (fresh IDs)
+    const foursomesAfter = await supabase
+      .from("foursomes")
+      .select("id,group_name")
+      .order("created_at", { ascending: true });
+
+    if (foursomesAfter.error) {
+      console.error(foursomesAfter.error);
+      setImportMsg(`Error reloading foursomes: ${errToText(foursomesAfter.error)}`);
+      return;
+    }
 
     const foursomeIdByGroup = new Map(
-      foursomes.map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
+      (foursomesAfter.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
     );
 
-    const existingAssign = new Set(foursomePlayers.map((fp) => `${fp.foursome_id}::${fp.player_id}`));
+    // ---------- Assign players to foursomes ----------
+    const existingAssign = await supabase
+      .from("foursome_players")
+      .select("foursome_id,player_id");
+
+    if (existingAssign.error) {
+      console.error(existingAssign.error);
+      setImportMsg(`Error reading existing assignments: ${errToText(existingAssign.error)}`);
+      return;
+    }
+
+    const existingSet = new Set(
+      (existingAssign.data || []).map((fp) => `${fp.foursome_id}::${fp.player_id}`)
+    );
 
     const assignmentInserts = [];
     for (const r of teeSheetRows) {
@@ -1293,25 +1417,33 @@ for (const r of teeSheetRows) {
       const pid = playerIdByName.get(name.toLowerCase());
       if (!fid || !pid) continue;
 
-      const key = `${fid}::${pid}`;
-      if (existingAssign.has(key)) continue;
+      const k = `${fid}::${pid}`;
+      if (existingSet.has(k)) continue;
 
-      existingAssign.add(key);
+      existingSet.add(k);
       assignmentInserts.push({ foursome_id: fid, player_id: pid });
     }
 
     if (assignmentInserts.length) {
-      const { error } = await supabase.from("foursome_players").insert(assignmentInserts);
-      if (error) {
-        console.error(error);
-        setImportMsg(`Error inserting foursome assignments: ${errToText(error)}`);
+      const insFP = await supabase.from("foursome_players").insert(assignmentInserts);
+      if (insFP.error) {
+        console.error(insFP.error);
+        setImportMsg(`Error inserting assignments: ${errToText(insFP.error)}`);
         return;
       }
     }
 
+    // Refresh UI state after import
     await initialLoad();
-    setImportMsg(`Import complete ✅ New players: ${missingPlayers.length} • New assignments: ${assignmentInserts.length}`);
+
+    setImportMsg(
+      `Import complete ✅ New players: ${missingPlayers.length} • New foursomes: ${newFoursomes} • New assignments: ${assignmentInserts.length}`
+    );
+  } catch (e) {
+    console.error(e);
+    setImportMsg(`Import crashed: ${errToText(e)}`);
   }
+}
 
   return (
     <div style={styles.page}>
