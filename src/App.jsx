@@ -1626,7 +1626,7 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
 const ps = {
   root: { background: "white", color: "black" },
   page: { width: "100%" },
-  twoUpRow: { display: "flex", gap: 18 },
+  twoUpRow: { display: "flex", gap: 10 },
   col: { flex: 1, minWidth: 0 },
 
   // Outer card border (thick)
@@ -1635,7 +1635,7 @@ const ps = {
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   title: { fontSize: 28, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
-  logo: { width: 86, height: "auto", marginTop: 2 },
+  logo: { width: 100, height: "auto", marginTop: 2 },
 
   // Meta
   metaBlock: { marginTop: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.35 },
@@ -1689,7 +1689,7 @@ const ps = {
         .printPage {
           page-break-after: always;
           break-after: page;
-          padding: 10mm;
+          padding: 6mm;
         }
       }
     `}</style>
