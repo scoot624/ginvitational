@@ -182,6 +182,7 @@ export default function App() {
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
+  const [printAllOn, setPrintAllOn] = useState(false);
 
   // Admin: add player
   const [newName, setNewName] = useState("");
@@ -326,6 +327,12 @@ export default function App() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  useEffect(() => {
+  const handler = () => setPrintAllOn(false);
+  window.addEventListener("afterprint", handler);
+  return () => window.removeEventListener("afterprint", handler);
+}, []);
 
   const leaderboardRows = useMemo(() => {
     // last-write-wins scores by player/hole
@@ -1445,9 +1452,249 @@ async function importFromTeeSheet() {
   }
 }
 
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX }) {
+  // members per foursome (up to 4)
+  const membersByFid = new Map();
+  for (const f of foursomes) {
+    const pids = foursomePlayers.filter((fp) => fp.foursome_id === f.id).map((x) => x.player_id);
+    const mem = players.filter((p) => pids.includes(p.id)).slice(0, 4);
+    membersByFid.set(f.id, mem);
+  }
+
+  // 2 per page
+  const pages = [];
+  for (let i = 0; i < foursomes.length; i += 2) pages.push([foursomes[i], foursomes[i + 1] || null]);
+
   return (
-    <div style={styles.page}>
-      {/* Scorecard modal (leaderboard) */}
+    <div id="printRoot" style={ps.root}>
+      {pages.map((pair, idx) => (
+        <div className="printPage" key={idx} style={ps.page}>
+          <div style={ps.twoUpRow}>
+            <div style={ps.col}>
+              {pair[0] && (
+                <PrintOneGroupCard
+                  f={pair[0]}
+                  members={membersByFid.get(pair[0].id) || []}
+                  strokesOnHole={strokesOnHole}
+                  clampInt={clampInt}
+                  lastName={lastName}
+                  STROKE_INDEX={STROKE_INDEX}
+                />
+              )}
+            </div>
+
+            <div style={ps.col}>
+              {pair[1] && (
+                <PrintOneGroupCard
+                  f={pair[1]}
+                  members={membersByFid.get(pair[1].id) || []}
+                  strokesOnHole={strokesOnHole}
+                  clampInt={clampInt}
+                  lastName={lastName}
+                  STROKE_INDEX={STROKE_INDEX}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX }) {
+  const cols = [0, 1, 2, 3].map((i) => members[i] || null);
+
+  const dotStr = (n) => (n > 0 ? "•".repeat(n) : "");
+
+  const holeRows = (start, end) =>
+    Array.from({ length: end - start + 1 }, (_, k) => {
+      const h = start + k;
+      return (
+        <tr key={h}>
+          <td style={ps.tdHole}>{h}</td>
+          <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
+
+          {cols.map((p, i) => {
+            const strokes = p ? strokesOnHole(clampInt(p.handicap, 0), h) : 0;
+            return (
+              <td key={`${h}-${i}`} style={ps.tdScore}>
+                {/* score writing area */}
+                <div style={ps.scoreWriteArea} />
+                {/* dots in top-right of cell */}
+                <div style={ps.dotCorner}>{p ? dotStr(strokes) : ""}</div>
+              </td>
+            );
+          })}
+        </tr>
+      );
+    });
+
+  return (
+    <div style={ps.cardOuter}>
+      {/* Header row: title left + logo right */}
+      <div style={ps.headerRow}>
+        <div style={ps.title}>The Ginvitational</div>
+        <img
+          src="/logo.png"
+          alt="Ginvitational"
+          style={ps.logo}
+        />
+      </div>
+
+      {/* Meta block */}
+      <div style={ps.metaBlock}>
+        <div style={ps.metaLine}>
+          <span style={ps.metaLabel}>Group Name:</span> <span>{f.group_name || ""}</span>
+        </div>
+        <div style={ps.metaLine}>
+          <span style={ps.metaLabel}>Tee Time:</span> <span>{f.tee_time || ""}</span>
+        </div>
+        <div style={ps.metaLine}>
+          <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
+        </div>
+      </div>
+
+      {/* Main table */}
+      <table style={ps.table}>
+        <thead>
+          <tr>
+            <th style={ps.thHole}>Hole</th>
+            <th style={ps.thHi}>H.I</th>
+            {cols.map((p, i) => (
+              <th key={i} style={ps.thPlayer}>
+                <div style={ps.playerLast}>{p ? (lastName(p.name) || p.name) : "Last Name"}</div>
+                <div style={ps.playerHcp}>HCP {p ? clampInt(p.handicap, 0) : ""}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+
+        <tbody>
+          {holeRows(1, 9)}
+
+          {/* OUT */}
+          <tr>
+            <td style={ps.tdOutInTotal}>Out</td>
+            <td style={ps.tdOutInTotal} />
+            {cols.map((_, i) => (
+              <td key={`out-${i}`} style={ps.tdScore}>
+                <div style={ps.scoreWriteArea} />
+              </td>
+            ))}
+          </tr>
+
+          {holeRows(10, 18)}
+
+          {/* IN */}
+          <tr>
+            <td style={ps.tdOutInTotal}>In</td>
+            <td style={ps.tdOutInTotal} />
+            {cols.map((_, i) => (
+              <td key={`in-${i}`} style={ps.tdScore}>
+                <div style={ps.scoreWriteArea} />
+              </td>
+            ))}
+          </tr>
+
+          {/* TOTAL */}
+          <tr>
+            <td style={ps.tdOutInTotal}>Total</td>
+            <td style={ps.tdOutInTotal} />
+            {cols.map((_, i) => (
+              <td key={`tot-${i}`} style={ps.tdScore}>
+                <div style={ps.scoreWriteArea} />
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Bottom code row */}
+      <div style={ps.bottomRow}>
+        <div style={ps.bottomInner}>
+          <span style={{ fontWeight: 700 }}>Group Code</span>
+          <span style={{ marginLeft: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+            {f.code || ""}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ps = {
+  root: { background: "white", color: "black" },
+  page: { width: "100%" },
+  twoUpRow: { display: "flex", gap: 18 },
+  col: { flex: 1, minWidth: 0 },
+
+  // Outer card border (thick)
+  cardOuter: { border: "3px solid #000", padding: 10 },
+
+  // Header
+  headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+  title: { fontSize: 28, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
+  logo: { width: 86, height: "auto", marginTop: 2 },
+
+  // Meta
+  metaBlock: { marginTop: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.35 },
+  metaLine: { marginTop: 2 },
+  metaLabel: { display: "inline-block", width: 92 },
+
+  // Table
+  table: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
+
+  thHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 44 },
+  thHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 44 },
+  thPlayer: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
+
+  tdHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right" },
+  tdHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
+
+  // Score cell with corner dots
+  tdScore: { border: "1px solid #000", padding: 0, position: "relative", height: 22 },
+  scoreWriteArea: { height: 22, width: "100%" },
+  dotCorner: { position: "absolute", top: 2, right: 4, fontSize: 10, letterSpacing: 1 },
+
+  tdOutInTotal: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right", fontWeight: 700 },
+
+  playerLast: { fontWeight: 900, fontSize: 11, lineHeight: 1.1 },
+  playerHcp: { fontWeight: 700, fontSize: 10, marginTop: 2 },
+
+  // Bottom code
+  bottomRow: { marginTop: 10, display: "flex", justifyContent: "center" },
+  bottomInner: { fontSize: 11 },
+};
+
+  return (
+  <div style={styles.page}>
+
+    <style>{`
+      @media print {
+        body * { visibility: hidden !important; }
+        #printRoot, #printRoot * { visibility: visible !important; }
+
+        #printRoot {
+          position: absolute !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 100% !important;
+          background: white !important;
+          color: black !important;
+          padding: 0 !important;
+          margin: 0 !important;
+        }
+
+        .printPage {
+          page-break-after: always;
+          break-after: page;
+          padding: 10mm;
+        }
+      }
+    `}</style>
+
+    {/* Scorecard modal (leaderboard) */}
 {scorecardPlayer && (
   <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
     <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -1944,6 +2191,22 @@ async function importFromTeeSheet() {
           <button style={styles.dangerBtn} onClick={clearFoursomes}>
             Clear Foursomes
           </button>
+
+          <button
+  style={styles.smallBtn}
+  onClick={async () => {
+    // make sure latest foursomes + assignments are loaded before printing
+    await loadFoursomes();
+    await loadFoursomePlayers();
+    await loadPlayers();
+
+    setPrintAllOn(true);
+    setTimeout(() => window.print(), 100);
+  }}
+>
+  Print Scorecards
+</button>
+
         </div>
 
         <div style={styles.adminGrid}>
@@ -2046,8 +2309,7 @@ async function importFromTeeSheet() {
       </>
     )}
   </div>
-)}
-        
+)}      
 
         {/* Router fallback */}
         {tab === "enter" && !activeFoursome && (
@@ -2060,7 +2322,18 @@ async function importFromTeeSheet() {
           </div>
         )}
       </div>
-    </div>
+   {printAllOn && (
+  <PrintTwoUpScorecards
+    foursomes={foursomes}
+    players={players}
+    foursomePlayers={foursomePlayers}
+    strokesOnHole={strokesOnHole}
+    clampInt={clampInt}
+    lastName={lastName}
+    STROKE_INDEX={STROKE_INDEX}
+  />
+)} 
+</div>
   );
 }
 
