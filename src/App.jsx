@@ -1630,12 +1630,12 @@ const ps = {
   col: { flex: 1, minWidth: 0 },
 
   // Outer card border (thick)
-  cardOuter: { border: "3px solid #000", padding: 10 },
+  cardOuter: { border: "3px solid #000", padding: 5 },
 
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  title: { fontSize: 28, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
-  logo: { width: 100, height: "auto", marginTop: 2 },
+  title: { fontSize: 32, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
+  logo: { width: 150, height: "auto", marginTop: 2 },
 
   // Meta
   metaBlock: { marginTop: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.35 },
