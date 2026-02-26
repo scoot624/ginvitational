@@ -1626,8 +1626,8 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
 const ps = {
   root: { background: "white", color: "black" },
   page: { width: "100%" },
-  twoUpRow: { display: "flex", gap: 10 },
-  col: { flex: 1, minWidth: 0 },
+  twoUpRow: { display: "flex", gap: 5 },
+  col: { flex: "0 0 49%", maxWidth: "49%", minWidth: 0 },
 
   // Outer card border (thick)
   cardOuter: { border: "3px solid #000", padding: 0 },
@@ -1645,8 +1645,8 @@ const ps = {
   // Table
   table: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
 
-  thHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 44 },
-  thHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 44 },
+  thHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
+  thHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
   thPlayer: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
 
   tdHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right" },
