@@ -1634,8 +1634,7 @@ const ps = {
 
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  title: { fontSize: 40, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
-  logo: { width: 120, height: "auto", marginTop: 20 },
+  title: { fontSize: 40, fontWeight: 900, lineHeight: 1.05, textAlign: "center" },
 
   // Meta
   metaBlock: { marginTop: 4, marginBottom: 4, fontSize: 12, lineHeight: 1.35 },
