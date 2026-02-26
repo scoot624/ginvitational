@@ -1638,7 +1638,7 @@ const ps = {
   logo: { width: 150, height: "auto", marginTop: 20 },
 
   // Meta
-  metaBlock: { marginTop: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.35 },
+  metaBlock: { marginTop: 4, marginBottom: 4, fontSize: 12, lineHeight: 1.35 },
   metaLine: { marginTop: 2 },
   metaLabel: { display: "inline-block", width: 92 },
 
@@ -1647,7 +1647,7 @@ const ps = {
 
   thHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
   thHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
-  thPlayer: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
+  thPlayer: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 65 },
 
   tdHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right" },
   tdHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
