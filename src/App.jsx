@@ -1630,12 +1630,12 @@ const ps = {
   col: { flex: "0 0 49%", maxWidth: "49%", minWidth: 0 },
 
   // Outer card border (thick)
-  cardOuter: { border: "3px solid #000", padding: 0 },
+  cardOuter: { border: "3px solid #000", padding: 18 },
 
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   title: { fontSize: 40, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
-  logo: { width: 120, height: "auto", marginTop: 20 },
+  logo: { width: 120, height: "auto", marginTop: 40 },
 
   // Meta
   metaBlock: { marginTop: 4, marginBottom: 4, fontSize: 12, lineHeight: 1.35 },
@@ -1653,7 +1653,7 @@ const ps = {
   tdHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
 
   // Score cell with corner dots
-  tdScore: { border: "1px solid #000", padding: 0, position: "relative", height: 22 },
+  tdScore: { border: "1px solid #000", padding: 4, position: "relative", height: 22 },
   scoreWriteArea: { height: 22, width: "100%" },
   dotCorner: { position: "absolute", top: 2, right: 4, fontSize: 10, letterSpacing: 1 },
 
