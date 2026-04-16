@@ -1535,11 +1535,6 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
       {/* Header row: title left + logo right */}
       <div style={ps.headerRow}>
         <div style={ps.title}>The Ginvitational</div>
-        <img
-          src="/logo.png"
-          alt="Ginvitational"
-          style={ps.logo}
-        />
       </div>
 
       {/* Meta block */}
@@ -1801,6 +1796,11 @@ const ps = {
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
+              <img
+                src="/logo.png"
+                alt="Ginvitational logo"
+                style={{ width: 210, height: "auto", display: "block", margin: "0 auto" }}
+              />
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
