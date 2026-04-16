@@ -1556,7 +1556,6 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
           <tr>
             <th style={ps.thHole}>Hole</th>
             <th style={ps.thHi}>H.I</th>
-            <td style={ps.tdPar}>{PARS[h - 1]}</td>
             {cols.map((p, i) => (
               <th key={i} style={ps.thPlayer}>
                 <div style={ps.playerLast}>{p ? (lastName(p.name) || p.name) : "Last Name"}</div>
