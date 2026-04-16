@@ -1801,11 +1801,6 @@ const ps = {
         {tab === "home" && (
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
-              <img
-                src="/logo.png"
-                alt="Ginvitational logo"
-                style={{ width: 210, height: "auto", display: "block", margin: "0 auto" }}
-              />
 
               <div style={styles.homeTitle}>The Ginvitational</div>
 
