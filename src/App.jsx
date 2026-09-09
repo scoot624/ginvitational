@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import * as XLSX from "xlsx";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
 
 /** ✅ Supabase via env vars */
@@ -182,41 +181,6 @@ function makeCode(len = 6) {
   return out;
 }
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-/** Broadcast helpers */
-function nowKeyMinute() {
- function nowKeyHour() {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}`;
-}
-
- 
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(
-    2,
-    "0"
-  )}`;
-}
-
-function safeDedupeKey(parts) {
-  return parts
-    .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
-    .join("|")
-    .slice(0, 240);
-}
-
 /** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
 function LockedBoardPanel({ game, onUnlock }) {
   const [passcode, setPasscode] = useState("");
@@ -311,22 +275,9 @@ export default function App() {
   const [eventNameDraft, setEventNameDraft] = useState("");
   const [eventNameMsg, setEventNameMsg] = useState("");
 
-  // Admin: add player
-  const [newName, setNewName] = useState("");
-  const [newHandicap, setNewHandicap] = useState("");
-  const [newCharity, setNewCharity] = useState("");
-
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
   const [foursomePlayers, setFoursomePlayers] = useState([]);
-
-  // Admin: manual foursome
-  const [manualGroupName, setManualGroupName] = useState("");
-  const [manualCode, setManualCode] = useState("");
-
-  // Admin: assign
-  const [assignFoursomeId, setAssignFoursomeId] = useState("");
-  const [assignPlayerId, setAssignPlayerId] = useState("");
 
   // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
@@ -549,7 +500,6 @@ export default function App() {
       await loadScores();
     }, 60_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   useEffect(() => {
@@ -928,6 +878,23 @@ async function run20MinRecap() {
   await loadBroadcast();
 }
 
+/** Runs once per hour (deduped per hour bucket) */
+async function runHourlyRecap() {
+  const ranked = leaderboardRows
+    .filter((r) => r.holesPlayed > 0)
+    .map((r, idx) => ({ ...r, rank: idx + 1 }));
+
+  if (ranked.length === 0) return;
+
+  const kHour = nowKeyHour();
+  const dedupeParts = ["recap_hourly", kHour];
+
+  const text = buildRecapText(ranked, dedupeParts);
+
+  await insertBroadcast("recap", text, dedupeParts, null);
+  await loadBroadcast();
+}
+
 async function runBroadcastTick() {
   if (!leaderboardRows || leaderboardRows.length === 0) return;
 
@@ -1192,7 +1159,7 @@ useEffect(() => {
       await loadScores();
       await runBroadcastTick();
       await runHourlyRecap();
-    }, 20 * 60 * 1000);
+    }, 60 * 60 * 1000);
   }, msToNextHour);
 
   return () => {
@@ -1203,103 +1170,9 @@ useEffect(() => {
 }, [leaderboardRows.length]);
 
 
-  async function addPlayer() {
-    if (!adminOn) return alert("Admin only.");
-    const name = newName.trim();
-    const handicap = clampInt(newHandicap, 0);
-    const charity = newCharity.trim() || null;
-    if (!name) return alert("Name required.");
-
-    const { error } = await supabase.from("players").insert({ name, handicap, charity });
-    if (error) {
-      console.error(error);
-      alert(`Error adding player: ${errToText(error)}`);
-      return;
-    }
-    setNewName("");
-    setNewHandicap("");
-    setNewCharity("");
-    await loadPlayers();
-  }
-
-  async function deletePlayer(id) {
-    if (!adminOn) return alert("Admin only.");
-    if (!confirm("Delete this player? This will also delete their scores and foursome assignment.")) return;
-
-    await supabase.from("scores").delete().eq("player_id", id);
-    await supabase.from("foursome_players").delete().eq("player_id", id);
-
-    const { error } = await supabase.from("players").delete().eq("id", id);
-    if (error) {
-      console.error(error);
-      alert(`Error deleting player: ${errToText(error)}`);
-      return;
-    }
-    await initialLoad();
-  }
-
   function playersInFoursome(fid) {
     const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
     return players.filter((p) => pids.includes(p.id));
-  }
-
-  async function createManualFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    const group_name = manualGroupName.trim() || "Group";
-    const code = (manualCode.trim() || makeCode()).toUpperCase();
-
-    if (code.length !== 6) return alert("Code must be exactly 6 characters.");
-
-    const { error } = await supabase.from("foursomes").insert({
-  group_name,
-  code,
-  tee_time: excelTimeToDbTime(r.tee_time),
-  starting_hole: clampInt(r.starting_hole, 1),
-});
-    if (error) {
-      console.error(error);
-      alert(`Error creating foursome: ${errToText(error)}`);
-      return;
-    }
-    setManualGroupName("");
-    setManualCode("");
-    await loadFoursomes();
-  }
-
-  async function assignPlayerToFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    if (!assignFoursomeId) return alert("Pick a foursome.");
-    if (!assignPlayerId) return alert("Pick a player.");
-
-    const { error } = await supabase.from("foursome_players").insert({
-      foursome_id: assignFoursomeId,
-      player_id: assignPlayerId,
-    });
-
-    if (error) {
-      console.error(error);
-      alert(`Error assigning player: ${errToText(error)}`);
-      return;
-    }
-
-    setAssignPlayerId("");
-    await loadFoursomePlayers();
-  }
-
-  async function removePlayerFromFoursome(foursome_id, player_id) {
-    if (!adminOn) return alert("Admin only.");
-    const { error } = await supabase
-      .from("foursome_players")
-      .delete()
-      .eq("foursome_id", foursome_id)
-      .eq("player_id", player_id);
-
-    if (error) {
-      console.error(error);
-      alert(`Error removing player: ${errToText(error)}`);
-      return;
-    }
-    await loadFoursomePlayers();
   }
 
   async function clearFoursomes() {
@@ -1845,44 +1718,6 @@ useEffect(() => {
   // ---------------------------
   // EXCEL IMPORT
   // ---------------------------
- function excelTimeToDbTime(v) {
-  // Return "HH:MM:SS" or null
-  if (v == null || v === "") return null;
-
-  // If sheet_to_json gives a Date
-  if (v instanceof Date && Number.isFinite(v.getTime())) {
-    const hh = String(v.getHours()).padStart(2, "0");
-    const mm = String(v.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If Excel time fraction
-  const n = Number(v);
-  if (Number.isFinite(n)) {
-    const totalSeconds = Math.round(n * 24 * 60 * 60);
-    const hh = String(Math.floor(totalSeconds / 3600) % 24).padStart(2, "0");
-    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If string like "9:00 AM" or "09:00"
-  const s = String(v).trim();
-  if (!s) return null;
-
-  if (/^\d{1,2}:\d{2}$/.test(s)) {
-    const [h, m] = s.split(":");
-    return `${String(h).padStart(2, "0")}:${m}:00`;
-  }
-
-  const d = new Date(`1970-01-01 ${s}`);
-  if (Number.isFinite(d.getTime())) {
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  return null;
-}
   function normKey(k) {
     return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
@@ -1892,11 +1727,6 @@ useEffect(() => {
     const last = String(row.last_name || "").trim();
     return `${first} ${last}`.trim().replace(/\s+/g, " ");
   }
-
-
-  // ============================
-// EXCEL IMPORT (REPLACEMENT)
-// ============================
 
 function excelTimeToDbTime(v) {
   // Return "HH:MM:SS" or null
@@ -1947,6 +1777,9 @@ async function parseTeeSheetFile(file) {
   }
 
   try {
+    // Loaded on demand — the Excel library is only needed here, during an
+    // Admin import, so nobody else has to download it just to open the app.
+    const XLSX = await import("xlsx");
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array" });
     const sheetName = wb.SheetNames[0];
