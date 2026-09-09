@@ -161,6 +161,11 @@ function teamCountedTotalForHole(memberValues, countingRule) {
 export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX }) {
   const pct = clampInt(game.handicap_pct, 100);
   const countingRule = game.counting_rule || { scoresCounted: 1, slots: ["net"] };
+  // Comparing N summed strokes against a single hole's par overstates
+  // "to par" whenever N > 1 (e.g. Combined Score's two summed net scores
+  // vs. one hole's par) — the baseline has to scale with how many scores
+  // are actually being added together each hole.
+  const parMultiplier = clampInt(countingRule.scoresCounted, 1);
 
   const rows = teams.map((team) => {
     const memberIds = teamMembersByTeam.get(team.id) || [];
@@ -188,7 +193,7 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
       countedByHole[h] = counted;
       holesPlayed += 1;
       totalCounted += counted;
-      parPlayed += PARS[h - 1];
+      parPlayed += PARS[h - 1] * parMultiplier;
     }
 
     const toPar = holesPlayed === 0 ? 9999 : totalCounted - parPlayed;
@@ -247,8 +252,11 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       if (!seg) continue;
 
       let counted = null;
+      let parMultiplier = 1;
 
       if (seg.formatType === "shared") {
+        // One shared team score per hole — always compared against a single
+        // hole's par (parMultiplier stays 1), regardless of team size.
         const grosses = members
           .map((p) => (scoresByPlayer.get(p.id) || {})[h])
           .filter((v) => v != null);
@@ -277,6 +285,10 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
 
         const rule = seg.countingRule || { scoresCounted: 1, slots: ["net"] };
         counted = teamCountedTotalForHole(memberValues, rule);
+        // Comparing N summed strokes against a single hole's par overstates
+        // "to par" whenever N > 1 (e.g. Combined Score's two summed net
+        // scores vs. one hole's par) — scale the baseline to match.
+        parMultiplier = clampInt(rule.scoresCounted, 1);
       }
 
       if (counted == null) continue;
@@ -284,7 +296,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       countedByHole[h] = counted;
       holesPlayed += 1;
       totalCounted += counted;
-      parPlayed += PARS[h - 1];
+      parPlayed += PARS[h - 1] * parMultiplier;
     }
 
     const toPar = holesPlayed === 0 ? 9999 : totalCounted - parPlayed;
