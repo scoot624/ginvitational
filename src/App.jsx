@@ -2790,7 +2790,9 @@ const ps = {
             {gameResults.length > 1 && (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
                 {gameResults.map(({ game }) => {
-                  const isActive = selectedGameId ? selectedGameId === game.id : game.is_default;
+                  // No game is favored by default — the first active one
+                  // (by sort order) shows until you pick a different tab.
+                  const isActive = selectedGameId ? selectedGameId === game.id : game.id === gameResults[0]?.game.id;
                   return (
                     <button
                       key={game.id}
@@ -2810,9 +2812,7 @@ const ps = {
 
               const lockCheckEntry =
                 gameResults.length > 0
-                  ? gameResults.find((g) => g.game.id === selectedGameId) ||
-                    gameResults.find((g) => g.game.is_default) ||
-                    gameResults[0]
+                  ? gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0]
                   : null;
 
               if (lockCheckEntry && lockCheckEntry.game.locked) {
@@ -3328,9 +3328,6 @@ const ps = {
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 950 }}>
                             {g.name}{" "}
-                            {g.is_default && (
-                              <span style={{ ...styles.strokePill, marginLeft: 6 }}>Default</span>
-                            )}
                             {!g.active && (
                               <span style={{ ...styles.strokePill, marginLeft: 6, opacity: 0.6 }}>Inactive</span>
                             )}
