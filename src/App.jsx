@@ -270,6 +270,7 @@ export default function App() {
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
   const [printAllOn, setPrintAllOn] = useState(false);
+  const [printHandicapPct, setPrintHandicapPct] = useState(100);
 
   // Admin: editable event name
   const [eventNameDraft, setEventNameDraft] = useState("");
@@ -1871,7 +1872,7 @@ async function importFromTeeSheet() {
     // ---------- Read fresh players from DB ----------
     const playersBefore = await supabase
       .from("players")
-      .select("id,name")
+      .select("id,name,handicap,charity,team_label")
       .order("created_at", { ascending: true });
 
     if (playersBefore.error) {
@@ -1884,12 +1885,34 @@ async function importFromTeeSheet() {
       (playersBefore.data || []).map((p) => [String(p.name || "").trim().toLowerCase(), p])
     );
 
+    // New players get inserted. Players already in the system get their
+    // handicap/charity/team synced to match the sheet, so re-uploading a
+    // corrected sheet actually fixes a typo instead of only adding new people.
     const missingPlayers = [];
+    const updatedPlayers = [];
     for (const p of desiredPlayers) {
       const key = p.name.toLowerCase();
-      if (!existingByName.has(key)) {
+      const existing = existingByName.get(key);
+
+      if (!existing) {
         existingByName.set(key, p);
         missingPlayers.push(p);
+        continue;
+      }
+
+      const changed =
+        clampInt(existing.handicap, 0) !== p.handicap ||
+        (existing.charity || null) !== p.charity ||
+        (existing.team_label || null) !== p.team_label;
+
+      if (changed) {
+        updatedPlayers.push({
+          id: existing.id,
+          name: p.name, // upsert still validates NOT NULL columns even on the update path
+          handicap: p.handicap,
+          charity: p.charity,
+          team_label: p.team_label,
+        });
       }
     }
 
@@ -1898,6 +1921,15 @@ async function importFromTeeSheet() {
       if (insPlayers.error) {
         console.error(insPlayers.error);
         setImportMsg(`Error inserting players: ${errToText(insPlayers.error)}`);
+        return;
+      }
+    }
+
+    if (updatedPlayers.length) {
+      const updPlayers = await supabase.from("players").upsert(updatedPlayers, { onConflict: "id" });
+      if (updPlayers.error) {
+        console.error(updPlayers.error);
+        setImportMsg(`Error updating players: ${errToText(updPlayers.error)}`);
         return;
       }
     }
@@ -2052,7 +2084,7 @@ async function importFromTeeSheet() {
     await initialLoad();
 
     setImportMsg(
-      `Import complete ✅ New players: ${missingPlayers.length} • New foursomes: ${newFoursomes} • New assignments: ${assignmentInserts.length}`
+      `Import complete ✅ New players: ${missingPlayers.length} • Updated players: ${updatedPlayers.length} • New foursomes: ${newFoursomes} • New assignments: ${assignmentInserts.length}`
     );
   } catch (e) {
     console.error(e);
@@ -2060,7 +2092,7 @@ async function importFromTeeSheet() {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -2088,6 +2120,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
+                  handicapPct={handicapPct}
                 />
               )}
             </div>
@@ -2102,6 +2135,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
+                  handicapPct={handicapPct}
                 />
               )}
             </div>
@@ -2112,8 +2146,9 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName }) {
+function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
+  const pct = clampInt(handicapPct, 100);
 
   const dotStr = (n) => (n > 0 ? "•".repeat(n) : "");
 
@@ -2126,7 +2161,8 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
           <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
 
           {cols.map((p, i) => {
-            const strokes = p ? strokesOnHole(clampInt(p.handicap, 0), h) : 0;
+            const playingHcp = p ? Math.round(clampInt(p.handicap, 0) * (pct / 100)) : 0;
+            const strokes = p ? strokesOnHole(playingHcp, h) : 0;
             return (
               <td key={`${h}-${i}`} style={ps.tdScore}>
                 {/* score writing area */}
@@ -2157,6 +2193,9 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
         </div>
         <div style={ps.metaLine}>
           <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
+        </div>
+        <div style={ps.metaLine}>
+          <span style={ps.metaLabel}>Handicap:</span> <span>{pct}% allocation</span>
         </div>
       </div>
 
@@ -2964,6 +3003,28 @@ const ps = {
             Clear Foursomes
           </button>
 
+          <label
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              fontSize: 12,
+              color: THEME.textMuted,
+              padding: "0 6px",
+            }}
+          >
+            Print stroke dots at
+            <input
+              style={{ ...styles.input, width: 64, padding: "6px 8px" }}
+              type="number"
+              min={0}
+              max={150}
+              value={printHandicapPct}
+              onChange={(e) => setPrintHandicapPct(e.target.value)}
+            />
+            % handicap
+          </label>
+
           <button
   style={styles.smallBtn}
   onClick={async () => {
@@ -3574,6 +3635,7 @@ const ps = {
     lastName={lastName}
     STROKE_INDEX={STROKE_INDEX}
     eventName={eventName}
+    handicapPct={printHandicapPct}
   />
 )} 
 </div>
