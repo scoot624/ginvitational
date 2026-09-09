@@ -22,6 +22,36 @@ const STROKE_INDEX = [
   9, 3, 17, 13, 5, 15, 1, 11, 7,
 ];
 
+/** Multi-Game: format labels + one-tap presets (Admin "Add Game" flow) */
+const GAME_FORMAT_LABELS = {
+  individual_net: "Individual Net",
+  individual_gross: "Individual Gross",
+  better_ball_2: "2-Man Better Ball",
+  better_ball_4: "4-Man Better Ball",
+};
+
+const GAME_FORMAT_TEAM_SIZE = {
+  individual_net: 1,
+  individual_gross: 1,
+  better_ball_2: 2,
+  better_ball_4: 4,
+};
+
+// Each preset: { label, handicapPct, scoresCounted, slots }
+const GAME_PRESETS = {
+  individual_net: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["net"] }],
+  individual_gross: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["gross"] }],
+  better_ball_2: [
+    { key: "best_net", label: "Best Net", handicapPct: 90, scoresCounted: 1, slots: ["net"] },
+    { key: "net_gross", label: "1 Net + 1 Gross", handicapPct: 90, scoresCounted: 2, slots: ["net", "gross"] },
+  ],
+  better_ball_4: [
+    { key: "best_net", label: "Best Net", handicapPct: 80, scoresCounted: 1, slots: ["net"] },
+    { key: "two_net", label: "2 Net", handicapPct: 80, scoresCounted: 2, slots: ["net", "net"] },
+    { key: "two_gross_one_net", label: "2 Gross + 1 Net", handicapPct: 80, scoresCounted: 3, slots: ["gross", "gross", "net"] },
+  ],
+};
+
 function clampInt(v, fallback = 0) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
@@ -222,6 +252,16 @@ export default function App() {
   const [teeSheetRows, setTeeSheetRows] = useState([]);
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
+
+  // Admin: Multi-Game setup (Stage 3)
+  const [newGameFormat, setNewGameFormat] = useState("individual_net");
+  const [newGamePresetKey, setNewGamePresetKey] = useState(null);
+  const [newGameName, setNewGameName] = useState("");
+  const [newGameHandicapPct, setNewGameHandicapPct] = useState(100);
+  const [newGameAdvancedOn, setNewGameAdvancedOn] = useState(false);
+  const [newGameScoresCounted, setNewGameScoresCounted] = useState(1);
+  const [newGameSlots, setNewGameSlots] = useState(["net"]);
+  const [gamesMsg, setGamesMsg] = useState("");
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -1110,6 +1150,182 @@ useEffect(() => {
     await initialLoad();
   }
 
+  // ---------------------------
+  // MULTI-GAME (Stage 3: Admin)
+  // ---------------------------
+
+  async function setMultiGameEnabled(next) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ multi_game_enabled: next, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      alert(`Error updating setting: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+  }
+
+  function applyPreset(preset) {
+    setNewGamePresetKey(preset.key);
+    setNewGameHandicapPct(preset.handicapPct);
+    setNewGameScoresCounted(preset.scoresCounted);
+    setNewGameSlots(preset.slots);
+    setNewGameAdvancedOn(false);
+  }
+
+  function selectNewGameFormat(format) {
+    setNewGameFormat(format);
+    setNewGameName(GAME_FORMAT_LABELS[format]);
+    const presets = GAME_PRESETS[format] || [];
+    if (presets[0]) applyPreset(presets[0]);
+  }
+
+  // Advanced counting-rule builder: keep `slots` in sync with `scoresCounted`
+  function setAdvancedScoresCounted(n) {
+    const count = Math.min(4, Math.max(1, clampInt(n, 1)));
+    setNewGameScoresCounted(count);
+    setNewGameSlots((prev) => {
+      const next = prev.slice(0, count);
+      while (next.length < count) next.push("net");
+      return next;
+    });
+  }
+
+  function setAdvancedSlot(index, value) {
+    setNewGameSlots((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  }
+
+  /** Groups current players by team_label, for the given team size. */
+  function teamPreviewGroups(teamSize) {
+    const byLabel = new Map();
+    for (const p of players) {
+      const label = String(p.team_label || "").trim();
+      if (!label) continue;
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(p);
+    }
+    return Array.from(byLabel.entries()).map(([label, members]) => ({
+      label,
+      members,
+      mismatched: members.length !== teamSize,
+    }));
+  }
+
+  async function createGame() {
+    if (!adminOn) return alert("Admin only.");
+    const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
+    const handicap_pct = clampInt(newGameHandicapPct, 100);
+    const scoresCounted = clampInt(newGameScoresCounted, 1);
+    const slots = newGameSlots.slice(0, scoresCounted);
+
+    if (slots.length !== scoresCounted) {
+      alert("Counting rule looks incomplete. Check the advanced settings.");
+      return;
+    }
+
+    const isTeamFormat = newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4";
+    const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+    const teamGroups = isTeamFormat ? teamPreviewGroups(teamSize).filter((g) => g.members.length > 0) : [];
+
+    if (isTeamFormat && teamGroups.length === 0) {
+      alert(
+        "No team groupings found. Add a \"team\" column to your tee sheet (players sharing a value become a team) and re-import, then try again."
+      );
+      return;
+    }
+
+    setGamesMsg("Creating game…");
+
+    const { data: gameRow, error: gameError } = await supabase
+      .from("games")
+      .insert({
+        name,
+        format: newGameFormat,
+        handicap_pct,
+        counting_rule: { scoresCounted, slots },
+        is_default: false,
+        active: true,
+        sort_order: games.length,
+      })
+      .select("id")
+      .single();
+
+    if (gameError) {
+      console.error(gameError);
+      setGamesMsg(`Error creating game: ${errToText(gameError)}`);
+      return;
+    }
+
+    if (isTeamFormat) {
+      for (const group of teamGroups) {
+        const { data: teamRow, error: teamError } = await supabase
+          .from("game_teams")
+          .insert({ game_id: gameRow.id, name: group.label })
+          .select("id")
+          .single();
+
+        if (teamError) {
+          console.error(teamError);
+          setGamesMsg(`Game created, but error building team "${group.label}": ${errToText(teamError)}`);
+          continue;
+        }
+
+        const memberRows = group.members.map((p) => ({
+          game_id: gameRow.id,
+          team_id: teamRow.id,
+          player_id: p.id,
+        }));
+
+        const { error: memberError } = await supabase.from("game_team_members").insert(memberRows);
+        if (memberError) {
+          console.error(memberError);
+          setGamesMsg(`Game created, but error assigning team "${group.label}": ${errToText(memberError)}`);
+        }
+      }
+    }
+
+    setGamesMsg(`"${name}" created ✅`);
+    setNewGameName("");
+    await loadGames();
+    await loadGameTeams();
+    await loadGameTeamMembers();
+  }
+
+  async function deleteGame(game) {
+    if (!adminOn) return alert("Admin only.");
+    if (game.is_default) return alert("The default game can't be removed.");
+    if (!confirm(`Delete "${game.name}"? This also removes its team assignments (not players or scores).`)) return;
+
+    const { error } = await supabase.from("games").delete().eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error deleting game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+    await loadGameTeams();
+    await loadGameTeamMembers();
+  }
+
+  async function toggleGameActive(game) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("games").update({ active: !game.active }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error updating game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+  }
+
   async function enterWithCode() {
     const code = entryCode.trim().toUpperCase();
     if (code.length !== 6) return alert("Enter a 6-character code.");
@@ -1374,6 +1590,9 @@ async function importFromTeeSheet() {
         name,
         handicap: clampInt(r.handicap, 0),
         charity: String(r.charity || "").trim() || null,
+        // Optional column. If present, players sharing the same value here
+        // become the pool a 2-man/4-man game's teams are built from.
+        team_label: String(r.team || "").trim() || null,
       });
     }
 
@@ -2413,6 +2632,212 @@ const ps = {
 
               {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
             </div>
+          </div>
+
+          {/* Multi-Game setup */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Games</div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
+              <input
+                type="checkbox"
+                checked={!!appSettings.multi_game_enabled}
+                onChange={(e) => setMultiGameEnabled(e.target.checked)}
+              />
+              Enable multiple games for this event
+            </label>
+
+            {!appSettings.multi_game_enabled ? (
+              <div style={styles.helpText}>
+                Off by default. This event runs one game — Individual Net — same as always. Turn this on to add
+                more games (Individual Gross, 2-Man/4-Man Better Ball) alongside it.
+              </div>
+            ) : (
+              <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {games.map((g) => (
+                    <div key={g.id} style={styles.foursomeCard}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "flex-start",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 950 }}>
+                            {g.name}{" "}
+                            {g.is_default && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6 }}>Default</span>
+                            )}
+                            {!g.active && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6, opacity: 0.6 }}>Inactive</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                            {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
+                            {g.counting_rule?.scoresCounted} ({(g.counting_rule?.slots || []).join(" + ")})
+                          </div>
+                          {(g.format === "better_ball_2" || g.format === "better_ball_4") && (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              Teams: {gameTeams.filter((t) => t.game_id === g.id).length}
+                            </div>
+                          )}
+                        </div>
+
+                        {!g.is_default && (
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button style={styles.smallBtn} onClick={() => toggleGameActive(g)}>
+                              {g.active ? "Deactivate" : "Activate"}
+                            </button>
+                            <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {games.length === 0 && <div style={styles.helpText}>No games yet.</div>}
+                </div>
+
+                <div style={styles.hr} />
+
+                <div style={styles.sectionLabel}>Add Game</div>
+
+                <div style={{ display: "grid", gap: 10 }}>
+                  <label style={styles.label}>
+                    Format
+                    <select
+                      style={styles.input}
+                      value={newGameFormat}
+                      onChange={(e) => selectNewGameFormat(e.target.value)}
+                    >
+                      {Object.entries(GAME_FORMAT_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={styles.label}>
+                    Name
+                    <input
+                      style={styles.input}
+                      value={newGameName}
+                      onChange={(e) => setNewGameName(e.target.value)}
+                    />
+                  </label>
+
+                  {(GAME_PRESETS[newGameFormat] || []).length > 1 && (
+                    <div>
+                      <div style={{ ...styles.label, marginBottom: 6 }}>Preset</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {GAME_PRESETS[newGameFormat].map((preset) => (
+                          <button
+                            key={preset.key}
+                            style={newGamePresetKey === preset.key ? styles.navBtnActive : styles.smallBtn}
+                            onClick={() => applyPreset(preset)}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <label style={styles.label}>
+                    Handicap %
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={0}
+                      max={150}
+                      value={newGameHandicapPct}
+                      onChange={(e) => setNewGameHandicapPct(e.target.value)}
+                      disabled={newGameFormat === "individual_gross"}
+                    />
+                  </label>
+
+                  <label
+                    style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={newGameAdvancedOn}
+                      onChange={(e) => setNewGameAdvancedOn(e.target.checked)}
+                    />
+                    Advanced: build a custom counting rule
+                  </label>
+
+                  {newGameAdvancedOn && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 10,
+                        padding: 12,
+                        borderRadius: 12,
+                        border: `1px solid ${THEME.border}`,
+                      }}
+                    >
+                      <label style={styles.label}>
+                        Scores counted per hole (1–4)
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min={1}
+                          max={4}
+                          value={newGameScoresCounted}
+                          onChange={(e) => setAdvancedScoresCounted(e.target.value)}
+                        />
+                      </label>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {newGameSlots.map((slot, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                            <span style={{ color: THEME.textMuted, minWidth: 56 }}>Slot {i + 1}</span>
+                            <select style={styles.input} value={slot} onChange={(e) => setAdvancedSlot(i, e.target.value)}>
+                              <option value="net">Net</option>
+                              <option value="gross">Gross</option>
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {(newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4") && (
+                    <div style={styles.helpText}>
+                      Teams come from your tee sheet's "team" column.
+                      {(() => {
+                        const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+                        const groups = teamPreviewGroups(teamSize);
+                        if (groups.length === 0) {
+                          return ' No team groupings found yet — add a "team" column to the tee sheet and re-import.';
+                        }
+                        return (
+                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                            {groups.map((g) => (
+                              <div key={g.label} style={{ color: g.mismatched ? THEME.bad : THEME.textMuted }}>
+                                Team "{g.label}": {g.members.map((m) => m.name).join(", ")}
+                                {g.mismatched ? ` (expected ${teamSize})` : ""}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  <button style={styles.bigBtn} onClick={createGame}>
+                    Create Game
+                  </button>
+                  {gamesMsg ? <div style={styles.helpText}>{gamesMsg}</div> : null}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </>
