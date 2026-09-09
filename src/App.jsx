@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import * as XLSX from "xlsx";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
 
 /** ✅ Supabase via env vars */
@@ -1778,6 +1777,9 @@ async function parseTeeSheetFile(file) {
   }
 
   try {
+    // Loaded on demand — the Excel library is only needed here, during an
+    // Admin import, so nobody else has to download it just to open the app.
+    const XLSX = await import("xlsx");
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array" });
     const sheetName = wb.SheetNames[0];
