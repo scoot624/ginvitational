@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import { buildScoresByPlayer, computeGameRows } from "./lib/gameCalc";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -20,6 +21,46 @@ const STROKE_INDEX = [
   12, 10, 4, 14, 2, 8, 6, 18, 16,
   9, 3, 17, 13, 5, 15, 1, 11, 7,
 ];
+
+/** Shared passcode: Admin gate + locked-scoreboard unlock use the same code. */
+const ADMIN_PIN = "112020";
+
+/** Multi-Game: format labels + one-tap presets (Admin "Add Game" flow) */
+const GAME_FORMAT_LABELS = {
+  individual_net: "Individual Net",
+  individual_gross: "Individual Gross",
+  better_ball_2: "2-Man Better Ball",
+  better_ball_4: "4-Man Better Ball",
+};
+
+const GAME_FORMAT_TEAM_SIZE = {
+  individual_net: 1,
+  individual_gross: 1,
+  better_ball_2: 2,
+  better_ball_4: 4,
+};
+
+const GAME_SCORE_LABELS = {
+  individual_net: "Net vs Par",
+  individual_gross: "Gross vs Par",
+  better_ball_2: "Team vs Par",
+  better_ball_4: "Team vs Par",
+};
+
+// Each preset: { label, handicapPct, scoresCounted, slots }
+const GAME_PRESETS = {
+  individual_net: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["net"] }],
+  individual_gross: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["gross"] }],
+  better_ball_2: [
+    { key: "best_net", label: "Best Net", handicapPct: 90, scoresCounted: 1, slots: ["net"] },
+    { key: "net_gross", label: "1 Net + 1 Gross", handicapPct: 90, scoresCounted: 2, slots: ["net", "gross"] },
+  ],
+  better_ball_4: [
+    { key: "best_net", label: "Best Net", handicapPct: 80, scoresCounted: 1, slots: ["net"] },
+    { key: "two_net", label: "2 Net", handicapPct: 80, scoresCounted: 2, slots: ["net", "net"] },
+    { key: "two_gross_one_net", label: "2 Gross + 1 Net", handicapPct: 80, scoresCounted: 3, slots: ["gross", "gross", "net"] },
+  ],
+};
 
 function clampInt(v, fallback = 0) {
   const n = Number(v);
@@ -161,6 +202,54 @@ function safeDedupeKey(parts) {
     .slice(0, 240);
 }
 
+/** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
+function LockedBoardPanel({ game, onUnlock }) {
+  const [passcode, setPasscode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    const result = await onUnlock(game, passcode);
+    setBusy(false);
+    if (!result.ok) {
+      setErr(result.error);
+      return;
+    }
+    setPasscode("");
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 18, fontWeight: 950 }}>🔒 This scoreboard is locked</div>
+      <div style={styles.helpText}>Enter the passcode to reveal &quot;{game.name}&quot;.</div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 10, maxWidth: 360, flexWrap: "wrap" }}>
+        <input
+          style={{ ...styles.input, flex: 1, minWidth: 160 }}
+          type="password"
+          value={passcode}
+          onChange={(e) => {
+            setPasscode(e.target.value);
+            setErr("");
+          }}
+          placeholder="Passcode"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+        />
+        <button style={styles.bigBtn} onClick={submit} disabled={busy}>
+          Unlock
+        </button>
+      </div>
+
+      {err ? <div style={{ ...styles.helpText, color: THEME.bad }}>{err}</div> : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
@@ -172,12 +261,21 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
+  // Multi-Game (Stage 2: loaded + computed, not yet rendered anywhere)
+  const [games, setGames] = useState([]);
+  const [gameTeams, setGameTeams] = useState([]);
+  const [gameTeamMembers, setGameTeamMembers] = useState([]);
+  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false });
+
   // Broadcast
   const [broadcastMsgs, setBroadcastMsgs] = useState([]);
   const lastSnapshotRef = useRef(null);
 
   // Leaderboard scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
+
+  // Leaderboard: which game tab is showing (only relevant when >1 active game)
+  const [selectedGameId, setSelectedGameId] = useState(null);
 
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
@@ -216,10 +314,20 @@ export default function App() {
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
 
+  // Admin: Multi-Game setup (Stage 3)
+  const [newGameFormat, setNewGameFormat] = useState("individual_net");
+  const [newGamePresetKey, setNewGamePresetKey] = useState(null);
+  const [newGameName, setNewGameName] = useState("");
+  const [newGameHandicapPct, setNewGameHandicapPct] = useState(100);
+  const [newGameAdvancedOn, setNewGameAdvancedOn] = useState(false);
+  const [newGameScoresCounted, setNewGameScoresCounted] = useState(1);
+  const [newGameSlots, setNewGameSlots] = useState(["net"]);
+  const [gamesMsg, setGamesMsg] = useState("");
+
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
-      .select("id,name,handicap,charity,created_at")
+      .select("id,name,handicap,charity,team_label,created_at")
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -272,6 +380,63 @@ export default function App() {
     return { ok: true, where: "foursome_players" };
   }
 
+  async function loadGames() {
+    const { data, error } = await supabase
+      .from("games")
+      .select("id,name,format,handicap_pct,counting_rule,is_default,active,locked,sort_order,created_at")
+      .order("sort_order", { ascending: true });
+
+    if (error) {
+      console.error("loadGames error:", error);
+      return { ok: false, where: "games", error: errToText(error) };
+    }
+    setGames(data || []);
+    return { ok: true, where: "games" };
+  }
+
+  async function loadGameTeams() {
+    const { data, error } = await supabase
+      .from("game_teams")
+      .select("id,game_id,name,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("loadGameTeams error:", error);
+      return { ok: false, where: "game_teams", error: errToText(error) };
+    }
+    setGameTeams(data || []);
+    return { ok: true, where: "game_teams" };
+  }
+
+  async function loadGameTeamMembers() {
+    const { data, error } = await supabase
+      .from("game_team_members")
+      .select("game_id,team_id,player_id,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("loadGameTeamMembers error:", error);
+      return { ok: false, where: "game_team_members", error: errToText(error) };
+    }
+    setGameTeamMembers(data || []);
+    return { ok: true, where: "game_team_members" };
+  }
+
+  async function loadAppSettings() {
+    const { data, error } = await supabase
+      .from("app_settings")
+      .select("id,multi_game_enabled,updated_at")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (error) {
+      console.error("loadAppSettings error:", error);
+      return { ok: false, where: "app_settings", error: errToText(error) };
+    }
+    setAppSettings(data || { multi_game_enabled: false });
+    return { ok: true, where: "app_settings" };
+  }
+
   async function loadBroadcast() {
     // newest first
     const { data, error } = await supabase
@@ -298,6 +463,10 @@ export default function App() {
     results.push(await loadFoursomes());
     results.push(await loadFoursomePlayers());
     results.push(await loadBroadcast());
+    results.push(await loadGames());
+    results.push(await loadGameTeams());
+    results.push(await loadGameTeamMembers());
+    results.push(await loadAppSettings());
 
     const fails = results.filter((r) => !r.ok);
     setLastLoadErrors(fails);
@@ -419,6 +588,52 @@ for (let i = 0; i < rows.length; i++) {
 return rows;
 
   }, [players, scores]);
+
+  // --- Multi-Game (Stage 2) ---
+  // Computed alongside the original leaderboardRows above, which is left
+  // untouched. Nothing renders from this yet (see Stage 4).
+  const scoresByPlayerMap = useMemo(() => buildScoresByPlayer(scores), [scores]);
+
+  const playersById = useMemo(() => {
+    const m = new Map();
+    for (const p of players) m.set(p.id, p);
+    return m;
+  }, [players]);
+
+  const teamMembersByTeamMap = useMemo(() => {
+    const m = new Map();
+    for (const row of gameTeamMembers) {
+      if (!m.has(row.team_id)) m.set(row.team_id, []);
+      m.get(row.team_id).push(row.player_id);
+    }
+    return m;
+  }, [gameTeamMembers]);
+
+  const gameResults = useMemo(() => {
+    const activeGames = games.filter((g) => g.active);
+    return activeGames.map((game) => ({
+      game,
+      rows: computeGameRows(game, {
+        players,
+        scoresByPlayer: scoresByPlayerMap,
+        teams: gameTeams,
+        teamMembersByTeam: teamMembersByTeamMap,
+        playersById,
+        PARS,
+        STROKE_INDEX,
+      }),
+    }));
+  }, [games, gameTeams, teamMembersByTeamMap, players, scoresByPlayerMap, playersById]);
+
+  // Temporary Stage 2 verification hook: lets us confirm gameResults
+  // matches the live leaderboard before anything is wired to the UI.
+  // Safe to remove once Stage 4 renders gameResults directly.
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.__gameResults = gameResults;
+      window.__appSettings = appSettings;
+    }
+  }, [gameResults, appSettings]);
 
   const scorecardPlayer = useMemo(() => {
     if (!scorecardPlayerId) return null;
@@ -838,7 +1053,7 @@ useEffect(() => {
 }, [leaderboardRows.length]);
 
   function enterAdmin() {
-    if (adminPin === "112020") {
+    if (adminPin === ADMIN_PIN) {
       setAdminOn(true);
       setAdminPin("");
       setTab("admin");
@@ -994,6 +1209,211 @@ useEffect(() => {
       .neq("id", "00000000-0000-0000-0000-000000000000");
 
     await initialLoad();
+  }
+
+  // ---------------------------
+  // MULTI-GAME (Stage 3: Admin)
+  // ---------------------------
+
+  async function setMultiGameEnabled(next) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ multi_game_enabled: next, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      alert(`Error updating setting: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+  }
+
+  function applyPreset(preset) {
+    setNewGamePresetKey(preset.key);
+    setNewGameHandicapPct(preset.handicapPct);
+    setNewGameScoresCounted(preset.scoresCounted);
+    setNewGameSlots(preset.slots);
+    setNewGameAdvancedOn(false);
+  }
+
+  function selectNewGameFormat(format) {
+    setNewGameFormat(format);
+    setNewGameName(GAME_FORMAT_LABELS[format]);
+    const presets = GAME_PRESETS[format] || [];
+    if (presets[0]) applyPreset(presets[0]);
+  }
+
+  // Advanced counting-rule builder: keep `slots` in sync with `scoresCounted`
+  function setAdvancedScoresCounted(n) {
+    const count = Math.min(4, Math.max(1, clampInt(n, 1)));
+    setNewGameScoresCounted(count);
+    setNewGameSlots((prev) => {
+      const next = prev.slice(0, count);
+      while (next.length < count) next.push("net");
+      return next;
+    });
+  }
+
+  function setAdvancedSlot(index, value) {
+    setNewGameSlots((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  }
+
+  /** Groups current players by team_label, for the given team size. */
+  function teamPreviewGroups(teamSize) {
+    const byLabel = new Map();
+    for (const p of players) {
+      const label = String(p.team_label || "").trim();
+      if (!label) continue;
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(p);
+    }
+    return Array.from(byLabel.entries()).map(([label, members]) => ({
+      label,
+      members,
+      mismatched: members.length !== teamSize,
+    }));
+  }
+
+  async function createGame() {
+    if (!adminOn) return alert("Admin only.");
+    const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
+    const handicap_pct = clampInt(newGameHandicapPct, 100);
+    const scoresCounted = clampInt(newGameScoresCounted, 1);
+    const slots = newGameSlots.slice(0, scoresCounted);
+
+    if (slots.length !== scoresCounted) {
+      alert("Counting rule looks incomplete. Check the advanced settings.");
+      return;
+    }
+
+    const isTeamFormat = newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4";
+    const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+    const teamGroups = isTeamFormat ? teamPreviewGroups(teamSize).filter((g) => g.members.length > 0) : [];
+
+    if (isTeamFormat && teamGroups.length === 0) {
+      alert(
+        "No team groupings found. Add a \"team\" column to your tee sheet (players sharing a value become a team) and re-import, then try again."
+      );
+      return;
+    }
+
+    setGamesMsg("Creating game…");
+
+    const { data: gameRow, error: gameError } = await supabase
+      .from("games")
+      .insert({
+        name,
+        format: newGameFormat,
+        handicap_pct,
+        counting_rule: { scoresCounted, slots },
+        is_default: false,
+        active: true,
+        sort_order: games.length,
+      })
+      .select("id")
+      .single();
+
+    if (gameError) {
+      console.error(gameError);
+      setGamesMsg(`Error creating game: ${errToText(gameError)}`);
+      return;
+    }
+
+    if (isTeamFormat) {
+      for (const group of teamGroups) {
+        const { data: teamRow, error: teamError } = await supabase
+          .from("game_teams")
+          .insert({ game_id: gameRow.id, name: group.label })
+          .select("id")
+          .single();
+
+        if (teamError) {
+          console.error(teamError);
+          setGamesMsg(`Game created, but error building team "${group.label}": ${errToText(teamError)}`);
+          continue;
+        }
+
+        const memberRows = group.members.map((p) => ({
+          game_id: gameRow.id,
+          team_id: teamRow.id,
+          player_id: p.id,
+        }));
+
+        const { error: memberError } = await supabase.from("game_team_members").insert(memberRows);
+        if (memberError) {
+          console.error(memberError);
+          setGamesMsg(`Game created, but error assigning team "${group.label}": ${errToText(memberError)}`);
+        }
+      }
+    }
+
+    setGamesMsg(`"${name}" created ✅`);
+    setNewGameName("");
+    await loadGames();
+    await loadGameTeams();
+    await loadGameTeamMembers();
+  }
+
+  async function deleteGame(game) {
+    if (!adminOn) return alert("Admin only.");
+    if (!confirm(`Delete "${game.name}"? This also removes its team assignments (not players or scores).`)) return;
+
+    const { error } = await supabase.from("games").delete().eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error deleting game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+    await loadGameTeams();
+    await loadGameTeamMembers();
+  }
+
+  async function toggleGameActive(game) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("games").update({ active: !game.active }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error updating game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+  }
+
+  // Admin already passed the PIN gate to get here, so this is a free toggle
+  // (no re-prompt) — the passcode gate lives on the public Leaderboard side.
+  async function toggleGameLocked(game) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("games").update({ locked: !game.locked }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error updating game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+  }
+
+  // Leaderboard-side unlock: anyone who knows the passcode can reveal a
+  // locked board. Unlocking is global (persisted), matching how locking
+  // itself works — meant for a "reveal to everyone" moment, not a private
+  // per-viewer peek.
+  async function unlockGameBoard(game, passcode) {
+    if (passcode !== ADMIN_PIN) {
+      return { ok: false, error: "Incorrect passcode." };
+    }
+    const { error } = await supabase.from("games").update({ locked: false }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      return { ok: false, error: errToText(error) };
+    }
+    await loadGames();
+    return { ok: true };
   }
 
   async function enterWithCode() {
@@ -1260,6 +1680,9 @@ async function importFromTeeSheet() {
         name,
         handicap: clampInt(r.handicap, 0),
         charity: String(r.charity || "").trim() || null,
+        // Optional column. If present, players sharing the same value here
+        // become the pool a 2-man/4-man game's teams are built from.
+        team_label: String(r.team || "").trim() || null,
       });
     }
 
@@ -1977,70 +2400,194 @@ const ps = {
                 onClick={async () => {
                   await loadPlayers();
                   await loadScores();
+                  await loadGames();
+                  await loadGameTeams();
+                  await loadGameTeamMembers();
                 }}
               >
                 Refresh
               </button>
             </div>
 
-            <div style={styles.helpText}>
-              Tap a player name to view their scorecard. Auto-refreshes every minute.
-            </div>
+            {/* Game tabs — only when more than one game is active. A Simple
+                Mode event (the common case) never sees this and renders
+                exactly as before. */}
+            {gameResults.length > 1 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                {gameResults.map(({ game }) => {
+                  const isActive = selectedGameId ? selectedGameId === game.id : game.is_default;
+                  return (
+                    <button
+                      key={game.id}
+                      style={isActive ? styles.navBtnActive : styles.navBtn}
+                      onClick={() => setSelectedGameId(game.id)}
+                    >
+                      {game.locked ? "🔒 " : ""}
+                      {game.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-            <div style={styles.tableWrap}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>#</th>
-                    <th style={styles.th}>Player</th>
-                    <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
-                    <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
-                  </tr>
-                </thead>
+            {(() => {
+              const lockCheckEntry =
+                gameResults.length > 0
+                  ? gameResults.find((g) => g.game.id === selectedGameId) ||
+                    gameResults.find((g) => g.game.is_default) ||
+                    gameResults[0]
+                  : null;
 
-                <tbody>
-                  {leaderboardRows.map((r, idx) => {
-                    const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
-                    const netStyle =
-                      r.holesPlayed === 0
-                        ? { opacity: 0.6, color: THEME.textMuted }
-                        : { fontWeight: 950, ...netColorStyle(r.netToPar) };
+              if (lockCheckEntry && lockCheckEntry.game.locked) {
+                return <LockedBoardPanel game={lockCheckEntry.game} onUnlock={unlockGameBoard} />;
+              }
 
-                    return (
-                      <tr key={r.id}>
-                        <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+              if (gameResults.length <= 1) {
+                return (
+              <>
+                <div style={styles.helpText}>
+                  Tap a player name to view their scorecard. Auto-refreshes every minute.
+                </div>
 
-                        <td style={{ ...styles.td, minWidth: 180 }}>
-                          <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
-                            {r.name}
-                          </button>
-                          <div style={styles.playerMeta}>
-                            HCP {r.handicap}
-                            {r.charity ? ` • ${r.charity}` : ""}
-                          </div>
-                        </td>
-
-                        <td style={{ ...styles.td, textAlign: "center" }}>
-                          <span style={styles.pill}>{r.holesPlayed}</span>
-                        </td>
-
-                        <td style={{ ...styles.td, textAlign: "center" }}>
-                          <span style={netStyle}>{displayNet}</span>
-                        </td>
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>#</th>
+                        <th style={styles.th}>Player</th>
+                        <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
+                        <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
                       </tr>
-                    );
-                  })}
+                    </thead>
 
-                  {leaderboardRows.length === 0 && (
-                    <tr>
-                      <td style={styles.td} colSpan={4}>
-                        No players yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    <tbody>
+                      {leaderboardRows.map((r, idx) => {
+                        const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
+                        const netStyle =
+                          r.holesPlayed === 0
+                            ? { opacity: 0.6, color: THEME.textMuted }
+                            : { fontWeight: 950, ...netColorStyle(r.netToPar) };
+
+                        return (
+                          <tr key={r.id}>
+                            <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+
+                            <td style={{ ...styles.td, minWidth: 180 }}>
+                              <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                                {r.name}
+                              </button>
+                              <div style={styles.playerMeta}>
+                                HCP {r.handicap}
+                                {r.charity ? ` • ${r.charity}` : ""}
+                              </div>
+                            </td>
+
+                            <td style={{ ...styles.td, textAlign: "center" }}>
+                              <span style={styles.pill}>{r.holesPlayed}</span>
+                            </td>
+
+                            <td style={{ ...styles.td, textAlign: "center" }}>
+                              <span style={netStyle}>{displayNet}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {leaderboardRows.length === 0 && (
+                        <tr>
+                          <td style={styles.td} colSpan={4}>
+                            No players yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+                );
+              }
+
+              const { game, rows } = lockCheckEntry;
+              const isTeamFormat = game.format === "better_ball_2" || game.format === "better_ball_4";
+              const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
+
+              return (
+                  <>
+                    <div style={styles.helpText}>
+                      {isTeamFormat
+                        ? `Team leaderboard for ${game.name}.`
+                        : "Tap a player name to view their scorecard."}{" "}
+                      Auto-refreshes every minute.
+                    </div>
+
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>#</th>
+                            <th style={styles.th}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
+                            <th style={{ ...styles.th, textAlign: "center" }}>{scoreLabel}</th>
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {rows.map((r, idx) => {
+                            const displayScore = r.holesPlayed === 0 ? "—" : formatToPar(r.toPar);
+                            const scoreStyle =
+                              r.holesPlayed === 0
+                                ? { opacity: 0.6, color: THEME.textMuted }
+                                : { fontWeight: 950, ...netColorStyle(r.toPar) };
+
+                            return (
+                              <tr key={r.id}>
+                                <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+
+                                <td style={{ ...styles.td, minWidth: 180 }}>
+                                  {isTeamFormat ? (
+                                    <>
+                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
+                                      <div style={styles.playerMeta}>
+                                        {r.members.map((m) => `${m.name} (HCP ${m.handicap})`).join(" • ")}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                                        {r.name}
+                                      </button>
+                                      <div style={styles.playerMeta}>
+                                        HCP {r.handicap}
+                                        {r.charity ? ` • ${r.charity}` : ""}
+                                      </div>
+                                    </>
+                                  )}
+                                </td>
+
+                                <td style={{ ...styles.td, textAlign: "center" }}>
+                                  <span style={styles.pill}>{r.holesPlayed}</span>
+                                </td>
+
+                                <td style={{ ...styles.td, textAlign: "center" }}>
+                                  <span style={scoreStyle}>{displayScore}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {rows.length === 0 && (
+                            <tr>
+                              <td style={styles.td} colSpan={4}>
+                                No {isTeamFormat ? "teams" : "players"} yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+              );
+            })()}
           </div>
         )}
 
@@ -2298,6 +2845,220 @@ const ps = {
               })}
 
               {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
+            </div>
+          </div>
+
+          {/* Multi-Game setup */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Games</div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
+              <input
+                type="checkbox"
+                checked={!!appSettings.multi_game_enabled}
+                onChange={(e) => setMultiGameEnabled(e.target.checked)}
+              />
+              Enable multiple games for this event
+            </label>
+
+            {!appSettings.multi_game_enabled && (
+              <div style={styles.helpText}>
+                Off by default. Every game below still works — lock/unlock, activate/deactivate, delete — this
+                just hides the "Add Game" builder until you need more than one game running at once.
+              </div>
+            )}
+
+            <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {games.map((g) => (
+                    <div key={g.id} style={styles.foursomeCard}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "flex-start",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 950 }}>
+                            {g.name}{" "}
+                            {g.is_default && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6 }}>Default</span>
+                            )}
+                            {!g.active && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6, opacity: 0.6 }}>Inactive</span>
+                            )}
+                            {g.locked && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6 }}>🔒 Locked</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                            {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
+                            {g.counting_rule?.scoresCounted} ({(g.counting_rule?.slots || []).join(" + ")})
+                          </div>
+                          {(g.format === "better_ball_2" || g.format === "better_ball_4") && (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              Teams: {gameTeams.filter((t) => t.game_id === g.id).length}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button style={styles.smallBtn} onClick={() => toggleGameLocked(g)}>
+                            {g.locked ? "Unlock" : "Lock"}
+                          </button>
+                          <button style={styles.smallBtn} onClick={() => toggleGameActive(g)}>
+                            {g.active ? "Deactivate" : "Activate"}
+                          </button>
+                          <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {games.length === 0 && <div style={styles.helpText}>No games yet.</div>}
+                </div>
+
+                {appSettings.multi_game_enabled && (
+                  <>
+                    <div style={styles.hr} />
+
+                    <div style={styles.sectionLabel}>Add Game</div>
+
+                    <div style={{ display: "grid", gap: 10 }}>
+                  <label style={styles.label}>
+                    Format
+                    <select
+                      style={styles.input}
+                      value={newGameFormat}
+                      onChange={(e) => selectNewGameFormat(e.target.value)}
+                    >
+                      {Object.entries(GAME_FORMAT_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={styles.label}>
+                    Name
+                    <input
+                      style={styles.input}
+                      value={newGameName}
+                      onChange={(e) => setNewGameName(e.target.value)}
+                    />
+                  </label>
+
+                  {(GAME_PRESETS[newGameFormat] || []).length > 1 && (
+                    <div>
+                      <div style={{ ...styles.label, marginBottom: 6 }}>Preset</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {GAME_PRESETS[newGameFormat].map((preset) => (
+                          <button
+                            key={preset.key}
+                            style={newGamePresetKey === preset.key ? styles.navBtnActive : styles.smallBtn}
+                            onClick={() => applyPreset(preset)}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <label style={styles.label}>
+                    Handicap %
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={0}
+                      max={150}
+                      value={newGameHandicapPct}
+                      onChange={(e) => setNewGameHandicapPct(e.target.value)}
+                      disabled={newGameFormat === "individual_gross"}
+                    />
+                  </label>
+
+                  <label
+                    style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={newGameAdvancedOn}
+                      onChange={(e) => setNewGameAdvancedOn(e.target.checked)}
+                    />
+                    Advanced: build a custom counting rule
+                  </label>
+
+                  {newGameAdvancedOn && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 10,
+                        padding: 12,
+                        borderRadius: 12,
+                        border: `1px solid ${THEME.border}`,
+                      }}
+                    >
+                      <label style={styles.label}>
+                        Scores counted per hole (1–4)
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min={1}
+                          max={4}
+                          value={newGameScoresCounted}
+                          onChange={(e) => setAdvancedScoresCounted(e.target.value)}
+                        />
+                      </label>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {newGameSlots.map((slot, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                            <span style={{ color: THEME.textMuted, minWidth: 56 }}>Slot {i + 1}</span>
+                            <select style={styles.input} value={slot} onChange={(e) => setAdvancedSlot(i, e.target.value)}>
+                              <option value="net">Net</option>
+                              <option value="gross">Gross</option>
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {(newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4") && (
+                    <div style={styles.helpText}>
+                      Teams come from your tee sheet's "team" column.
+                      {(() => {
+                        const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+                        const groups = teamPreviewGroups(teamSize);
+                        if (groups.length === 0) {
+                          return ' No team groupings found yet — add a "team" column to the tee sheet and re-import.';
+                        }
+                        return (
+                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                            {groups.map((g) => (
+                              <div key={g.label} style={{ color: g.mismatched ? THEME.bad : THEME.textMuted }}>
+                                Team "{g.label}": {g.members.map((m) => m.name).join(", ")}
+                                {g.mismatched ? ` (expected ${teamSize})` : ""}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  <button style={styles.bigBtn} onClick={createGame}>
+                    Create Game
+                    </button>
+                    {gamesMsg ? <div style={styles.helpText}>{gamesMsg}</div> : null}
+                    </div>
+                  </>
+                )}
             </div>
           </div>
         </div>
