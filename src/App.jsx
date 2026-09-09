@@ -182,15 +182,6 @@ function makeCode(len = 6) {
   return out;
 }
 
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
 /** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
 function LockedBoardPanel({ game, onUnlock }) {
   const [passcode, setPasscode] = useState("");
@@ -285,22 +276,9 @@ export default function App() {
   const [eventNameDraft, setEventNameDraft] = useState("");
   const [eventNameMsg, setEventNameMsg] = useState("");
 
-  // Admin: add player
-  const [newName, setNewName] = useState("");
-  const [newHandicap, setNewHandicap] = useState("");
-  const [newCharity, setNewCharity] = useState("");
-
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
   const [foursomePlayers, setFoursomePlayers] = useState([]);
-
-  // Admin: manual foursome
-  const [manualGroupName, setManualGroupName] = useState("");
-  const [manualCode, setManualCode] = useState("");
-
-  // Admin: assign
-  const [assignFoursomeId, setAssignFoursomeId] = useState("");
-  const [assignPlayerId, setAssignPlayerId] = useState("");
 
   // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
@@ -523,7 +501,6 @@ export default function App() {
       await loadScores();
     }, 60_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   useEffect(() => {
@@ -1194,103 +1171,9 @@ useEffect(() => {
 }, [leaderboardRows.length]);
 
 
-  async function addPlayer() {
-    if (!adminOn) return alert("Admin only.");
-    const name = newName.trim();
-    const handicap = clampInt(newHandicap, 0);
-    const charity = newCharity.trim() || null;
-    if (!name) return alert("Name required.");
-
-    const { error } = await supabase.from("players").insert({ name, handicap, charity });
-    if (error) {
-      console.error(error);
-      alert(`Error adding player: ${errToText(error)}`);
-      return;
-    }
-    setNewName("");
-    setNewHandicap("");
-    setNewCharity("");
-    await loadPlayers();
-  }
-
-  async function deletePlayer(id) {
-    if (!adminOn) return alert("Admin only.");
-    if (!confirm("Delete this player? This will also delete their scores and foursome assignment.")) return;
-
-    await supabase.from("scores").delete().eq("player_id", id);
-    await supabase.from("foursome_players").delete().eq("player_id", id);
-
-    const { error } = await supabase.from("players").delete().eq("id", id);
-    if (error) {
-      console.error(error);
-      alert(`Error deleting player: ${errToText(error)}`);
-      return;
-    }
-    await initialLoad();
-  }
-
   function playersInFoursome(fid) {
     const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
     return players.filter((p) => pids.includes(p.id));
-  }
-
-  async function createManualFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    const group_name = manualGroupName.trim() || "Group";
-    const code = (manualCode.trim() || makeCode()).toUpperCase();
-
-    if (code.length !== 6) return alert("Code must be exactly 6 characters.");
-
-    const { error } = await supabase.from("foursomes").insert({
-  group_name,
-  code,
-  tee_time: excelTimeToDbTime(r.tee_time),
-  starting_hole: clampInt(r.starting_hole, 1),
-});
-    if (error) {
-      console.error(error);
-      alert(`Error creating foursome: ${errToText(error)}`);
-      return;
-    }
-    setManualGroupName("");
-    setManualCode("");
-    await loadFoursomes();
-  }
-
-  async function assignPlayerToFoursome() {
-    if (!adminOn) return alert("Admin only.");
-    if (!assignFoursomeId) return alert("Pick a foursome.");
-    if (!assignPlayerId) return alert("Pick a player.");
-
-    const { error } = await supabase.from("foursome_players").insert({
-      foursome_id: assignFoursomeId,
-      player_id: assignPlayerId,
-    });
-
-    if (error) {
-      console.error(error);
-      alert(`Error assigning player: ${errToText(error)}`);
-      return;
-    }
-
-    setAssignPlayerId("");
-    await loadFoursomePlayers();
-  }
-
-  async function removePlayerFromFoursome(foursome_id, player_id) {
-    if (!adminOn) return alert("Admin only.");
-    const { error } = await supabase
-      .from("foursome_players")
-      .delete()
-      .eq("foursome_id", foursome_id)
-      .eq("player_id", player_id);
-
-    if (error) {
-      console.error(error);
-      alert(`Error removing player: ${errToText(error)}`);
-      return;
-    }
-    await loadFoursomePlayers();
   }
 
   async function clearFoursomes() {
