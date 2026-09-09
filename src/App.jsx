@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import { buildScoresByPlayer, computeGameRows } from "./lib/gameCalc";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -172,6 +173,12 @@ export default function App() {
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState([]);
 
+  // Multi-Game (Stage 2: loaded + computed, not yet rendered anywhere)
+  const [games, setGames] = useState([]);
+  const [gameTeams, setGameTeams] = useState([]);
+  const [gameTeamMembers, setGameTeamMembers] = useState([]);
+  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false });
+
   // Broadcast
   const [broadcastMsgs, setBroadcastMsgs] = useState([]);
   const lastSnapshotRef = useRef(null);
@@ -272,6 +279,63 @@ export default function App() {
     return { ok: true, where: "foursome_players" };
   }
 
+  async function loadGames() {
+    const { data, error } = await supabase
+      .from("games")
+      .select("id,name,format,handicap_pct,counting_rule,is_default,active,sort_order,created_at")
+      .order("sort_order", { ascending: true });
+
+    if (error) {
+      console.error("loadGames error:", error);
+      return { ok: false, where: "games", error: errToText(error) };
+    }
+    setGames(data || []);
+    return { ok: true, where: "games" };
+  }
+
+  async function loadGameTeams() {
+    const { data, error } = await supabase
+      .from("game_teams")
+      .select("id,game_id,name,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("loadGameTeams error:", error);
+      return { ok: false, where: "game_teams", error: errToText(error) };
+    }
+    setGameTeams(data || []);
+    return { ok: true, where: "game_teams" };
+  }
+
+  async function loadGameTeamMembers() {
+    const { data, error } = await supabase
+      .from("game_team_members")
+      .select("game_id,team_id,player_id,created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("loadGameTeamMembers error:", error);
+      return { ok: false, where: "game_team_members", error: errToText(error) };
+    }
+    setGameTeamMembers(data || []);
+    return { ok: true, where: "game_team_members" };
+  }
+
+  async function loadAppSettings() {
+    const { data, error } = await supabase
+      .from("app_settings")
+      .select("id,multi_game_enabled,updated_at")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (error) {
+      console.error("loadAppSettings error:", error);
+      return { ok: false, where: "app_settings", error: errToText(error) };
+    }
+    setAppSettings(data || { multi_game_enabled: false });
+    return { ok: true, where: "app_settings" };
+  }
+
   async function loadBroadcast() {
     // newest first
     const { data, error } = await supabase
@@ -298,6 +362,10 @@ export default function App() {
     results.push(await loadFoursomes());
     results.push(await loadFoursomePlayers());
     results.push(await loadBroadcast());
+    results.push(await loadGames());
+    results.push(await loadGameTeams());
+    results.push(await loadGameTeamMembers());
+    results.push(await loadAppSettings());
 
     const fails = results.filter((r) => !r.ok);
     setLastLoadErrors(fails);
@@ -419,6 +487,52 @@ for (let i = 0; i < rows.length; i++) {
 return rows;
 
   }, [players, scores]);
+
+  // --- Multi-Game (Stage 2) ---
+  // Computed alongside the original leaderboardRows above, which is left
+  // untouched. Nothing renders from this yet (see Stage 4).
+  const scoresByPlayerMap = useMemo(() => buildScoresByPlayer(scores), [scores]);
+
+  const playersById = useMemo(() => {
+    const m = new Map();
+    for (const p of players) m.set(p.id, p);
+    return m;
+  }, [players]);
+
+  const teamMembersByTeamMap = useMemo(() => {
+    const m = new Map();
+    for (const row of gameTeamMembers) {
+      if (!m.has(row.team_id)) m.set(row.team_id, []);
+      m.get(row.team_id).push(row.player_id);
+    }
+    return m;
+  }, [gameTeamMembers]);
+
+  const gameResults = useMemo(() => {
+    const activeGames = games.filter((g) => g.active);
+    return activeGames.map((game) => ({
+      game,
+      rows: computeGameRows(game, {
+        players,
+        scoresByPlayer: scoresByPlayerMap,
+        teams: gameTeams,
+        teamMembersByTeam: teamMembersByTeamMap,
+        playersById,
+        PARS,
+        STROKE_INDEX,
+      }),
+    }));
+  }, [games, gameTeams, teamMembersByTeamMap, players, scoresByPlayerMap, playersById]);
+
+  // Temporary Stage 2 verification hook: lets us confirm gameResults
+  // matches the live leaderboard before anything is wired to the UI.
+  // Safe to remove once Stage 4 renders gameResults directly.
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.__gameResults = gameResults;
+      window.__appSettings = appSettings;
+    }
+  }, [gameResults, appSettings]);
 
   const scorecardPlayer = useMemo(() => {
     if (!scorecardPlayerId) return null;
