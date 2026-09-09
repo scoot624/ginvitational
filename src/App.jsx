@@ -265,7 +265,7 @@ export default function App() {
   const [games, setGames] = useState([]);
   const [gameTeams, setGameTeams] = useState([]);
   const [gameTeamMembers, setGameTeamMembers] = useState([]);
-  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false });
+  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false, event_name: "The Ginvitational" });
 
   // Broadcast
   const [broadcastMsgs, setBroadcastMsgs] = useState([]);
@@ -281,6 +281,10 @@ export default function App() {
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
   const [printAllOn, setPrintAllOn] = useState(false);
+
+  // Admin: editable event name
+  const [eventNameDraft, setEventNameDraft] = useState("");
+  const [eventNameMsg, setEventNameMsg] = useState("");
 
   // Admin: add player
   const [newName, setNewName] = useState("");
@@ -425,7 +429,7 @@ export default function App() {
   async function loadAppSettings() {
     const { data, error } = await supabase
       .from("app_settings")
-      .select("id,multi_game_enabled,updated_at")
+      .select("id,multi_game_enabled,event_name,updated_at")
       .eq("id", 1)
       .maybeSingle();
 
@@ -433,7 +437,7 @@ export default function App() {
       console.error("loadAppSettings error:", error);
       return { ok: false, where: "app_settings", error: errToText(error) };
     }
-    setAppSettings(data || { multi_game_enabled: false });
+    setAppSettings(data || { multi_game_enabled: false, event_name: "The Ginvitational" });
     return { ok: true, where: "app_settings" };
   }
 
@@ -502,6 +506,20 @@ export default function App() {
   window.addEventListener("afterprint", handler);
   return () => window.removeEventListener("afterprint", handler);
 }, []);
+
+  // Event name, editable from Admin — shown on Home, the top nav, print
+  // scorecards, and the browser tab title.
+  const eventName = appSettings.event_name || "The Ginvitational";
+
+  useEffect(() => {
+    if (typeof document !== "undefined") document.title = eventName;
+  }, [eventName]);
+
+  // Keep the Admin draft in sync with the saved value (e.g. after a save,
+  // or on initial load), without clobbering what's being typed elsewhere.
+  useEffect(() => {
+    setEventNameDraft(eventName);
+  }, [eventName]);
 
   const leaderboardRows = useMemo(() => {
     // last-write-wins scores by player/hole
@@ -1230,6 +1248,25 @@ useEffect(() => {
     await loadAppSettings();
   }
 
+  async function saveEventName() {
+    if (!adminOn) return alert("Admin only.");
+    const name = eventNameDraft.trim() || "The Ginvitational";
+    setEventNameMsg("Saving…");
+
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ event_name: name, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      setEventNameMsg(`Error saving: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+    setEventNameMsg("Saved ✅");
+  }
+
   function applyPreset(preset) {
     setNewGamePresetKey(preset.key);
     setNewGameHandicapPct(preset.handicapPct);
@@ -1875,7 +1912,7 @@ async function importFromTeeSheet() {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -1902,6 +1939,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   clampInt={clampInt}
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
+                  eventName={eventName}
                 />
               )}
             </div>
@@ -1915,6 +1953,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   clampInt={clampInt}
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
+                  eventName={eventName}
                 />
               )}
             </div>
@@ -1925,7 +1964,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX }) {
+function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
 
   const dotStr = (n) => (n > 0 ? "•".repeat(n) : "");
@@ -1957,7 +1996,7 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
     <div style={ps.cardOuter}>
       {/* Header row: title left + logo right */}
       <div style={ps.headerRow}>
-        <div style={ps.title}>The Ginvitational</div>
+        <div style={ps.title}>{eventName || "The Ginvitational"}</div>
       </div>
 
       {/* Meta block */}
@@ -2221,11 +2260,11 @@ const ps = {
             <div style={{ textAlign: "center" }}>
               <img
                 src="/logo.png"
-                alt="Ginvitational logo"
+                alt={`${eventName} logo`}
                 style={{ width: 210, height: "auto", display: "block", margin: "0 auto" }}
               />
 
-              <div style={styles.homeTitle}>The Ginvitational</div>
+              <div style={styles.homeTitle}>{eventName}</div>
 
               <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
 
@@ -2304,7 +2343,7 @@ const ps = {
           <header style={styles.header}>
             <div style={styles.headerTop}>
               <div style={styles.brand}>
-                <div style={styles.brandTitle}>Ginvitational</div>
+                <div style={styles.brandTitle}>{eventName}</div>
                 <div style={styles.brandSub}>{status}</div>
               </div>
 
@@ -2752,6 +2791,30 @@ const ps = {
         </div>
 
         <div style={styles.adminGrid}>
+          {/* Event Name */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Event Name</div>
+
+            <div style={styles.helpText}>Shown on Home, the top nav, print scorecards, and the browser tab.</div>
+
+            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <input
+                style={{ ...styles.input, flex: 1, minWidth: 200 }}
+                value={eventNameDraft}
+                onChange={(e) => {
+                  setEventNameDraft(e.target.value);
+                  setEventNameMsg("");
+                }}
+                placeholder="The Ginvitational"
+              />
+              <button style={styles.bigBtn} onClick={saveEventName}>
+                Save
+              </button>
+            </div>
+
+            {eventNameMsg ? <div style={styles.helpText}>{eventNameMsg}</div> : null}
+          </div>
+
           {/* Import Tee Sheet */}
           <div style={styles.subCard}>
             <div style={styles.subTitle}>Import Tee Sheet</div>
@@ -3087,6 +3150,7 @@ const ps = {
     clampInt={clampInt}
     lastName={lastName}
     STROKE_INDEX={STROKE_INDEX}
+    eventName={eventName}
   />
 )} 
 </div>
