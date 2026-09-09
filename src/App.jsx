@@ -22,6 +22,9 @@ const STROKE_INDEX = [
   9, 3, 17, 13, 5, 15, 1, 11, 7,
 ];
 
+/** Shared passcode: Admin gate + locked-scoreboard unlock use the same code. */
+const ADMIN_PIN = "112020";
+
 /** Multi-Game: format labels + one-tap presets (Admin "Add Game" flow) */
 const GAME_FORMAT_LABELS = {
   individual_net: "Individual Net",
@@ -199,6 +202,54 @@ function safeDedupeKey(parts) {
     .slice(0, 240);
 }
 
+/** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
+function LockedBoardPanel({ game, onUnlock }) {
+  const [passcode, setPasscode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    const result = await onUnlock(game, passcode);
+    setBusy(false);
+    if (!result.ok) {
+      setErr(result.error);
+      return;
+    }
+    setPasscode("");
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 18, fontWeight: 950 }}>🔒 This scoreboard is locked</div>
+      <div style={styles.helpText}>Enter the passcode to reveal &quot;{game.name}&quot;.</div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 10, maxWidth: 360, flexWrap: "wrap" }}>
+        <input
+          style={{ ...styles.input, flex: 1, minWidth: 160 }}
+          type="password"
+          value={passcode}
+          onChange={(e) => {
+            setPasscode(e.target.value);
+            setErr("");
+          }}
+          placeholder="Passcode"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+        />
+        <button style={styles.bigBtn} onClick={submit} disabled={busy}>
+          Unlock
+        </button>
+      </div>
+
+      {err ? <div style={{ ...styles.helpText, color: THEME.bad }}>{err}</div> : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
@@ -332,7 +383,7 @@ export default function App() {
   async function loadGames() {
     const { data, error } = await supabase
       .from("games")
-      .select("id,name,format,handicap_pct,counting_rule,is_default,active,sort_order,created_at")
+      .select("id,name,format,handicap_pct,counting_rule,is_default,active,locked,sort_order,created_at")
       .order("sort_order", { ascending: true });
 
     if (error) {
@@ -1002,7 +1053,7 @@ useEffect(() => {
 }, [leaderboardRows.length]);
 
   function enterAdmin() {
-    if (adminPin === "112020") {
+    if (adminPin === ADMIN_PIN) {
       setAdminOn(true);
       setAdminPin("");
       setTab("admin");
@@ -1311,7 +1362,6 @@ useEffect(() => {
 
   async function deleteGame(game) {
     if (!adminOn) return alert("Admin only.");
-    if (game.is_default) return alert("The default game can't be removed.");
     if (!confirm(`Delete "${game.name}"? This also removes its team assignments (not players or scores).`)) return;
 
     const { error } = await supabase.from("games").delete().eq("id", game.id);
@@ -1334,6 +1384,36 @@ useEffect(() => {
       return;
     }
     await loadGames();
+  }
+
+  // Admin already passed the PIN gate to get here, so this is a free toggle
+  // (no re-prompt) — the passcode gate lives on the public Leaderboard side.
+  async function toggleGameLocked(game) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase.from("games").update({ locked: !game.locked }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      alert(`Error updating game: ${errToText(error)}`);
+      return;
+    }
+    await loadGames();
+  }
+
+  // Leaderboard-side unlock: anyone who knows the passcode can reveal a
+  // locked board. Unlocking is global (persisted), matching how locking
+  // itself works — meant for a "reveal to everyone" moment, not a private
+  // per-viewer peek.
+  async function unlockGameBoard(game, passcode) {
+    if (passcode !== ADMIN_PIN) {
+      return { ok: false, error: "Incorrect passcode." };
+    }
+    const { error } = await supabase.from("games").update({ locked: false }).eq("id", game.id);
+    if (error) {
+      console.error(error);
+      return { ok: false, error: errToText(error) };
+    }
+    await loadGames();
+    return { ok: true };
   }
 
   async function enterWithCode() {
@@ -2342,6 +2422,7 @@ const ps = {
                       style={isActive ? styles.navBtnActive : styles.navBtn}
                       onClick={() => setSelectedGameId(game.id)}
                     >
+                      {game.locked ? "🔒 " : ""}
                       {game.name}
                     </button>
                   );
@@ -2349,7 +2430,20 @@ const ps = {
               </div>
             )}
 
-            {gameResults.length <= 1 ? (
+            {(() => {
+              const lockCheckEntry =
+                gameResults.length > 0
+                  ? gameResults.find((g) => g.game.id === selectedGameId) ||
+                    gameResults.find((g) => g.game.is_default) ||
+                    gameResults[0]
+                  : null;
+
+              if (lockCheckEntry && lockCheckEntry.game.locked) {
+                return <LockedBoardPanel game={lockCheckEntry.game} onUnlock={unlockGameBoard} />;
+              }
+
+              if (gameResults.length <= 1) {
+                return (
               <>
                 <div style={styles.helpText}>
                   Tap a player name to view their scorecard. Auto-refreshes every minute.
@@ -2410,17 +2504,14 @@ const ps = {
                   </table>
                 </div>
               </>
-            ) : (
-              (() => {
-                const activeEntry =
-                  gameResults.find((g) => g.game.id === selectedGameId) ||
-                  gameResults.find((g) => g.game.is_default) ||
-                  gameResults[0];
-                const { game, rows } = activeEntry;
-                const isTeamFormat = game.format === "better_ball_2" || game.format === "better_ball_4";
-                const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
+                );
+              }
 
-                return (
+              const { game, rows } = lockCheckEntry;
+              const isTeamFormat = game.format === "better_ball_2" || game.format === "better_ball_4";
+              const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
+
+              return (
                   <>
                     <div style={styles.helpText}>
                       {isTeamFormat
@@ -2495,9 +2586,8 @@ const ps = {
                       </table>
                     </div>
                   </>
-                );
-              })()
-            )}
+              );
+            })()}
           </div>
         )}
 
@@ -2771,13 +2861,14 @@ const ps = {
               Enable multiple games for this event
             </label>
 
-            {!appSettings.multi_game_enabled ? (
+            {!appSettings.multi_game_enabled && (
               <div style={styles.helpText}>
-                Off by default. This event runs one game — Individual Net — same as always. Turn this on to add
-                more games (Individual Gross, 2-Man/4-Man Better Ball) alongside it.
+                Off by default. Every game below still works — lock/unlock, activate/deactivate, delete — this
+                just hides the "Add Game" builder until you need more than one game running at once.
               </div>
-            ) : (
-              <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+            )}
+
+            <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
                 <div style={{ display: "grid", gap: 10 }}>
                   {games.map((g) => (
                     <div key={g.id} style={styles.foursomeCard}>
@@ -2799,6 +2890,9 @@ const ps = {
                             {!g.active && (
                               <span style={{ ...styles.strokePill, marginLeft: 6, opacity: 0.6 }}>Inactive</span>
                             )}
+                            {g.locked && (
+                              <span style={{ ...styles.strokePill, marginLeft: 6 }}>🔒 Locked</span>
+                            )}
                           </div>
                           <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                             {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
@@ -2811,27 +2905,30 @@ const ps = {
                           )}
                         </div>
 
-                        {!g.is_default && (
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <button style={styles.smallBtn} onClick={() => toggleGameActive(g)}>
-                              {g.active ? "Deactivate" : "Activate"}
-                            </button>
-                            <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
-                              Delete
-                            </button>
-                          </div>
-                        )}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button style={styles.smallBtn} onClick={() => toggleGameLocked(g)}>
+                            {g.locked ? "Unlock" : "Lock"}
+                          </button>
+                          <button style={styles.smallBtn} onClick={() => toggleGameActive(g)}>
+                            {g.active ? "Deactivate" : "Activate"}
+                          </button>
+                          <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
                   {games.length === 0 && <div style={styles.helpText}>No games yet.</div>}
                 </div>
 
-                <div style={styles.hr} />
+                {appSettings.multi_game_enabled && (
+                  <>
+                    <div style={styles.hr} />
 
-                <div style={styles.sectionLabel}>Add Game</div>
+                    <div style={styles.sectionLabel}>Add Game</div>
 
-                <div style={{ display: "grid", gap: 10 }}>
+                    <div style={{ display: "grid", gap: 10 }}>
                   <label style={styles.label}>
                     Format
                     <select
@@ -2957,11 +3054,12 @@ const ps = {
 
                   <button style={styles.bigBtn} onClick={createGame}>
                     Create Game
-                  </button>
-                  {gamesMsg ? <div style={styles.helpText}>{gamesMsg}</div> : null}
-                </div>
-              </div>
-            )}
+                    </button>
+                    {gamesMsg ? <div style={styles.helpText}>{gamesMsg}</div> : null}
+                    </div>
+                  </>
+                )}
+            </div>
           </div>
         </div>
       </>
