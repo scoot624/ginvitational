@@ -191,32 +191,6 @@ function shuffle(arr) {
   return a;
 }
 
-/** Broadcast helpers */
-function nowKeyMinute() {
- function nowKeyHour() {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}`;
-}
-
- 
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(
-    2,
-    "0"
-  )}`;
-}
-
-function safeDedupeKey(parts) {
-  return parts
-    .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
-    .join("|")
-    .slice(0, 240);
-}
-
 /** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
 function LockedBoardPanel({ game, onUnlock }) {
   const [passcode, setPasscode] = useState("");
@@ -1862,44 +1836,6 @@ useEffect(() => {
   // ---------------------------
   // EXCEL IMPORT
   // ---------------------------
- function excelTimeToDbTime(v) {
-  // Return "HH:MM:SS" or null
-  if (v == null || v === "") return null;
-
-  // If sheet_to_json gives a Date
-  if (v instanceof Date && Number.isFinite(v.getTime())) {
-    const hh = String(v.getHours()).padStart(2, "0");
-    const mm = String(v.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If Excel time fraction
-  const n = Number(v);
-  if (Number.isFinite(n)) {
-    const totalSeconds = Math.round(n * 24 * 60 * 60);
-    const hh = String(Math.floor(totalSeconds / 3600) % 24).padStart(2, "0");
-    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If string like "9:00 AM" or "09:00"
-  const s = String(v).trim();
-  if (!s) return null;
-
-  if (/^\d{1,2}:\d{2}$/.test(s)) {
-    const [h, m] = s.split(":");
-    return `${String(h).padStart(2, "0")}:${m}:00`;
-  }
-
-  const d = new Date(`1970-01-01 ${s}`);
-  if (Number.isFinite(d.getTime())) {
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  return null;
-}
   function normKey(k) {
     return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
@@ -1909,11 +1845,6 @@ useEffect(() => {
     const last = String(row.last_name || "").trim();
     return `${first} ${last}`.trim().replace(/\s+/g, " ");
   }
-
-
-  // ============================
-// EXCEL IMPORT (REPLACEMENT)
-// ============================
 
 function excelTimeToDbTime(v) {
   // Return "HH:MM:SS" or null
