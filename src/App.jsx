@@ -37,6 +37,13 @@ const GAME_FORMAT_TEAM_SIZE = {
   better_ball_4: 4,
 };
 
+const GAME_SCORE_LABELS = {
+  individual_net: "Net vs Par",
+  individual_gross: "Gross vs Par",
+  better_ball_2: "Team vs Par",
+  better_ball_4: "Team vs Par",
+};
+
 // Each preset: { label, handicapPct, scoresCounted, slots }
 const GAME_PRESETS = {
   individual_net: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["net"] }],
@@ -216,6 +223,9 @@ export default function App() {
   // Leaderboard scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
 
+  // Leaderboard: which game tab is showing (only relevant when >1 active game)
+  const [selectedGameId, setSelectedGameId] = useState(null);
+
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
@@ -266,7 +276,7 @@ export default function App() {
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
-      .select("id,name,handicap,charity,created_at")
+      .select("id,name,handicap,charity,team_label,created_at")
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -2310,70 +2320,184 @@ const ps = {
                 onClick={async () => {
                   await loadPlayers();
                   await loadScores();
+                  await loadGames();
+                  await loadGameTeams();
+                  await loadGameTeamMembers();
                 }}
               >
                 Refresh
               </button>
             </div>
 
-            <div style={styles.helpText}>
-              Tap a player name to view their scorecard. Auto-refreshes every minute.
-            </div>
+            {/* Game tabs — only when more than one game is active. A Simple
+                Mode event (the common case) never sees this and renders
+                exactly as before. */}
+            {gameResults.length > 1 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                {gameResults.map(({ game }) => {
+                  const isActive = selectedGameId ? selectedGameId === game.id : game.is_default;
+                  return (
+                    <button
+                      key={game.id}
+                      style={isActive ? styles.navBtnActive : styles.navBtn}
+                      onClick={() => setSelectedGameId(game.id)}
+                    >
+                      {game.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-            <div style={styles.tableWrap}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>#</th>
-                    <th style={styles.th}>Player</th>
-                    <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
-                    <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
-                  </tr>
-                </thead>
+            {gameResults.length <= 1 ? (
+              <>
+                <div style={styles.helpText}>
+                  Tap a player name to view their scorecard. Auto-refreshes every minute.
+                </div>
 
-                <tbody>
-                  {leaderboardRows.map((r, idx) => {
-                    const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
-                    const netStyle =
-                      r.holesPlayed === 0
-                        ? { opacity: 0.6, color: THEME.textMuted }
-                        : { fontWeight: 950, ...netColorStyle(r.netToPar) };
-
-                    return (
-                      <tr key={r.id}>
-                        <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
-
-                        <td style={{ ...styles.td, minWidth: 180 }}>
-                          <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
-                            {r.name}
-                          </button>
-                          <div style={styles.playerMeta}>
-                            HCP {r.handicap}
-                            {r.charity ? ` • ${r.charity}` : ""}
-                          </div>
-                        </td>
-
-                        <td style={{ ...styles.td, textAlign: "center" }}>
-                          <span style={styles.pill}>{r.holesPlayed}</span>
-                        </td>
-
-                        <td style={{ ...styles.td, textAlign: "center" }}>
-                          <span style={netStyle}>{displayNet}</span>
-                        </td>
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>#</th>
+                        <th style={styles.th}>Player</th>
+                        <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
+                        <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
                       </tr>
-                    );
-                  })}
+                    </thead>
 
-                  {leaderboardRows.length === 0 && (
-                    <tr>
-                      <td style={styles.td} colSpan={4}>
-                        No players yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    <tbody>
+                      {leaderboardRows.map((r, idx) => {
+                        const displayNet = r.holesPlayed === 0 ? "—" : formatToPar(r.netToPar);
+                        const netStyle =
+                          r.holesPlayed === 0
+                            ? { opacity: 0.6, color: THEME.textMuted }
+                            : { fontWeight: 950, ...netColorStyle(r.netToPar) };
+
+                        return (
+                          <tr key={r.id}>
+                            <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+
+                            <td style={{ ...styles.td, minWidth: 180 }}>
+                              <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                                {r.name}
+                              </button>
+                              <div style={styles.playerMeta}>
+                                HCP {r.handicap}
+                                {r.charity ? ` • ${r.charity}` : ""}
+                              </div>
+                            </td>
+
+                            <td style={{ ...styles.td, textAlign: "center" }}>
+                              <span style={styles.pill}>{r.holesPlayed}</span>
+                            </td>
+
+                            <td style={{ ...styles.td, textAlign: "center" }}>
+                              <span style={netStyle}>{displayNet}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {leaderboardRows.length === 0 && (
+                        <tr>
+                          <td style={styles.td} colSpan={4}>
+                            No players yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              (() => {
+                const activeEntry =
+                  gameResults.find((g) => g.game.id === selectedGameId) ||
+                  gameResults.find((g) => g.game.is_default) ||
+                  gameResults[0];
+                const { game, rows } = activeEntry;
+                const isTeamFormat = game.format === "better_ball_2" || game.format === "better_ball_4";
+                const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
+
+                return (
+                  <>
+                    <div style={styles.helpText}>
+                      {isTeamFormat
+                        ? `Team leaderboard for ${game.name}.`
+                        : "Tap a player name to view their scorecard."}{" "}
+                      Auto-refreshes every minute.
+                    </div>
+
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>#</th>
+                            <th style={styles.th}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
+                            <th style={{ ...styles.th, textAlign: "center" }}>{scoreLabel}</th>
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {rows.map((r, idx) => {
+                            const displayScore = r.holesPlayed === 0 ? "—" : formatToPar(r.toPar);
+                            const scoreStyle =
+                              r.holesPlayed === 0
+                                ? { opacity: 0.6, color: THEME.textMuted }
+                                : { fontWeight: 950, ...netColorStyle(r.toPar) };
+
+                            return (
+                              <tr key={r.id}>
+                                <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+
+                                <td style={{ ...styles.td, minWidth: 180 }}>
+                                  {isTeamFormat ? (
+                                    <>
+                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
+                                      <div style={styles.playerMeta}>
+                                        {r.members.map((m) => `${m.name} (HCP ${m.handicap})`).join(" • ")}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                                        {r.name}
+                                      </button>
+                                      <div style={styles.playerMeta}>
+                                        HCP {r.handicap}
+                                        {r.charity ? ` • ${r.charity}` : ""}
+                                      </div>
+                                    </>
+                                  )}
+                                </td>
+
+                                <td style={{ ...styles.td, textAlign: "center" }}>
+                                  <span style={styles.pill}>{r.holesPlayed}</span>
+                                </td>
+
+                                <td style={{ ...styles.td, textAlign: "center" }}>
+                                  <span style={scoreStyle}>{displayScore}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {rows.length === 0 && (
+                            <tr>
+                              <td style={styles.td} colSpan={4}>
+                                No {isTeamFormat ? "teams" : "players"} yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                );
+              })()
+            )}
           </div>
         )}
 
