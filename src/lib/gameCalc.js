@@ -22,18 +22,30 @@ function lastName(name) {
   return parts[parts.length - 1];
 }
 
-/** Handicap actually played, after a game's handicap %. */
+/** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */
 function playingHandicap(handicap, handicapPct) {
   return Math.round(clampInt(handicap, 0) * (clampInt(handicapPct, 100) / 100));
 }
 
+/**
+ * Strokes allocated on one hole, by real stroke-index allocation.
+ * Positive playing handicap: strokes are RECEIVED, starting at the #1
+ * handicap hole (hardest) and working up, for as many holes as the
+ * handicap covers (wrapping past 18 for handicaps > 18).
+ * Negative playing handicap (a plus handicap): strokes are GIVEN BACK
+ * instead, using that same hole order — so the return value goes
+ * negative on those holes. `net = gross - strokesOnHoleForGame(...)`
+ * keeps working unchanged either way.
+ */
 function strokesOnHoleForGame(handicap, handicapPct, holeNum, strokeIndex) {
   const h = playingHandicap(handicap, handicapPct);
-  if (h <= 0) return 0;
-  const full = Math.floor(h / 18);
-  const rem = h % 18;
+  if (h === 0) return 0;
+  const magnitude = Math.abs(h);
+  const full = Math.floor(magnitude / 18);
+  const rem = magnitude % 18;
   const si = strokeIndex[holeNum - 1];
-  return full + (rem > 0 && si <= rem ? 1 : 0);
+  const strokes = full + (rem > 0 && si <= rem ? 1 : 0);
+  return h > 0 ? strokes : -strokes;
 }
 
 function netScoreForHoleGame(grossScore, handicap, handicapPct, holeNum, strokeIndex) {
@@ -90,9 +102,10 @@ export function sortRows(rows) {
  * With handicap_pct: 100 this produces numbers identical to the app's
  * original hardcoded Individual Net formula.
  */
-export function computeIndividualGameRows(game, players, scoresByPlayer, { PARS, STROKE_INDEX }) {
+export function computeIndividualGameRows(game, players, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset }) {
   const isGross = game.format === "individual_gross";
   const pct = clampInt(game.handicap_pct, 100);
+  const offset = clampInt(fieldOffset, 0);
 
   const rows = players.map((p) => {
     const scoresByHole = scoresByPlayer.get(p.id) || {};
@@ -102,14 +115,18 @@ export function computeIndividualGameRows(game, players, scoresByPlayer, { PARS,
       .sort((a, b) => a - b);
 
     const holesPlayed = playedHoles.length;
+    // `handicap` is the player's real course handicap (for display).
+    // Calculations use `playingBasisHandicap`, which is the same number
+    // unless Field-Relative mode shifts it by the field's lowest handicap.
     const handicap = clampInt(p.handicap, 0);
+    const playingBasisHandicap = handicap - offset;
     const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
     const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
 
     const totalCounted = isGross
       ? gross
       : playedHoles.reduce(
-          (acc, h) => acc + netScoreForHoleGame(scoresByHole[h], handicap, pct, h, STROKE_INDEX),
+          (acc, h) => acc + netScoreForHoleGame(scoresByHole[h], playingBasisHandicap, pct, h, STROKE_INDEX),
           0
         );
 
@@ -158,8 +175,9 @@ function teamCountedTotalForHole(memberValues, countingRule) {
 }
 
 /** 2-Man / 4-Man Better Ball (or any team format using a counting rule). */
-export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX }) {
+export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset }) {
   const pct = clampInt(game.handicap_pct, 100);
+  const offset = clampInt(fieldOffset, 0);
   const countingRule = game.counting_rule || { scoresCounted: 1, slots: ["net"] };
   // Comparing N summed strokes against a single hole's par overstates
   // "to par" whenever N > 1 (e.g. Combined Score's two summed net scores
@@ -182,7 +200,7 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
           const scoresByHole = scoresByPlayer.get(p.id) || {};
           const gross = scoresByHole[h];
           if (gross == null) return null;
-          const net = netScoreForHoleGame(gross, clampInt(p.handicap, 0), pct, h, STROKE_INDEX);
+          const net = netScoreForHoleGame(gross, clampInt(p.handicap, 0) - offset, pct, h, STROKE_INDEX);
           return { playerId: p.id, gross, net };
         })
         .filter(Boolean);
@@ -235,8 +253,9 @@ function buildHoleSegmentMap(segments) {
  * A hole not covered by any segment is skipped entirely (not counted,
  * par not added) rather than guessed at.
  */
-export function computeCompositeGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX }) {
+export function computeCompositeGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset }) {
   const holeSegment = buildHoleSegmentMap(game.segments);
+  const offset = clampInt(fieldOffset, 0);
 
   const rows = teams.map((team) => {
     const memberIds = teamMembersByTeam.get(team.id) || [];
@@ -264,7 +283,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
         if (grosses.length > 0) {
           const gross = grosses[0]; // entry flow saves the same value to every teammate
           const allowance = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
-          const hcps = members.map((p) => clampInt(p.handicap, 0)).sort((a, b) => a - b);
+          const hcps = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
           const lowHcp = hcps[0] ?? 0;
           const highHcp = hcps[hcps.length - 1] ?? lowHcp;
           const teamHandicap = Math.round(
@@ -278,7 +297,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
           .map((p) => {
             const gross = (scoresByPlayer.get(p.id) || {})[h];
             if (gross == null) return null;
-            const net = netScoreForHoleGame(gross, clampInt(p.handicap, 0), pct, h, STROKE_INDEX);
+            const net = netScoreForHoleGame(gross, clampInt(p.handicap, 0) - offset, pct, h, STROKE_INDEX);
             return { playerId: p.id, gross, net };
           })
           .filter(Boolean);
@@ -367,10 +386,10 @@ export function mergeGameRowsAcrossRounds(perRoundRows) {
 
 /** Dispatches to the right calculation by game.format. */
 export function computeGameRows(game, ctx) {
-  const { players, scoresByPlayer, teams, teamMembersByTeam, playersById, PARS, STROKE_INDEX } = ctx;
+  const { players, scoresByPlayer, teams, teamMembersByTeam, playersById, PARS, STROKE_INDEX, fieldOffset } = ctx;
 
   if (game.format === "individual_net" || game.format === "individual_gross") {
-    return computeIndividualGameRows(game, players, scoresByPlayer, { PARS, STROKE_INDEX });
+    return computeIndividualGameRows(game, players, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset });
   }
 
   if (game.format === "better_ball_2" || game.format === "better_ball_4") {
@@ -378,6 +397,7 @@ export function computeGameRows(game, ctx) {
     return computeTeamGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
       PARS,
       STROKE_INDEX,
+      fieldOffset,
     });
   }
 
@@ -386,6 +406,7 @@ export function computeGameRows(game, ctx) {
     return computeCompositeGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
       PARS,
       STROKE_INDEX,
+      fieldOffset,
     });
   }
 
