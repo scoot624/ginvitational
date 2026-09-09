@@ -88,16 +88,24 @@ function formatToPar(n) {
   return `${n}`;
 }
 
-/** Real handicap allocation by stroke index */
+/**
+ * Real handicap allocation by stroke index.
+ * A positive handicap RECEIVES strokes, starting at the #1 handicap hole
+ * (hardest) and working up. A plus handicap (negative) GIVES strokes back
+ * instead, using that same hole order, so the result goes negative on
+ * those holes — `net = gross - strokesOnHole(...)` keeps working either way.
+ */
 function strokesOnHole(courseHcp, holeNum) {
   const h = clampInt(courseHcp, 0);
-  if (h <= 0) return 0;
+  if (h === 0) return 0;
 
-  const full = Math.floor(h / 18);
-  const rem = h % 18;
+  const magnitude = Math.abs(h);
+  const full = Math.floor(magnitude / 18);
+  const rem = magnitude % 18;
   const si = STROKE_INDEX[holeNum - 1];
+  const strokes = full + (rem > 0 && si <= rem ? 1 : 0);
 
-  return full + (rem > 0 && si <= rem ? 1 : 0);
+  return h > 0 ? strokes : -strokes;
 }
 
 function netScoreForHole(grossScore, courseHcp, holeNum) {
@@ -248,6 +256,7 @@ export default function App() {
     multi_game_enabled: false,
     multi_round_enabled: false,
     event_name: "The Ginvitational",
+    handicap_basis: "course",
   });
 
   // Multi-Round
@@ -429,7 +438,7 @@ export default function App() {
   async function loadAppSettings() {
     const { data, error } = await supabase
       .from("app_settings")
-      .select("id,multi_game_enabled,multi_round_enabled,event_name,updated_at")
+      .select("id,multi_game_enabled,multi_round_enabled,event_name,handicap_basis,updated_at")
       .eq("id", 1)
       .maybeSingle();
 
@@ -438,7 +447,12 @@ export default function App() {
       return { ok: false, where: "app_settings", error: errToText(error) };
     }
     setAppSettings(
-      data || { multi_game_enabled: false, multi_round_enabled: false, event_name: "The Ginvitational" }
+      data || {
+        multi_game_enabled: false,
+        multi_round_enabled: false,
+        event_name: "The Ginvitational",
+        handicap_basis: "course",
+      }
     );
     return { ok: true, where: "app_settings" };
   }
@@ -523,6 +537,18 @@ export default function App() {
     setEventNameDraft(eventName);
   }, [eventName]);
 
+  // Field-Relative handicap basis: every player's handicap minus the lowest
+  // handicap among everyone imported for the event (0 in Course Handicap
+  // mode, the default). A negative fieldOffset (the lowest in the field is
+  // itself a plus handicap) raises everyone else's number; a positive one
+  // lowers it. Used everywhere a handicap feeds into stroke/net-score math —
+  // never for the raw "HCP" badges players see next to their name.
+  const fieldOffset = useMemo(() => {
+    if (appSettings.handicap_basis !== "field_relative") return 0;
+    if (!players.length) return 0;
+    return Math.min(...players.map((p) => clampInt(p.handicap, 0)));
+  }, [players, appSettings.handicap_basis]);
+
   const leaderboardRows = useMemo(() => {
     // Scoped to the active round. In Simple Mode there's only ever one
     // round, so this filter matches every row and changes nothing.
@@ -552,7 +578,12 @@ export default function App() {
         .sort((a, b) => a - b);
 
       const holesPlayed = playedHoles.length;
+      // `handicap` is the player's real course handicap (shown as their
+      // "HCP" badge). `playingHandicap` is what stroke/net-score math
+      // actually uses — the same number, unless Field-Relative mode shifts
+      // it by the field's lowest handicap.
       const handicap = clampInt(p.handicap, 0);
+      const playingHandicap = handicap - fieldOffset;
 
       const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
       const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
@@ -560,7 +591,7 @@ export default function App() {
       // Real net (stroke index allocation)
       const netGross = playedHoles.reduce((acc, h) => {
         const grossHole = scoresByHole[h];
-        const netHole = netScoreForHole(grossHole, handicap, h);
+        const netHole = netScoreForHole(grossHole, playingHandicap, h);
         return acc + netHole;
       }, 0);
 
@@ -571,6 +602,7 @@ export default function App() {
         name: p.name,
         last: lastName(p.name),
         handicap,
+        playingHandicap,
         charity: p.charity,
         holesPlayed,
         netToPar,
@@ -612,7 +644,7 @@ for (let i = 0; i < rows.length; i++) {
 
 return rows;
 
-  }, [players, scores, rounds]);
+  }, [players, scores, rounds, fieldOffset]);
 
   // --- Multi-Game (Stage 2) ---
   // Computed alongside the original leaderboardRows above, which is left
@@ -650,6 +682,7 @@ return rows;
       playersById,
       PARS,
       STROKE_INDEX,
+      fieldOffset,
     };
 
     const roundSelection = selectedRoundId || activeRound?.id || null;
@@ -682,6 +715,7 @@ return rows;
     selectedRoundId,
     activeRound,
     scores,
+    fieldOffset,
   ]);
 
   // Temporary Stage 2 verification hook: lets us confirm gameResults
@@ -815,7 +849,7 @@ function computeNetStats(row) {
 
   for (const h of played) {
     const gross = row.scoresByHole[h];
-    const net = netScoreForHole(gross, row.handicap, h);
+    const net = netScoreForHole(gross, row.playingHandicap, h);
     const par = PARS[h - 1];
 
     if (net <= par - 1) netBirdies += 1;
@@ -832,12 +866,18 @@ function computeNetStats(row) {
   const frontNetToPar =
     front.length === 0
       ? null
-      : front.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
+      : front.reduce(
+          (acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.playingHandicap, h) - PARS[h - 1]),
+          0
+        );
 
   const backNetToPar =
     back.length === 0
       ? null
-      : back.reduce((acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.handicap, h) - PARS[h - 1]), 0);
+      : back.reduce(
+          (acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.playingHandicap, h) - PARS[h - 1]),
+          0
+        );
 
   return { played, netBirdies, bogeyFree, netDoubles, netTriplesPlus, frontNetToPar, backNetToPar };
 }
@@ -1051,7 +1091,7 @@ if (highlightAllowed && newHoles.length > 0) {
     const gross = r.scoresByHole[h];
     if (gross == null) continue;
 
-    const net = netScoreForHole(gross, r.handicap, h);
+    const net = netScoreForHole(gross, r.playingHandicap, h);
     const par = PARS[h - 1];
 
     if (net <= par - 1) {
@@ -1202,6 +1242,26 @@ useEffect(() => {
     const { error } = await supabase
       .from("app_settings")
       .update({ multi_game_enabled: next, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      alert(`Error updating setting: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+  }
+
+  // 'course': everyone's own handicap, as entered.
+  // 'field_relative': everyone's handicap minus the lowest handicap among
+  // every player imported for the event, so the best player in the field
+  // plays to scratch. Affects the Leaderboard, print scorecards, and the
+  // scorecard popup — see `fieldOffset` below.
+  async function setHandicapBasis(next) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ handicap_basis: next, updated_at: new Date().toISOString() })
       .eq("id", 1);
 
     if (error) {
@@ -2092,7 +2152,7 @@ async function importFromTeeSheet() {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct, fieldOffset }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -2121,6 +2181,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
                   handicapPct={handicapPct}
+                  fieldOffset={fieldOffset}
                 />
               )}
             </div>
@@ -2136,6 +2197,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
                   handicapPct={handicapPct}
+                  fieldOffset={fieldOffset}
                 />
               )}
             </div>
@@ -2146,11 +2208,13 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct }) {
+function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct, fieldOffset }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
   const pct = clampInt(handicapPct, 100);
+  const offset = clampInt(fieldOffset, 0);
 
-  const dotStr = (n) => (n > 0 ? "•".repeat(n) : "");
+  // "•" for a received stroke, "+" for a plus-handicap player giving one back.
+  const dotStr = (n) => (n > 0 ? "•".repeat(n) : n < 0 ? "+".repeat(-n) : "");
 
   const holeRows = (start, end) =>
     Array.from({ length: end - start + 1 }, (_, k) => {
@@ -2161,7 +2225,7 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
           <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
 
           {cols.map((p, i) => {
-            const playingHcp = p ? Math.round(clampInt(p.handicap, 0) * (pct / 100)) : 0;
+            const playingHcp = p ? Math.round((clampInt(p.handicap, 0) - offset) * (pct / 100)) : 0;
             const strokes = p ? strokesOnHole(playingHcp, h) : 0;
             return (
               <td key={`${h}-${i}`} style={ps.tdScore}>
@@ -2195,7 +2259,10 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
           <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
         </div>
         <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Handicap:</span> <span>{pct}% allocation</span>
+          <span style={ps.metaLabel}>Handicap:</span>{" "}
+          <span>
+            {pct}% allocation{offset !== 0 ? " • Field-Relative" : ""}
+          </span>
         </div>
       </div>
 
@@ -2347,6 +2414,9 @@ const ps = {
           <div style={styles.modalTitle}>
             {scorecardPlayer.name}{" "}
             <span style={{ opacity: 0.75, fontWeight: 700 }}>(HCP {scorecardPlayer.handicap})</span>
+            {scorecardPlayer.playingHandicap !== scorecardPlayer.handicap && (
+              <span style={{ opacity: 0.75, fontWeight: 700 }}> • plays as {scorecardPlayer.playingHandicap}</span>
+            )}
           </div>
           <div style={styles.modalSub}>
             Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
@@ -2385,9 +2455,9 @@ const ps = {
                 const par = PARS[h - 1];
                 const sc = scorecardPlayer.scoresByHole[h];
                 const si = STROKE_INDEX[h - 1];
-                const strokes = strokesOnHole(scorecardPlayer.handicap, h);
+                const strokes = strokesOnHole(scorecardPlayer.playingHandicap, h);
 
-                const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.handicap, h) : null;
+                const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.playingHandicap, h) : null;
                 const netDiff = netSc != null ? netSc - par : null;
 
                 if (netDiff != null) cum += netDiff;
@@ -2407,6 +2477,7 @@ const ps = {
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                         <span>{h}</span>
                         {strokes > 0 && <span style={styles.strokeDot} />}
+                        {strokes < 0 && <span style={styles.giveBackMark}>+</span>}
                       </span>
                     </td>
                     <td style={styles.td}>{si}</td>
@@ -2435,6 +2506,7 @@ const ps = {
 
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
         Net +/- uses real handicap allocation by Stroke Index.
+        {scorecardPlayer.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
       </div>
     </div>
   </div>
@@ -3067,6 +3139,38 @@ const ps = {
             {eventNameMsg ? <div style={styles.helpText}>{eventNameMsg}</div> : null}
           </div>
 
+          {/* Handicap Basis */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Handicap Basis</div>
+
+            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
+                <input
+                  type="radio"
+                  name="handicapBasis"
+                  checked={(appSettings.handicap_basis || "course") === "course"}
+                  onChange={() => setHandicapBasis("course")}
+                />
+                Course Handicap — everyone plays off their own handicap.
+              </label>
+
+              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
+                <input
+                  type="radio"
+                  name="handicapBasis"
+                  checked={appSettings.handicap_basis === "field_relative"}
+                  onChange={() => setHandicapBasis("field_relative")}
+                />
+                Field-Relative — everyone plays off the lowest handicap among all imported players.
+              </label>
+            </div>
+
+            <div style={styles.helpText}>
+              Applies to the Leaderboard, print scorecards, and the scorecard popup. A plus handicap now correctly
+              gives strokes back (marked with a "+") instead of being treated as scratch.
+            </div>
+          </div>
+
           {/* Import Tee Sheet */}
           <div style={styles.subCard}>
             <div style={styles.subTitle}>Import Tee Sheet</div>
@@ -3636,8 +3740,9 @@ const ps = {
     STROKE_INDEX={STROKE_INDEX}
     eventName={eventName}
     handicapPct={printHandicapPct}
+    fieldOffset={fieldOffset}
   />
-)} 
+)}
 </div>
   );
 }
@@ -3870,6 +3975,16 @@ strokeDot: {
   borderRadius: "50%",
   background: "rgba(203,189,151,0.85)",
   marginLeft: 6,
+},
+// A plus-handicap player gives a stroke back on this hole, instead of
+// receiving one — marked with "+" rather than the filled dot above.
+giveBackMark: {
+  display: "inline-block",
+  marginLeft: 6,
+  fontSize: 11,
+  fontWeight: 950,
+  lineHeight: 1,
+  color: THEME.textMuted,
 },
 
   strokePill: {
