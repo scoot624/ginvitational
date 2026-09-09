@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
-import { buildScoresByPlayer, computeGameRows } from "./lib/gameCalc";
+import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -24,6 +24,9 @@ const STROKE_INDEX = [
 
 /** Shared passcode: Admin gate + locked-scoreboard unlock use the same code. */
 const ADMIN_PIN = "112020";
+
+/** Leaderboard round-selector sentinel: cumulative total across every round. */
+const ROUND_OVERALL = "overall";
 
 /** Multi-Game: format labels + one-tap presets (Admin "Add Game" flow) */
 const GAME_FORMAT_LABELS = {
@@ -277,7 +280,10 @@ export default function App() {
   const [games, setGames] = useState([]);
   const [gameTeams, setGameTeams] = useState([]);
   const [gameTeamMembers, setGameTeamMembers] = useState([]);
-  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false });
+  const [appSettings, setAppSettings] = useState({ multi_game_enabled: false, multi_round_enabled: false });
+
+  // Multi-Round
+  const [rounds, setRounds] = useState([]);
 
   // Broadcast
   const [broadcastMsgs, setBroadcastMsgs] = useState([]);
@@ -288,6 +294,9 @@ export default function App() {
 
   // Leaderboard: which game tab is showing (only relevant when >1 active game)
   const [selectedGameId, setSelectedGameId] = useState(null);
+
+  // Leaderboard: which round is showing (null => defaults to the active round)
+  const [selectedRoundId, setSelectedRoundId] = useState(null);
 
   // Admin gate
   const [adminPin, setAdminPin] = useState("");
@@ -325,6 +334,7 @@ export default function App() {
   const [teeSheetRows, setTeeSheetRows] = useState([]);
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
+  const [importRoundId, setImportRoundId] = useState(null);
 
   // Admin: Multi-Game setup (Stage 3)
   const [newGameFormat, setNewGameFormat] = useState("individual_net");
@@ -339,6 +349,10 @@ export default function App() {
   // Admin: Composite (multi-format) game builder
   const [newGameTeamSize, setNewGameTeamSize] = useState(2);
   const [newGameSegments, setNewGameSegments] = useState([]);
+
+  // Admin: Rounds
+  const [newRoundLabel, setNewRoundLabel] = useState("");
+  const [roundsMsg, setRoundsMsg] = useState("");
 
   async function loadPlayers() {
     const { data, error } = await supabase
@@ -357,7 +371,7 @@ export default function App() {
   async function loadScores() {
     const { data, error } = await supabase
       .from("scores")
-      .select("id,player_id,hole,score,created_at")
+      .select("id,player_id,hole,score,round_id,created_at")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -371,7 +385,7 @@ export default function App() {
   async function loadFoursomes() {
     const { data, error } = await supabase
       .from("foursomes")
-      .select("id,group_name,code,tee_time,starting_hole,created_at")
+      .select("id,group_name,code,tee_time,starting_hole,round_id,created_at")
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -380,6 +394,20 @@ export default function App() {
     }
     setFoursomes(data || []);
     return { ok: true, where: "foursomes" };
+  }
+
+  async function loadRounds() {
+    const { data, error } = await supabase
+      .from("rounds")
+      .select("id,label,sort_order,is_active,created_at")
+      .order("sort_order", { ascending: true });
+
+    if (error) {
+      console.error("loadRounds error:", error);
+      return { ok: false, where: "rounds", error: errToText(error) };
+    }
+    setRounds(data || []);
+    return { ok: true, where: "rounds" };
   }
 
   async function loadFoursomePlayers() {
@@ -441,7 +469,7 @@ export default function App() {
   async function loadAppSettings() {
     const { data, error } = await supabase
       .from("app_settings")
-      .select("id,multi_game_enabled,updated_at")
+      .select("id,multi_game_enabled,multi_round_enabled,updated_at")
       .eq("id", 1)
       .maybeSingle();
 
@@ -449,7 +477,7 @@ export default function App() {
       console.error("loadAppSettings error:", error);
       return { ok: false, where: "app_settings", error: errToText(error) };
     }
-    setAppSettings(data || { multi_game_enabled: false });
+    setAppSettings(data || { multi_game_enabled: false, multi_round_enabled: false });
     return { ok: true, where: "app_settings" };
   }
 
@@ -482,6 +510,7 @@ export default function App() {
     results.push(await loadGames());
     results.push(await loadGameTeams());
     results.push(await loadGameTeamMembers());
+    results.push(await loadRounds());
     results.push(await loadAppSettings());
 
     const fails = results.filter((r) => !r.ok);
@@ -520,9 +549,14 @@ export default function App() {
 }, []);
 
   const leaderboardRows = useMemo(() => {
+    // Scoped to the active round. In Simple Mode there's only ever one
+    // round, so this filter matches every row and changes nothing.
+    const activeRoundId = rounds.find((r) => r.is_active)?.id ?? null;
+
     // last-write-wins scores by player/hole
     const scoresByPlayer = new Map();
     for (const s of scores) {
+      if (activeRoundId != null && s.round_id !== activeRoundId) continue;
       const pid = s.player_id;
       const h = clampInt(s.hole, 0);
       const sc = clampInt(s.score, 0);
@@ -603,13 +637,11 @@ for (let i = 0; i < rows.length; i++) {
 
 return rows;
 
-  }, [players, scores]);
+  }, [players, scores, rounds]);
 
   // --- Multi-Game (Stage 2) ---
   // Computed alongside the original leaderboardRows above, which is left
   // untouched. Nothing renders from this yet (see Stage 4).
-  const scoresByPlayerMap = useMemo(() => buildScoresByPlayer(scores), [scores]);
-
   const playersById = useMemo(() => {
     const m = new Map();
     for (const p of players) m.set(p.id, p);
@@ -625,21 +657,57 @@ return rows;
     return m;
   }, [gameTeamMembers]);
 
+  const activeRound = useMemo(() => rounds.find((r) => r.is_active) || rounds[0] || null, [rounds]);
+
+  // { [roundId]: Map(playerId -> {hole: grossScore}) } — one scoped map per round.
+  const scoresByRoundThenPlayer = useMemo(() => {
+    const map = new Map();
+    for (const r of rounds) map.set(r.id, buildScoresByPlayer(scores, r.id));
+    return map;
+  }, [scores, rounds]);
+
   const gameResults = useMemo(() => {
     const activeGames = games.filter((g) => g.active);
+    const ctxBase = {
+      players,
+      teams: gameTeams,
+      teamMembersByTeam: teamMembersByTeamMap,
+      playersById,
+      PARS,
+      STROKE_INDEX,
+    };
+
+    const roundSelection = selectedRoundId || activeRound?.id || null;
+
+    if (roundSelection === ROUND_OVERALL) {
+      return activeGames.map((game) => {
+        const perRoundRows = rounds.map((r) =>
+          computeGameRows(game, { ...ctxBase, scoresByPlayer: scoresByRoundThenPlayer.get(r.id) || new Map() })
+        );
+        return { game, rows: mergeGameRowsAcrossRounds(perRoundRows) };
+      });
+    }
+
+    const scoresByPlayer = roundSelection
+      ? scoresByRoundThenPlayer.get(roundSelection) || new Map()
+      : buildScoresByPlayer(scores); // rounds not loaded yet — fall back to unscoped
+
     return activeGames.map((game) => ({
       game,
-      rows: computeGameRows(game, {
-        players,
-        scoresByPlayer: scoresByPlayerMap,
-        teams: gameTeams,
-        teamMembersByTeam: teamMembersByTeamMap,
-        playersById,
-        PARS,
-        STROKE_INDEX,
-      }),
+      rows: computeGameRows(game, { ...ctxBase, scoresByPlayer }),
     }));
-  }, [games, gameTeams, teamMembersByTeamMap, players, scoresByPlayerMap, playersById]);
+  }, [
+    games,
+    gameTeams,
+    teamMembersByTeamMap,
+    players,
+    playersById,
+    rounds,
+    scoresByRoundThenPlayer,
+    selectedRoundId,
+    activeRound,
+    scores,
+  ]);
 
   // Temporary Stage 2 verification hook: lets us confirm gameResults
   // matches the live leaderboard before anything is wired to the UI.
@@ -1246,6 +1314,92 @@ useEffect(() => {
     await loadAppSettings();
   }
 
+  async function setMultiRoundEnabled(next) {
+    if (!adminOn) return alert("Admin only.");
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ multi_round_enabled: next, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      alert(`Error updating setting: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+  }
+
+  async function createRound() {
+    if (!adminOn) return alert("Admin only.");
+    const label = newRoundLabel.trim() || `Round ${rounds.length + 1}`;
+
+    const { error } = await supabase.from("rounds").insert({
+      label,
+      sort_order: rounds.length,
+      is_active: false,
+    });
+
+    if (error) {
+      console.error(error);
+      setRoundsMsg(`Error creating round: ${errToText(error)}`);
+      return;
+    }
+    setNewRoundLabel("");
+    setRoundsMsg(`"${label}" created ✅`);
+    await loadRounds();
+  }
+
+  async function setRoundActive(round) {
+    if (!adminOn) return alert("Admin only.");
+
+    const clear = await supabase.from("rounds").update({ is_active: false }).eq("is_active", true);
+    if (clear.error) {
+      console.error(clear.error);
+      setRoundsMsg(`Error updating rounds: ${errToText(clear.error)}`);
+      return;
+    }
+
+    const { error } = await supabase.from("rounds").update({ is_active: true }).eq("id", round.id);
+    if (error) {
+      console.error(error);
+      setRoundsMsg(`Error updating rounds: ${errToText(error)}`);
+      return;
+    }
+    await loadRounds();
+  }
+
+  async function deleteRound(round) {
+    if (!adminOn) return alert("Admin only.");
+    if (rounds.length <= 1) return alert("At least one round must remain.");
+    if (
+      !confirm(
+        `Delete "${round.label}"? This also removes its foursomes and every score entered for it. This can't be undone.`
+      )
+    )
+      return;
+
+    await supabase.from("foursome_players").delete().in(
+      "foursome_id",
+      foursomes.filter((f) => f.round_id === round.id).map((f) => f.id)
+    );
+    await supabase.from("foursomes").delete().eq("round_id", round.id);
+    await supabase.from("scores").delete().eq("round_id", round.id);
+
+    const { error } = await supabase.from("rounds").delete().eq("id", round.id);
+    if (error) {
+      console.error(error);
+      setRoundsMsg(`Error deleting round: ${errToText(error)}`);
+      return;
+    }
+
+    if (round.is_active) {
+      const nextRound = rounds.find((r) => r.id !== round.id);
+      if (nextRound) await setRoundActive(nextRound);
+    }
+
+    await initialLoad();
+  }
+
   function applyPreset(preset) {
     setNewGamePresetKey(preset.key);
     setNewGameHandicapPct(preset.handicapPct);
@@ -1519,7 +1673,7 @@ useEffect(() => {
 
     const { data: f, error } = await supabase
       .from("foursomes")
-      .select("id,group_name,code,tee_time,starting_hole")
+      .select("id,group_name,code,tee_time,starting_hole,round_id")
       .eq("code", code)
       .maybeSingle();
 
@@ -1549,8 +1703,10 @@ useEffect(() => {
     setTab("enter");
   }
 
-  function getExistingScore(pid, holeNum) {
-    const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
+  function getExistingScore(pid, holeNum, roundId) {
+    const row = scores.find(
+      (s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum && (roundId == null || s.round_id === roundId)
+    );
     return row ? clampInt(row.score, 0) : null;
   }
 
@@ -1605,7 +1761,7 @@ useEffect(() => {
     if (!activeFoursome) return;
     const obj = {};
     for (const p of activePlayers) {
-      const existing = getExistingScore(p.id, hole);
+      const existing = getExistingScore(p.id, hole, activeFoursome.round_id);
       obj[p.id] = existing != null ? String(existing) : "";
     }
     setHoleInputs(obj);
@@ -1626,7 +1782,10 @@ useEffect(() => {
 
       const { error } = await supabase
         .from("scores")
-        .upsert({ player_id: p.id, hole, score: sc }, { onConflict: "player_id,hole" });
+        .upsert(
+          { player_id: p.id, hole, score: sc, round_id: activeFoursome.round_id },
+          { onConflict: "player_id,hole,round_id" }
+        );
 
       if (error) {
         console.error(error);
@@ -1785,27 +1944,30 @@ async function importFromTeeSheet() {
   if (!adminOn) return alert("Admin only.");
   if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
 
+  const targetRoundId = appSettings.multi_round_enabled ? importRoundId || activeRound?.id : activeRound?.id;
+  if (!targetRoundId) {
+    setImportMsg("No round to import into yet — reload the page and try again.");
+    return;
+  }
+
   setImportMsg("Importing…");
 
   try {
-    // Optional wipe (you have this checkbox already)
+    // Optional wipe (you have this checkbox already) — scoped to this round only,
+    // so re-importing for one round never touches another round's foursomes.
     if (importReplaceFoursomes) {
-      // Delete assignments first, then foursomes
-      const delFP = await supabase
-        .from("foursome_players")
-        .delete()
-        .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
+      const roundFoursomeIds = foursomes.filter((f) => f.round_id === targetRoundId).map((f) => f.id);
 
-      if (delFP.error) {
-        console.error(delFP.error);
-        setImportMsg(`Error clearing assignments: ${errToText(delFP.error)}`);
-        return;
+      if (roundFoursomeIds.length) {
+        const delFP = await supabase.from("foursome_players").delete().in("foursome_id", roundFoursomeIds);
+        if (delFP.error) {
+          console.error(delFP.error);
+          setImportMsg(`Error clearing assignments: ${errToText(delFP.error)}`);
+          return;
+        }
       }
 
-      const delF = await supabase
-        .from("foursomes")
-        .delete()
-        .neq("id", "00000000-0000-0000-0000-000000000000");
+      const delF = await supabase.from("foursomes").delete().eq("round_id", targetRoundId);
 
       if (delF.error) {
         console.error(delF.error);
@@ -1901,10 +2063,11 @@ async function importFromTeeSheet() {
       }
     }
 
-    // Read existing foursomes (fresh)
+    // Read existing foursomes (fresh), scoped to this round
     const existingF = await supabase
       .from("foursomes")
-      .select("id,group_name,code,tee_time,starting_hole,created_at");
+      .select("id,group_name,code,tee_time,starting_hole,created_at")
+      .eq("round_id", targetRoundId);
 
     if (existingF.error) {
       console.error(existingF.error);
@@ -1935,6 +2098,7 @@ async function importFromTeeSheet() {
             code,
             tee_time: meta.tee_time ?? null,
             starting_hole: meta.starting_hole ?? 1,
+            round_id: targetRoundId,
           })
           .select("id,group_name,code")
           .single();
@@ -1950,10 +2114,11 @@ async function importFromTeeSheet() {
       newFoursomes += 1;
     }
 
-    // Re-read foursomes (fresh IDs)
+    // Re-read foursomes (fresh IDs), scoped to this round
     const foursomesAfter = await supabase
       .from("foursomes")
       .select("id,group_name")
+      .eq("round_id", targetRoundId)
       .order("created_at", { ascending: true });
 
     if (foursomesAfter.error) {
@@ -2547,11 +2712,32 @@ const ps = {
                   await loadGames();
                   await loadGameTeams();
                   await loadGameTeamMembers();
+                  await loadRounds();
                 }}
               >
                 Refresh
               </button>
             </div>
+
+            {/* Round tabs — only when multi-round is on with 2+ rounds. */}
+            {appSettings.multi_round_enabled && rounds.length > 1 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                {[{ id: ROUND_OVERALL, label: "Overall" }, ...rounds.map((r) => ({ id: r.id, label: r.label }))].map(
+                  (opt) => {
+                    const isActive = selectedRoundId ? selectedRoundId === opt.id : opt.id === activeRound?.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        style={isActive ? styles.navBtnActive : styles.navBtn}
+                        onClick={() => setSelectedRoundId(opt.id)}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  }
+                )}
+              </div>
+            )}
 
             {/* Game tabs — only when more than one game is active. A Simple
                 Mode event (the common case) never sees this and renders
@@ -2575,6 +2761,8 @@ const ps = {
             )}
 
             {(() => {
+              const showRoundTabs = appSettings.multi_round_enabled && rounds.length > 1;
+
               const lockCheckEntry =
                 gameResults.length > 0
                   ? gameResults.find((g) => g.game.id === selectedGameId) ||
@@ -2586,7 +2774,11 @@ const ps = {
                 return <LockedBoardPanel game={lockCheckEntry.game} onUnlock={unlockGameBoard} />;
               }
 
-              if (gameResults.length <= 1) {
+              if (!lockCheckEntry) {
+                return <div style={styles.helpText}>No games configured yet.</div>;
+              }
+
+              if (gameResults.length <= 1 && !showRoundTabs) {
                 return (
               <>
                 <div style={styles.helpText}>
@@ -2744,6 +2936,12 @@ const ps = {
                 <div style={styles.cardTitle}>Enter Scores</div>
                 <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                   Foursome: <b>{activeFoursome?.group_name}</b> • Code: <b>{activeFoursome?.code}</b>
+                  {appSettings.multi_round_enabled && activeFoursome && (
+                    <>
+                      {" "}
+                      • Round: <b>{rounds.find((r) => r.id === activeFoursome.round_id)?.label || "—"}</b>
+                    </>
+                  )}
                 </div>
               </div>
               <button
@@ -2911,6 +3109,24 @@ const ps = {
             <div style={styles.subTitle}>Import Tee Sheet</div>
 
             <div style={{ display: "grid", gap: 10 }}>
+              {appSettings.multi_round_enabled && (
+                <label style={styles.label}>
+                  Round
+                  <select
+                    style={styles.input}
+                    value={importRoundId || activeRound?.id || ""}
+                    onChange={(e) => setImportRoundId(e.target.value)}
+                  >
+                    {rounds.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                        {r.is_active ? " (active)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
               <input
                 type="file"
                 accept=".xlsx,.xls"
@@ -2976,6 +3192,11 @@ const ps = {
                     </div>
 
                     <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                      {appSettings.multi_round_enabled && (
+                        <>
+                          Round: <b>{rounds.find((r) => r.id === f.round_id)?.label || "—"}</b> •{" "}
+                        </>
+                      )}
                       Tee: <b>{f.tee_time || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
                       <b>{members.length}</b>
                     </div>
@@ -3350,11 +3571,88 @@ const ps = {
                 )}
             </div>
           </div>
+
+          {/* Multi-Round setup */}
+          <div style={styles.subCard}>
+            <div style={styles.subTitle}>Rounds</div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
+              <input
+                type="checkbox"
+                checked={!!appSettings.multi_round_enabled}
+                onChange={(e) => setMultiRoundEnabled(e.target.checked)}
+              />
+              Enable multiple rounds for this event
+            </label>
+
+            {!appSettings.multi_round_enabled ? (
+              <div style={styles.helpText}>
+                Off by default. This event runs one round, same as always. Turn this on for a 2-day/3-day event —
+                each round gets its own tee sheet import, and the Leaderboard gets an Overall total plus a tab per
+                round.
+              </div>
+            ) : (
+              <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {rounds.map((r) => (
+                    <div key={r.id} style={styles.foursomeCard}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ fontWeight: 950 }}>
+                          {r.label}{" "}
+                          {r.is_active && <span style={{ ...styles.strokePill, marginLeft: 6 }}>Active</span>}
+                        </div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {!r.is_active && (
+                            <button style={styles.smallBtn} onClick={() => setRoundActive(r)}>
+                              Set Active
+                            </button>
+                          )}
+                          <button style={styles.dangerBtn} onClick={() => deleteRound(r)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={styles.hr} />
+
+                <div style={styles.sectionLabel}>Add Round</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <input
+                    style={{ ...styles.input, flex: 1, minWidth: 160 }}
+                    value={newRoundLabel}
+                    onChange={(e) => setNewRoundLabel(e.target.value)}
+                    placeholder={`Round ${rounds.length + 1}`}
+                  />
+                  <button style={styles.bigBtn} onClick={createRound}>
+                    Add Round
+                  </button>
+                </div>
+                {roundsMsg ? <div style={styles.helpText}>{roundsMsg}</div> : null}
+
+                <div style={styles.helpText}>
+                  "Active" is the round Enter Scores codes and new tee-sheet imports default to, and the round The
+                  Broadcast and player scorecards track. The Leaderboard's Overall tab and per-round tabs show every
+                  round regardless of which one is active.
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </>
     )}
   </div>
-)}      
+)}
 
         {/* Router fallback */}
         {tab === "enter" && !activeFoursome && (

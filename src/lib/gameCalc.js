@@ -40,10 +40,15 @@ function netScoreForHoleGame(grossScore, handicap, handicapPct, holeNum, strokeI
   return grossScore - strokesOnHoleForGame(handicap, handicapPct, holeNum, strokeIndex);
 }
 
-/** Build { [playerId]: { [hole]: grossScore } } from the flat `scores` rows. */
-export function buildScoresByPlayer(scores) {
+/**
+ * Build { [playerId]: { [hole]: grossScore } } from the flat `scores` rows.
+ * Pass `roundId` to scope to one round; omit it to use every row as-is
+ * (the single-round/Simple-Mode case, where there's nothing to scope).
+ */
+export function buildScoresByPlayer(scores, roundId) {
   const map = new Map();
   for (const s of scores) {
+    if (roundId != null && s.round_id !== roundId) continue;
     const pid = s.player_id;
     const h = clampInt(s.hole, 0);
     const sc = clampInt(s.score, 0);
@@ -68,7 +73,7 @@ function assignDisplayRanks(rows) {
   return rows;
 }
 
-function sortRows(rows) {
+export function sortRows(rows) {
   rows.sort((a, b) => {
     const aHas = a.holesPlayed > 0;
     const bHas = b.holesPlayed > 0;
@@ -295,6 +300,55 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       gross: totalCounted,
     };
   });
+
+  return sortRows(rows);
+}
+
+/**
+ * Combines one game's already-computed rows from several rounds into a
+ * single "Overall" set of rows (same shape, so it renders exactly like
+ * any other set of rows). A row that didn't play in a given round simply
+ * contributes nothing from that round — its 9999 "no score" sentinel is
+ * never summed in, only real holesPlayed/toPar/gross are.
+ */
+export function mergeGameRowsAcrossRounds(perRoundRows) {
+  const byId = new Map();
+
+  for (const rows of perRoundRows) {
+    for (const r of rows) {
+      if (!byId.has(r.id)) {
+        byId.set(r.id, {
+          id: r.id,
+          name: r.name,
+          last: r.last,
+          handicap: r.handicap,
+          charity: r.charity,
+          members: r.members,
+          holesPlayed: 0,
+          toParSum: 0,
+          gross: 0,
+        });
+      }
+      if (r.holesPlayed <= 0) continue;
+      const acc = byId.get(r.id);
+      acc.holesPlayed += r.holesPlayed;
+      acc.toParSum += r.toPar;
+      acc.gross += r.gross;
+    }
+  }
+
+  const rows = Array.from(byId.values()).map((acc) => ({
+    id: acc.id,
+    name: acc.name,
+    last: acc.last,
+    handicap: acc.handicap,
+    charity: acc.charity,
+    members: acc.members,
+    holesPlayed: acc.holesPlayed,
+    toPar: acc.holesPlayed === 0 ? 9999 : acc.toParSum,
+    scoresByHole: {}, // hole numbers repeat per round, so a merged per-hole view isn't meaningful here
+    gross: acc.gross,
+  }));
 
   return sortRows(rows);
 }
