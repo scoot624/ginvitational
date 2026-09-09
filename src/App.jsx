@@ -279,7 +279,10 @@ export default function App() {
   const [adminPin, setAdminPin] = useState("");
   const [adminOn, setAdminOn] = useState(false);
   const [printAllOn, setPrintAllOn] = useState(false);
-  const [printHandicapPct, setPrintHandicapPct] = useState(100);
+  // Which active game's handicap rule the printed scorecards should match.
+  // Defaults to the same game the Leaderboard defaults to (the first active
+  // game, by sort order) — see `printGame` below.
+  const [printGameId, setPrintGameId] = useState(null);
 
   // Admin: editable event name
   const [eventNameDraft, setEventNameDraft] = useState("");
@@ -665,6 +668,13 @@ return rows;
   }, [gameTeamMembers]);
 
   const activeRound = useMemo(() => rounds.find((r) => r.is_active) || rounds[0] || null, [rounds]);
+
+  // The game printed scorecards match. Defaults to the same game the
+  // Leaderboard defaults to (the first active game, by sort order).
+  const printGame = useMemo(() => {
+    const activeGames = games.filter((g) => g.active);
+    return activeGames.find((g) => g.id === printGameId) || activeGames[0] || null;
+  }, [games, printGameId]);
 
   // { [roundId]: Map(playerId -> {hole: grossScore}) } — one scoped map per round.
   const scoresByRoundThenPlayer = useMemo(() => {
@@ -2152,7 +2162,7 @@ async function importFromTeeSheet() {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct, fieldOffset }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -2180,7 +2190,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
-                  handicapPct={handicapPct}
+                  game={game}
                   fieldOffset={fieldOffset}
                 />
               )}
@@ -2196,7 +2206,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
-                  handicapPct={handicapPct}
+                  game={game}
                   fieldOffset={fieldOffset}
                 />
               )}
@@ -2208,10 +2218,26 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, handicapPct, fieldOffset }) {
+function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
-  const pct = clampInt(handicapPct, 100);
   const offset = clampInt(fieldOffset, 0);
+
+  // The handicap % that applies to hole `h` for the selected game. A simple
+  // format (Individual Net/Gross, Better Ball) uses one flat % for every
+  // hole. A composite (Multi-Format Round) game applies a different % per
+  // hole segment. A "shared" segment (Scramble) uses one blended TEAM
+  // handicap rather than each player's own — the print card doesn't have
+  // team-pairing data to know who's on a team with whom, so those holes are
+  // intentionally left without dots rather than guessing wrong.
+  function pctForHole(h) {
+    if (!game || game.format !== "composite") return { pct: clampInt(game?.handicap_pct, 100), shared: false };
+    const seg = (game.segments || []).find((s) => (s.holes || []).includes(h));
+    if (!seg) return { pct: 100, shared: false };
+    if (seg.formatType === "shared") return { pct: null, shared: true };
+    return { pct: clampInt(seg.handicapPct, 100), shared: false };
+  }
+
+  const hasSharedHoles = game?.format === "composite" && (game.segments || []).some((s) => s.formatType === "shared");
 
   // "•" for a received stroke, "+" for a plus-handicap player giving one back.
   const dotStr = (n) => (n > 0 ? "•".repeat(n) : n < 0 ? "+".repeat(-n) : "");
@@ -2219,14 +2245,15 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
   const holeRows = (start, end) =>
     Array.from({ length: end - start + 1 }, (_, k) => {
       const h = start + k;
+      const { pct, shared } = pctForHole(h);
       return (
         <tr key={h}>
           <td style={ps.tdHole}>{h}</td>
           <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
 
           {cols.map((p, i) => {
-            const playingHcp = p ? Math.round((clampInt(p.handicap, 0) - offset) * (pct / 100)) : 0;
-            const strokes = p ? strokesOnHole(playingHcp, h) : 0;
+            const playingHcp = p && !shared ? Math.round((clampInt(p.handicap, 0) - offset) * (pct / 100)) : 0;
+            const strokes = p && !shared ? strokesOnHole(playingHcp, h) : 0;
             return (
               <td key={`${h}-${i}`} style={ps.tdScore}>
                 {/* score writing area */}
@@ -2261,9 +2288,16 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
         <div style={ps.metaLine}>
           <span style={ps.metaLabel}>Handicap:</span>{" "}
           <span>
-            {pct}% allocation{offset !== 0 ? " • Field-Relative" : ""}
+            {game ? game.name : "Course Handicap"}
+            {game && game.format !== "composite" ? ` • ${clampInt(game.handicap_pct, 100)}% allocation` : ""}
+            {offset !== 0 ? " • Field-Relative" : ""}
           </span>
         </div>
+        {hasSharedHoles && (
+          <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
+            Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
+          </div>
+        )}
       </div>
 
       {/* Main table */}
@@ -3085,16 +3119,20 @@ const ps = {
               padding: "0 6px",
             }}
           >
-            Print stroke dots at
-            <input
-              style={{ ...styles.input, width: 64, padding: "6px 8px" }}
-              type="number"
-              min={0}
-              max={150}
-              value={printHandicapPct}
-              onChange={(e) => setPrintHandicapPct(e.target.value)}
-            />
-            % handicap
+            Print stroke dots for
+            <select
+              style={{ ...styles.input, minWidth: 170, padding: "6px 8px" }}
+              value={printGame?.id || ""}
+              onChange={(e) => setPrintGameId(e.target.value)}
+            >
+              {games
+                .filter((g) => g.active)
+                .map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+            </select>
           </label>
 
           <button
@@ -3739,7 +3777,7 @@ const ps = {
     lastName={lastName}
     STROKE_INDEX={STROKE_INDEX}
     eventName={eventName}
-    handicapPct={printHandicapPct}
+    game={printGame}
     fieldOffset={fieldOffset}
   />
 )}
