@@ -928,6 +928,23 @@ async function run20MinRecap() {
   await loadBroadcast();
 }
 
+/** Runs once per hour (deduped per hour bucket) */
+async function runHourlyRecap() {
+  const ranked = leaderboardRows
+    .filter((r) => r.holesPlayed > 0)
+    .map((r, idx) => ({ ...r, rank: idx + 1 }));
+
+  if (ranked.length === 0) return;
+
+  const kHour = nowKeyHour();
+  const dedupeParts = ["recap_hourly", kHour];
+
+  const text = buildRecapText(ranked, dedupeParts);
+
+  await insertBroadcast("recap", text, dedupeParts, null);
+  await loadBroadcast();
+}
+
 async function runBroadcastTick() {
   if (!leaderboardRows || leaderboardRows.length === 0) return;
 
@@ -1192,7 +1209,7 @@ useEffect(() => {
       await loadScores();
       await runBroadcastTick();
       await runHourlyRecap();
-    }, 20 * 60 * 1000);
+    }, 60 * 60 * 1000);
   }, msToNextHour);
 
   return () => {
