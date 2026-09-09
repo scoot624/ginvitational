@@ -31,6 +31,7 @@ const GAME_FORMAT_LABELS = {
   individual_gross: "Individual Gross",
   better_ball_2: "2-Man Better Ball",
   better_ball_4: "4-Man Better Ball",
+  composite: "Multi-Format Round",
 };
 
 const GAME_FORMAT_TEAM_SIZE = {
@@ -38,6 +39,7 @@ const GAME_FORMAT_TEAM_SIZE = {
   individual_gross: 1,
   better_ball_2: 2,
   better_ball_4: 4,
+  // composite's team size is admin-chosen (newGameTeamSize), not fixed by format
 };
 
 const GAME_SCORE_LABELS = {
@@ -45,6 +47,16 @@ const GAME_SCORE_LABELS = {
   individual_gross: "Gross vs Par",
   better_ball_2: "Team vs Par",
   better_ball_4: "Team vs Par",
+  composite: "Team vs Par",
+};
+
+// A composite game's per-segment format choices. "individual" segments
+// (Best Ball, Combined Score) reuse the counting-rule engine; "shared"
+// segments (Scramble) use one team score + a blended team handicap.
+const SEGMENT_FORMAT_OPTIONS = {
+  best_ball: { label: "Best Ball", kind: "individual", scoresCounted: 1, slots: ["net"] },
+  combined: { label: "Combined Score", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
+  scramble: { label: "Scramble", kind: "shared" },
 };
 
 // Each preset: { label, handicapPct, scoresCounted, slots }
@@ -324,6 +336,10 @@ export default function App() {
   const [newGameSlots, setNewGameSlots] = useState(["net"]);
   const [gamesMsg, setGamesMsg] = useState("");
 
+  // Admin: Composite (multi-format) game builder
+  const [newGameTeamSize, setNewGameTeamSize] = useState(2);
+  const [newGameSegments, setNewGameSegments] = useState([]);
+
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
@@ -383,7 +399,7 @@ export default function App() {
   async function loadGames() {
     const { data, error } = await supabase
       .from("games")
-      .select("id,name,format,handicap_pct,counting_rule,is_default,active,locked,sort_order,created_at")
+      .select("id,name,format,handicap_pct,counting_rule,segments,is_default,active,locked,sort_order,created_at")
       .order("sort_order", { ascending: true });
 
     if (error) {
@@ -1241,8 +1257,48 @@ useEffect(() => {
   function selectNewGameFormat(format) {
     setNewGameFormat(format);
     setNewGameName(GAME_FORMAT_LABELS[format]);
+
+    if (format === "composite") {
+      setNewGameTeamSize(2);
+      setNewGameSegments([
+        { fromHole: 1, toHole: 6, formatKey: "best_ball", handicapPct: 100, lowPct: 35, highPct: 15 },
+        { fromHole: 7, toHole: 12, formatKey: "scramble", handicapPct: 100, lowPct: 35, highPct: 15 },
+        { fromHole: 13, toHole: 18, formatKey: "combined", handicapPct: 100, lowPct: 35, highPct: 15 },
+      ]);
+      return;
+    }
+
     const presets = GAME_PRESETS[format] || [];
     if (presets[0]) applyPreset(presets[0]);
+  }
+
+  // --- Composite (multi-format) segment builder ---
+  function addSegment() {
+    setNewGameSegments((prev) => [
+      ...prev,
+      { fromHole: 1, toHole: 1, formatKey: "best_ball", handicapPct: 100, lowPct: 35, highPct: 15 },
+    ]);
+  }
+
+  function updateSegment(index, patch) {
+    setNewGameSegments((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
+  }
+
+  function removeSegment(index) {
+    setNewGameSegments((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** Holes 1-18 not covered by any segment yet, for a non-blocking hint. */
+  function segmentCoverageGaps(segments) {
+    const covered = new Set();
+    for (const s of segments) {
+      const from = Math.min(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
+      const to = Math.max(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
+      for (let h = from; h <= to; h++) covered.add(h);
+    }
+    const gaps = [];
+    for (let h = 1; h <= 18; h++) if (!covered.has(h)) gaps.push(h);
+    return gaps;
   }
 
   // Advanced counting-rule builder: keep `slots` in sync with `scoresCounted`
@@ -1283,17 +1339,52 @@ useEffect(() => {
   async function createGame() {
     if (!adminOn) return alert("Admin only.");
     const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
+    const isComposite = newGameFormat === "composite";
     const handicap_pct = clampInt(newGameHandicapPct, 100);
-    const scoresCounted = clampInt(newGameScoresCounted, 1);
-    const slots = newGameSlots.slice(0, scoresCounted);
 
-    if (slots.length !== scoresCounted) {
-      alert("Counting rule looks incomplete. Check the advanced settings.");
-      return;
+    let counting_rule = null;
+    let segments = null;
+
+    if (isComposite) {
+      if (newGameSegments.length === 0) {
+        alert("Add at least one segment first.");
+        return;
+      }
+      segments = newGameSegments.map((s) => {
+        const opt = SEGMENT_FORMAT_OPTIONS[s.formatKey] || SEGMENT_FORMAT_OPTIONS.best_ball;
+        const from = Math.min(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
+        const to = Math.max(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
+        const holes = [];
+        for (let h = from; h <= to; h++) holes.push(h);
+
+        if (opt.kind === "shared") {
+          return {
+            holes,
+            formatType: "shared",
+            label: opt.label,
+            handicapAllowance: { lowPct: clampInt(s.lowPct, 0), highPct: clampInt(s.highPct, 0) },
+          };
+        }
+        return {
+          holes,
+          formatType: "individual",
+          label: opt.label,
+          countingRule: { scoresCounted: opt.scoresCounted, slots: opt.slots },
+          handicapPct: clampInt(s.handicapPct, 100),
+        };
+      });
+    } else {
+      const scoresCounted = clampInt(newGameScoresCounted, 1);
+      const slots = newGameSlots.slice(0, scoresCounted);
+      if (slots.length !== scoresCounted) {
+        alert("Counting rule looks incomplete. Check the advanced settings.");
+        return;
+      }
+      counting_rule = { scoresCounted, slots };
     }
 
-    const isTeamFormat = newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4";
-    const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+    const isTeamFormat = newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4" || isComposite;
+    const teamSize = isComposite ? clampInt(newGameTeamSize, 2) : GAME_FORMAT_TEAM_SIZE[newGameFormat];
     const teamGroups = isTeamFormat ? teamPreviewGroups(teamSize).filter((g) => g.members.length > 0) : [];
 
     if (isTeamFormat && teamGroups.length === 0) {
@@ -1305,17 +1396,23 @@ useEffect(() => {
 
     setGamesMsg("Creating game…");
 
+    const insertPayload = {
+      name,
+      format: newGameFormat,
+      handicap_pct,
+      is_default: false,
+      active: true,
+      sort_order: games.length,
+    };
+    if (isComposite) {
+      insertPayload.segments = segments; // counting_rule keeps its DB default; unused for composite games
+    } else {
+      insertPayload.counting_rule = counting_rule;
+    }
+
     const { data: gameRow, error: gameError } = await supabase
       .from("games")
-      .insert({
-        name,
-        format: newGameFormat,
-        handicap_pct,
-        counting_rule: { scoresCounted, slots },
-        is_default: false,
-        active: true,
-        sort_order: games.length,
-      })
+      .insert(insertPayload)
       .select("id")
       .single();
 
@@ -1455,6 +1552,53 @@ useEffect(() => {
   function getExistingScore(pid, holeNum) {
     const row = scores.find((s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum);
     return row ? clampInt(row.score, 0) : null;
+  }
+
+  /**
+   * Groups the active foursome's players for one hole's entry row(s).
+   * Normally one group per player. But if this hole falls in a "shared"
+   * segment (Scramble) of an active composite game, and 2+ of these
+   * players are teammates in that game, they collapse into one shared
+   * group — same score gets saved under every member (saveHoleThenNavigate
+   * doesn't need to change: it already just writes whatever's in
+   * holeInputs[p.id] for each player).
+   */
+  function holeEntryGroups(holeNum, playersInGroup) {
+    for (const g of games) {
+      if (!g.active || g.format !== "composite") continue;
+      const seg = (g.segments || []).find((s) => (s.holes || []).includes(holeNum));
+      if (!seg || seg.formatType !== "shared") continue;
+
+      const teamIdsForGame = new Set(gameTeams.filter((t) => t.game_id === g.id).map((t) => t.id));
+      const membersByTeam = new Map();
+      for (const row of gameTeamMembers) {
+        if (!teamIdsForGame.has(row.team_id)) continue;
+        if (!membersByTeam.has(row.team_id)) membersByTeam.set(row.team_id, []);
+        membersByTeam.get(row.team_id).push(row.player_id);
+      }
+
+      const idsInGroup = new Set(playersInGroup.map((p) => p.id));
+      const consumed = new Set();
+      const groups = [];
+
+      for (const memberIds of membersByTeam.values()) {
+        const presentIds = memberIds.filter((pid) => idsInGroup.has(pid));
+        if (presentIds.length >= 2) {
+          const groupPlayers = presentIds.map((pid) => playersInGroup.find((p) => p.id === pid)).filter(Boolean);
+          groups.push({ key: presentIds.join("-"), players: groupPlayers, shared: true });
+          for (const pid of presentIds) consumed.add(pid);
+        }
+      }
+
+      for (const p of playersInGroup) {
+        if (!consumed.has(p.id)) groups.push({ key: p.id, players: [p], shared: false });
+      }
+
+      groups.sort((a, b) => playersInGroup.indexOf(a.players[0]) - playersInGroup.indexOf(b.players[0]));
+      return groups;
+    }
+
+    return playersInGroup.map((p) => ({ key: p.id, players: [p], shared: false }));
   }
 
   useEffect(() => {
@@ -2508,7 +2652,8 @@ const ps = {
               }
 
               const { game, rows } = lockCheckEntry;
-              const isTeamFormat = game.format === "better_ball_2" || game.format === "better_ball_4";
+              const isTeamFormat =
+                game.format === "better_ball_2" || game.format === "better_ball_4" || game.format === "composite";
               const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
 
               return (
@@ -2621,14 +2766,16 @@ const ps = {
               </div>
 
               <div style={{ display: "grid", gap: 10 }}>
-                {activePlayers.map((p) => (
-                  <div key={p.id} style={styles.scoreRow}>
+                {holeEntryGroups(hole, activePlayers).map((grp) => (
+                  <div key={grp.key} style={styles.scoreRow}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {p.name}
+                        {grp.players.map((p) => p.name).join(" / ")}
                       </div>
                       <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                        HCP {clampInt(p.handicap, 0)}
+                        {grp.shared
+                          ? "Scramble — team score"
+                          : `HCP ${clampInt(grp.players[0].handicap, 0)}`}
                       </div>
                     </div>
 
@@ -2636,8 +2783,15 @@ const ps = {
                       style={{ ...styles.input, width: 92, textAlign: "center", fontSize: 16, fontWeight: 900 }}
                       inputMode="numeric"
                       placeholder="—"
-                      value={holeInputs[p.id] ?? ""}
-                      onChange={(e) => setHoleInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                      value={holeInputs[grp.players[0].id] ?? ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setHoleInputs((prev) => {
+                          const next = { ...prev };
+                          for (const p of grp.players) next[p.id] = val;
+                          return next;
+                        });
+                      }}
                     />
                   </div>
                 ))}
@@ -2894,11 +3048,20 @@ const ps = {
                               <span style={{ ...styles.strokePill, marginLeft: 6 }}>🔒 Locked</span>
                             )}
                           </div>
-                          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
-                            {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
-                            {g.counting_rule?.scoresCounted} ({(g.counting_rule?.slots || []).join(" + ")})
-                          </div>
-                          {(g.format === "better_ball_2" || g.format === "better_ball_4") && (
+                          {g.format === "composite" ? (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              {GAME_FORMAT_LABELS[g.format]} —{" "}
+                              {(g.segments || [])
+                                .map((s) => `Holes ${Math.min(...s.holes)}-${Math.max(...s.holes)}: ${s.label}`)
+                                .join(" • ")}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
+                              {g.counting_rule?.scoresCounted} ({(g.counting_rule?.slots || []).join(" + ")})
+                            </div>
+                          )}
+                          {(g.format === "better_ball_2" || g.format === "better_ball_4" || g.format === "composite") && (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               Teams: {gameTeams.filter((t) => t.game_id === g.id).length}
                             </div>
@@ -2970,31 +3133,35 @@ const ps = {
                     </div>
                   )}
 
-                  <label style={styles.label}>
-                    Handicap %
-                    <input
-                      style={styles.input}
-                      type="number"
-                      min={0}
-                      max={150}
-                      value={newGameHandicapPct}
-                      onChange={(e) => setNewGameHandicapPct(e.target.value)}
-                      disabled={newGameFormat === "individual_gross"}
-                    />
-                  </label>
+                  {newGameFormat !== "composite" && (
+                    <label style={styles.label}>
+                      Handicap %
+                      <input
+                        style={styles.input}
+                        type="number"
+                        min={0}
+                        max={150}
+                        value={newGameHandicapPct}
+                        onChange={(e) => setNewGameHandicapPct(e.target.value)}
+                        disabled={newGameFormat === "individual_gross"}
+                      />
+                    </label>
+                  )}
 
-                  <label
-                    style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={newGameAdvancedOn}
-                      onChange={(e) => setNewGameAdvancedOn(e.target.checked)}
-                    />
-                    Advanced: build a custom counting rule
-                  </label>
+                  {newGameFormat !== "composite" && (
+                    <label
+                      style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={newGameAdvancedOn}
+                        onChange={(e) => setNewGameAdvancedOn(e.target.checked)}
+                      />
+                      Advanced: build a custom counting rule
+                    </label>
+                  )}
 
-                  {newGameAdvancedOn && (
+                  {newGameFormat !== "composite" && newGameAdvancedOn && (
                     <div
                       style={{
                         display: "grid",
@@ -3029,11 +3196,133 @@ const ps = {
                     </div>
                   )}
 
-                  {(newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4") && (
+                  {newGameFormat === "composite" && (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <label style={styles.label}>
+                        Team size
+                        <select
+                          style={styles.input}
+                          value={newGameTeamSize}
+                          onChange={(e) => setNewGameTeamSize(clampInt(e.target.value, 2))}
+                        >
+                          <option value={2}>2-Man</option>
+                          <option value={4}>4-Man</option>
+                        </select>
+                      </label>
+
+                      <div style={styles.label}>Segments (holes 1–18)</div>
+
+                      {newGameSegments.map((seg, i) => {
+                        const opt = SEGMENT_FORMAT_OPTIONS[seg.formatKey] || SEGMENT_FORMAT_OPTIONS.best_ball;
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              display: "grid",
+                              gap: 8,
+                              padding: 12,
+                              borderRadius: 12,
+                              border: `1px solid ${THEME.border}`,
+                            }}
+                          >
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 12, color: THEME.textMuted }}>Holes</span>
+                              <input
+                                style={{ ...styles.input, width: 64 }}
+                                type="number"
+                                min={1}
+                                max={18}
+                                value={seg.fromHole}
+                                onChange={(e) => updateSegment(i, { fromHole: e.target.value })}
+                              />
+                              <span style={{ fontSize: 12, color: THEME.textMuted }}>to</span>
+                              <input
+                                style={{ ...styles.input, width: 64 }}
+                                type="number"
+                                min={1}
+                                max={18}
+                                value={seg.toHole}
+                                onChange={(e) => updateSegment(i, { toHole: e.target.value })}
+                              />
+                              <select
+                                style={{ ...styles.input, flex: 1, minWidth: 140 }}
+                                value={seg.formatKey}
+                                onChange={(e) => updateSegment(i, { formatKey: e.target.value })}
+                              >
+                                {Object.entries(SEGMENT_FORMAT_OPTIONS).map(([key, o]) => (
+                                  <option key={key} value={key}>
+                                    {o.label}
+                                  </option>
+                                ))}
+                              </select>
+                              {newGameSegments.length > 1 && (
+                                <button style={styles.dangerBtn} onClick={() => removeSegment(i)}>
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+
+                            {opt.kind === "shared" ? (
+                              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 12, color: THEME.textMuted }}>% of lower handicap</span>
+                                <input
+                                  style={{ ...styles.input, width: 72 }}
+                                  type="number"
+                                  min={0}
+                                  max={150}
+                                  value={seg.lowPct}
+                                  onChange={(e) => updateSegment(i, { lowPct: e.target.value })}
+                                />
+                                <span style={{ fontSize: 12, color: THEME.textMuted }}>% of higher handicap</span>
+                                <input
+                                  style={{ ...styles.input, width: 72 }}
+                                  type="number"
+                                  min={0}
+                                  max={150}
+                                  value={seg.highPct}
+                                  onChange={(e) => updateSegment(i, { highPct: e.target.value })}
+                                />
+                              </div>
+                            ) : (
+                              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                                <span style={{ fontSize: 12, color: THEME.textMuted }}>Handicap %</span>
+                                <input
+                                  style={{ ...styles.input, width: 72 }}
+                                  type="number"
+                                  min={0}
+                                  max={150}
+                                  value={seg.handicapPct}
+                                  onChange={(e) => updateSegment(i, { handicapPct: e.target.value })}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      <button style={styles.smallBtn} onClick={addSegment}>
+                        + Add Segment
+                      </button>
+
+                      <div style={styles.helpText}>
+                        {(() => {
+                          const gaps = segmentCoverageGaps(newGameSegments);
+                          return gaps.length === 0
+                            ? "All 18 holes are covered ✓"
+                            : `Not yet covered: hole${gaps.length > 1 ? "s" : ""} ${gaps.join(", ")}`;
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {(newGameFormat === "better_ball_2" ||
+                    newGameFormat === "better_ball_4" ||
+                    newGameFormat === "composite") && (
                     <div style={styles.helpText}>
                       Teams come from your tee sheet's "team" column.
                       {(() => {
-                        const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+                        const teamSize =
+                          newGameFormat === "composite" ? clampInt(newGameTeamSize, 2) : GAME_FORMAT_TEAM_SIZE[newGameFormat];
                         const groups = teamPreviewGroups(teamSize);
                         if (groups.length === 0) {
                           return ' No team groupings found yet — add a "team" column to the tee sheet and re-import.';

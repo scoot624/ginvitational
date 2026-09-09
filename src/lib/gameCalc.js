@@ -203,6 +203,102 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
   return sortRows(rows);
 }
 
+/** { holeNumber: segment } from a composite game's `segments` array. */
+function buildHoleSegmentMap(segments) {
+  const map = new Map();
+  for (const seg of segments || []) {
+    for (const h of seg.holes || []) map.set(clampInt(h, 0), seg);
+  }
+  return map;
+}
+
+/**
+ * Composite (multi-format) round: 18 holes split into segments, each with
+ * its own format and handicap rule.
+ *
+ * - "individual" segments (Best Ball, Combined Score, ...) reuse the same
+ *   per-player counting-rule engine as computeTeamGameRows.
+ * - "shared" segments (Scramble) use ONE team score per hole (Enter Scores
+ *   saves the same value under every teammate, so any member's entry is
+ *   the team's score) plus a blended team handicap: handicapAllowance.lowPct
+ *   applied to the lower-handicap partner, .highPct to the higher.
+ * A hole not covered by any segment is skipped entirely (not counted,
+ * par not added) rather than guessed at.
+ */
+export function computeCompositeGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX }) {
+  const holeSegment = buildHoleSegmentMap(game.segments);
+
+  const rows = teams.map((team) => {
+    const memberIds = teamMembersByTeam.get(team.id) || [];
+    const members = memberIds.map((pid) => playersById.get(pid)).filter(Boolean);
+
+    let holesPlayed = 0;
+    let totalCounted = 0;
+    let parPlayed = 0;
+    const countedByHole = {};
+
+    for (let h = 1; h <= 18; h++) {
+      const seg = holeSegment.get(h);
+      if (!seg) continue;
+
+      let counted = null;
+
+      if (seg.formatType === "shared") {
+        const grosses = members
+          .map((p) => (scoresByPlayer.get(p.id) || {})[h])
+          .filter((v) => v != null);
+
+        if (grosses.length > 0) {
+          const gross = grosses[0]; // entry flow saves the same value to every teammate
+          const allowance = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
+          const hcps = members.map((p) => clampInt(p.handicap, 0)).sort((a, b) => a - b);
+          const lowHcp = hcps[0] ?? 0;
+          const highHcp = hcps[hcps.length - 1] ?? lowHcp;
+          const teamHandicap = Math.round(
+            lowHcp * (clampInt(allowance.lowPct, 0) / 100) + highHcp * (clampInt(allowance.highPct, 0) / 100)
+          );
+          counted = netScoreForHoleGame(gross, teamHandicap, 100, h, STROKE_INDEX);
+        }
+      } else {
+        const pct = clampInt(seg.handicapPct, 100);
+        const memberValues = members
+          .map((p) => {
+            const gross = (scoresByPlayer.get(p.id) || {})[h];
+            if (gross == null) return null;
+            const net = netScoreForHoleGame(gross, clampInt(p.handicap, 0), pct, h, STROKE_INDEX);
+            return { playerId: p.id, gross, net };
+          })
+          .filter(Boolean);
+
+        const rule = seg.countingRule || { scoresCounted: 1, slots: ["net"] };
+        counted = teamCountedTotalForHole(memberValues, rule);
+      }
+
+      if (counted == null) continue;
+
+      countedByHole[h] = counted;
+      holesPlayed += 1;
+      totalCounted += counted;
+      parPlayed += PARS[h - 1];
+    }
+
+    const toPar = holesPlayed === 0 ? 9999 : totalCounted - parPlayed;
+
+    return {
+      id: team.id,
+      name: team.name,
+      last: team.name,
+      members: members.map((p) => ({ id: p.id, name: p.name, handicap: clampInt(p.handicap, 0) })),
+      holesPlayed,
+      toPar,
+      scoresByHole: countedByHole,
+      gross: totalCounted,
+    };
+  });
+
+  return sortRows(rows);
+}
+
 /** Dispatches to the right calculation by game.format. */
 export function computeGameRows(game, ctx) {
   const { players, scoresByPlayer, teams, teamMembersByTeam, playersById, PARS, STROKE_INDEX } = ctx;
@@ -214,6 +310,14 @@ export function computeGameRows(game, ctx) {
   if (game.format === "better_ball_2" || game.format === "better_ball_4") {
     const gameTeams = teams.filter((t) => t.game_id === game.id);
     return computeTeamGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
+      PARS,
+      STROKE_INDEX,
+    });
+  }
+
+  if (game.format === "composite") {
+    const gameTeams = teams.filter((t) => t.game_id === game.id);
+    return computeCompositeGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
       PARS,
       STROKE_INDEX,
     });
