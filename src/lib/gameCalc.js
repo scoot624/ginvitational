@@ -231,6 +231,66 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
   return sortRows(rows);
 }
 
+/**
+ * 2-Man / 4-Man Scramble: one shared team score per hole (Enter Scores
+ * saves the same value under every teammate, so any member's entry is the
+ * team's score for that hole) plus a blended team handicap — each
+ * teammate's own handicap ranked from lowest to highest and weighted by
+ * game.handicap_allowance (a plain array of percentages in that same
+ * lowest-to-highest order, e.g. [35, 15] for two players or
+ * [40, 30, 20, 10] for four).
+ */
+export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset }) {
+  const offset = clampInt(fieldOffset, 0);
+  const pcts = Array.isArray(game.handicap_allowance) ? game.handicap_allowance.map((p) => clampInt(p, 0)) : [];
+
+  const rows = teams.map((team) => {
+    const memberIds = teamMembersByTeam.get(team.id) || [];
+    const members = memberIds.map((pid) => playersById.get(pid)).filter(Boolean);
+
+    // Ranked lowest handicap to highest, so pcts[0] always lands on the
+    // team's own lowest-handicap player regardless of team order.
+    const rankedHcps = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
+    const teamHandicap = Math.round(rankedHcps.reduce((acc, hcp, i) => acc + hcp * ((pcts[i] || 0) / 100), 0));
+
+    let holesPlayed = 0;
+    let totalCounted = 0;
+    let parPlayed = 0;
+    const countedByHole = {};
+
+    for (let h = 1; h <= 18; h++) {
+      const grosses = members
+        .map((p) => (scoresByPlayer.get(p.id) || {})[h])
+        .filter((v) => v != null);
+      if (grosses.length === 0) continue;
+
+      const gross = grosses[0]; // entry flow saves the same value to every teammate
+      const counted = netScoreForHoleGame(gross, teamHandicap, 100, h, STROKE_INDEX);
+
+      countedByHole[h] = counted;
+      holesPlayed += 1;
+      totalCounted += counted;
+      parPlayed += PARS[h - 1];
+    }
+
+    const toPar = holesPlayed === 0 ? 9999 : totalCounted - parPlayed;
+
+    return {
+      id: team.id,
+      name: team.name,
+      last: team.name,
+      members: members.map((p) => ({ id: p.id, name: p.name, handicap: clampInt(p.handicap, 0) })),
+      teamHandicap,
+      holesPlayed,
+      toPar,
+      scoresByHole: countedByHole,
+      gross: totalCounted,
+    };
+  });
+
+  return sortRows(rows);
+}
+
 /** { holeNumber: segment } from a composite game's `segments` array. */
 function buildHoleSegmentMap(segments) {
   const map = new Map();
@@ -395,6 +455,15 @@ export function computeGameRows(game, ctx) {
   if (game.format === "better_ball_2" || game.format === "better_ball_4") {
     const gameTeams = teams.filter((t) => t.game_id === game.id);
     return computeTeamGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
+      PARS,
+      STROKE_INDEX,
+      fieldOffset,
+    });
+  }
+
+  if (game.format === "scramble_2" || game.format === "scramble_4") {
+    const gameTeams = teams.filter((t) => t.game_id === game.id);
+    return computeScrambleGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
       PARS,
       STROKE_INDEX,
       fieldOffset,

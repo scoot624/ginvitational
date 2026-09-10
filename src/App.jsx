@@ -33,6 +33,8 @@ const GAME_FORMAT_LABELS = {
   individual_gross: "Individual Gross",
   better_ball_2: "2-Man Better Ball",
   better_ball_4: "4-Man Better Ball",
+  scramble_2: "2-Man Scramble",
+  scramble_4: "4-Man Scramble",
   composite: "Multi-Format Round",
 };
 
@@ -41,6 +43,8 @@ const GAME_FORMAT_TEAM_SIZE = {
   individual_gross: 1,
   better_ball_2: 2,
   better_ball_4: 4,
+  scramble_2: 2,
+  scramble_4: 4,
   // composite's team size is admin-chosen (newGameTeamSize), not fixed by format
 };
 
@@ -49,7 +53,17 @@ const GAME_SCORE_LABELS = {
   individual_gross: "Gross vs Par",
   better_ball_2: "Team vs Par",
   better_ball_4: "Team vs Par",
+  scramble_2: "Team vs Par",
+  scramble_4: "Team vs Par",
   composite: "Team vs Par",
+};
+
+// Default ranked handicap-% allowance (lowest handicap on the team through
+// highest) offered when an admin picks a Scramble format — editable before
+// creating the game.
+const SCRAMBLE_DEFAULT_PCTS = {
+  scramble_2: [35, 15],
+  scramble_4: [40, 30, 20, 10],
 };
 
 // A composite game's per-segment format choices. "individual" segments
@@ -325,6 +339,10 @@ export default function App() {
   const [newGameTeamSize, setNewGameTeamSize] = useState(2);
   const [newGameSegments, setNewGameSegments] = useState([]);
 
+  // Admin: Scramble ranked handicap-% builder (lowest handicap on the
+  // team through highest — length matches the format's team size)
+  const [newGameScramblePcts, setNewGameScramblePcts] = useState(SCRAMBLE_DEFAULT_PCTS.scramble_2);
+
   // Admin: Rounds
   const [newRoundLabel, setNewRoundLabel] = useState("");
   const [roundsMsg, setRoundsMsg] = useState("");
@@ -402,7 +420,9 @@ export default function App() {
   async function loadGames() {
     const { data, error } = await supabase
       .from("games")
-      .select("id,name,format,handicap_pct,counting_rule,segments,is_default,active,locked,sort_order,created_at")
+      .select(
+        "id,name,format,handicap_pct,counting_rule,segments,handicap_allowance,is_default,active,locked,sort_order,created_at"
+      )
       .order("sort_order", { ascending: true });
 
     if (error) {
@@ -1412,8 +1432,22 @@ useEffect(() => {
       return;
     }
 
+    if (format === "scramble_2" || format === "scramble_4") {
+      setNewGameScramblePcts(SCRAMBLE_DEFAULT_PCTS[format]);
+      return;
+    }
+
     const presets = GAME_PRESETS[format] || [];
     if (presets[0]) applyPreset(presets[0]);
+  }
+
+  // --- Scramble ranked handicap-% builder ---
+  function setScramblePct(index, value) {
+    setNewGameScramblePcts((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
   }
 
   // --- Composite (multi-format) segment builder ---
@@ -1484,12 +1518,22 @@ useEffect(() => {
     if (!adminOn) return alert("Admin only.");
     const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
     const isComposite = newGameFormat === "composite";
+    const isScramble = newGameFormat === "scramble_2" || newGameFormat === "scramble_4";
     const handicap_pct = clampInt(newGameHandicapPct, 100);
 
     let counting_rule = null;
     let segments = null;
+    let handicap_allowance = null;
 
-    if (isComposite) {
+    if (isScramble) {
+      const teamSize = GAME_FORMAT_TEAM_SIZE[newGameFormat];
+      const pcts = newGameScramblePcts.slice(0, teamSize).map((p) => clampInt(p, 0));
+      if (pcts.length !== teamSize) {
+        alert("Handicap % looks incomplete. Check every rank has a value.");
+        return;
+      }
+      handicap_allowance = pcts;
+    } else if (isComposite) {
       if (newGameSegments.length === 0) {
         alert("Add at least one segment first.");
         return;
@@ -1527,7 +1571,8 @@ useEffect(() => {
       counting_rule = { scoresCounted, slots };
     }
 
-    const isTeamFormat = newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4" || isComposite;
+    const isTeamFormat =
+      newGameFormat === "better_ball_2" || newGameFormat === "better_ball_4" || isScramble || isComposite;
     const teamSize = isComposite ? clampInt(newGameTeamSize, 2) : GAME_FORMAT_TEAM_SIZE[newGameFormat];
     const teamGroups = isTeamFormat ? teamPreviewGroups(teamSize).filter((g) => g.members.length > 0) : [];
 
@@ -1548,7 +1593,9 @@ useEffect(() => {
       active: true,
       sort_order: games.length,
     };
-    if (isComposite) {
+    if (isScramble) {
+      insertPayload.handicap_allowance = handicap_allowance; // counting_rule keeps its DB default; unused for Scramble
+    } else if (isComposite) {
       insertPayload.segments = segments; // counting_rule keeps its DB default; unused for composite games
     } else {
       insertPayload.counting_rule = counting_rule;
@@ -1702,18 +1749,27 @@ useEffect(() => {
 
   /**
    * Groups the active foursome's players for one hole's entry row(s).
-   * Normally one group per player. But if this hole falls in a "shared"
-   * segment (Scramble) of an active composite game, and 2+ of these
-   * players are teammates in that game, they collapse into one shared
-   * group — same score gets saved under every member (saveHoleThenNavigate
-   * doesn't need to change: it already just writes whatever's in
-   * holeInputs[p.id] for each player).
+   * Normally one group per player. But if this hole is shared scoring —
+   * every hole in a standalone Scramble game, or a "shared" segment
+   * (Scramble) of an active composite game — and 2+ of these players are
+   * teammates in that game, they collapse into one shared group — same
+   * score gets saved under every member (saveHoleThenNavigate doesn't need
+   * to change: it already just writes whatever's in holeInputs[p.id] for
+   * each player).
    */
   function holeEntryGroups(holeNum, playersInGroup) {
     for (const g of games) {
-      if (!g.active || g.format !== "composite") continue;
-      const seg = (g.segments || []).find((s) => (s.holes || []).includes(holeNum));
-      if (!seg || seg.formatType !== "shared") continue;
+      if (!g.active) continue;
+
+      const isScramble = g.format === "scramble_2" || g.format === "scramble_4";
+      let isSharedHole = isScramble; // every hole is shared in a standalone Scramble game
+
+      if (!isScramble) {
+        if (g.format !== "composite") continue;
+        const seg = (g.segments || []).find((s) => (s.holes || []).includes(holeNum));
+        isSharedHole = !!seg && seg.formatType === "shared";
+      }
+      if (!isSharedHole) continue;
 
       const teamIdsForGame = new Set(gameTeams.filter((t) => t.game_id === g.id).map((t) => t.id));
       const membersByTeam = new Map();
@@ -2233,6 +2289,7 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
   // team-pairing data to know who's on a team with whom, so those holes are
   // intentionally left without dots rather than guessing wrong.
   function pctForHole(h) {
+    if (game && (game.format === "scramble_2" || game.format === "scramble_4")) return { pct: null, shared: true };
     if (!game || game.format !== "composite") return { pct: clampInt(game?.handicap_pct, 100), shared: false };
     const seg = (game.segments || []).find((s) => (s.holes || []).includes(h));
     if (!seg) return { pct: 100, shared: false };
@@ -2240,7 +2297,10 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
     return { pct: clampInt(seg.handicapPct, 100), shared: false };
   }
 
-  const hasSharedHoles = game?.format === "composite" && (game.segments || []).some((s) => s.formatType === "shared");
+  const hasSharedHoles =
+    game?.format === "scramble_2" ||
+    game?.format === "scramble_4" ||
+    (game?.format === "composite" && (game.segments || []).some((s) => s.formatType === "shared"));
 
   // "•" for a received stroke, "+" for a plus-handicap player giving one back.
   const dotStr = (n) => (n > 0 ? "•".repeat(n) : n < 0 ? "+".repeat(-n) : "");
@@ -2292,7 +2352,9 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
           <span style={ps.metaLabel}>Handicap:</span>{" "}
           <span>
             {game ? game.name : "Course Handicap"}
-            {game && game.format !== "composite" ? ` • ${clampInt(game.handicap_pct, 100)}% allocation` : ""}
+            {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
+              ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
+              : ""}
             {offset !== 0 ? " • Field-Relative" : ""}
           </span>
         </div>
@@ -2896,7 +2958,11 @@ const ps = {
 
               const { game, rows } = lockCheckEntry;
               const isTeamFormat =
-                game.format === "better_ball_2" || game.format === "better_ball_4" || game.format === "composite";
+                game.format === "better_ball_2" ||
+                game.format === "better_ball_4" ||
+                game.format === "scramble_2" ||
+                game.format === "scramble_4" ||
+                game.format === "composite";
               const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
 
               return (
@@ -3434,13 +3500,22 @@ const ps = {
                                 .map((s) => `Holes ${Math.min(...s.holes)}-${Math.max(...s.holes)}: ${s.label}`)
                                 .join(" • ")}
                             </div>
+                          ) : g.format === "scramble_2" || g.format === "scramble_4" ? (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              {GAME_FORMAT_LABELS[g.format]} • HCP {(g.handicap_allowance || []).join("/")}%
+                              (low → high)
+                            </div>
                           ) : (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               {GAME_FORMAT_LABELS[g.format]} • HCP {g.handicap_pct}% • Counts{" "}
                               {g.counting_rule?.scoresCounted} ({(g.counting_rule?.slots || []).join(" + ")})
                             </div>
                           )}
-                          {(g.format === "better_ball_2" || g.format === "better_ball_4" || g.format === "composite") && (
+                          {(g.format === "better_ball_2" ||
+                            g.format === "better_ball_4" ||
+                            g.format === "scramble_2" ||
+                            g.format === "scramble_4" ||
+                            g.format === "composite") && (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               Teams: {gameTeams.filter((t) => t.game_id === g.id).length}
                             </div>
@@ -3509,22 +3584,54 @@ const ps = {
                     </div>
                   )}
 
-                  {newGameFormat !== "composite" && (
-                    <label style={styles.label}>
-                      Handicap %
-                      <input
-                        style={styles.input}
-                        type="number"
-                        min={0}
-                        max={150}
-                        value={newGameHandicapPct}
-                        onChange={(e) => setNewGameHandicapPct(e.target.value)}
-                        disabled={newGameFormat === "individual_gross"}
-                      />
-                    </label>
+                  {newGameFormat === "scramble_2" || newGameFormat === "scramble_4" ? (
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div style={styles.label}>
+                        Handicap % per player, lowest handicap to highest — a blend, not a per-player deduction
+                      </div>
+                      {newGameScramblePcts.map((pct, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 12, color: THEME.textMuted, minWidth: 120 }}>
+                            {i === 0
+                              ? "Lowest handicap"
+                              : i === newGameScramblePcts.length - 1
+                              ? "Highest handicap"
+                              : `${i + 1}${i === 1 ? "nd" : "rd"} lowest`}
+                          </span>
+                          <input
+                            style={{ ...styles.input, width: 80 }}
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={pct}
+                            onChange={(e) => setScramblePct(i, e.target.value)}
+                          />
+                          <span style={{ fontSize: 12, color: THEME.textMuted }}>%</span>
+                        </div>
+                      ))}
+                      <div style={styles.helpText}>
+                        Team handicap = each teammate's own handicap × their %, added together. The two defaults
+                        above are a common starting point — change them to whatever your event uses.
+                      </div>
+                    </div>
+                  ) : (
+                    newGameFormat !== "composite" && (
+                      <label style={styles.label}>
+                        Handicap %
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min={0}
+                          max={150}
+                          value={newGameHandicapPct}
+                          onChange={(e) => setNewGameHandicapPct(e.target.value)}
+                          disabled={newGameFormat === "individual_gross"}
+                        />
+                      </label>
+                    )
                   )}
 
-                  {newGameFormat !== "composite" && (
+                  {newGameFormat !== "composite" && newGameFormat !== "scramble_2" && newGameFormat !== "scramble_4" && (
                     <label
                       style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
                     >
@@ -3537,7 +3644,10 @@ const ps = {
                     </label>
                   )}
 
-                  {newGameFormat !== "composite" && newGameAdvancedOn && (
+                  {newGameFormat !== "composite" &&
+                    newGameFormat !== "scramble_2" &&
+                    newGameFormat !== "scramble_4" &&
+                    newGameAdvancedOn && (
                     <div
                       style={{
                         display: "grid",
@@ -3693,6 +3803,8 @@ const ps = {
 
                   {(newGameFormat === "better_ball_2" ||
                     newGameFormat === "better_ball_4" ||
+                    newGameFormat === "scramble_2" ||
+                    newGameFormat === "scramble_4" ||
                     newGameFormat === "composite") && (
                     <div style={styles.helpText}>
                       Teams come from your tee sheet's "team" column.
