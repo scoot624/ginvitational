@@ -1929,7 +1929,7 @@ async function parseTeeSheetFile(file) {
     });
 
     // Require these columns (matches your sheet)
-    const required = ["foursome", "tee_time", "starting_hole", "first_name", "last_name"];
+    const required = ["team", "tee_time", "starting_hole", "first_name", "last_name"];
     const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
     if (missing.length) {
       setTeeSheetRows([]);
@@ -1992,8 +1992,9 @@ async function importFromTeeSheet() {
         name,
         handicap: clampInt(r.handicap, 0),
         charity: String(r.charity || "").trim() || null,
-        // Optional column. If present, players sharing the same value here
-        // become the pool a 2-man/4-man game's teams are built from.
+        // The "team" column drives both the physical foursome (below) and
+        // this — players sharing a value here are also the pool a
+        // 2-man/4-man game's teams are built from. One column, one group.
         team_label: String(r.team || "").trim() || null,
       });
     }
@@ -2080,13 +2081,16 @@ async function importFromTeeSheet() {
     );
 
     // ---------- Build group list + metadata from sheet ----------
+    // "team" is the one column that drives grouping — the foursome (this
+    // round's physical playing group + tee time/code) and the game-team
+    // pool (players.team_label, above) are the same value on purpose.
     const groupsNeeded = Array.from(
-      new Set(teeSheetRows.map((r) => String(r.foursome || "").trim()).filter(Boolean))
+      new Set(teeSheetRows.map((r) => String(r.team || "").trim()).filter(Boolean))
     );
 
     const groupMeta = new Map();
     for (const r of teeSheetRows) {
-      const group_name = String(r.foursome || "").trim();
+      const group_name = String(r.team || "").trim();
       if (!group_name) continue;
 
       if (!groupMeta.has(group_name.toLowerCase())) {
@@ -2185,7 +2189,7 @@ async function importFromTeeSheet() {
 
     const assignmentInserts = [];
     for (const r of teeSheetRows) {
-      const group = String(r.foursome || "").trim();
+      const group = String(r.team || "").trim();
       const name = fullNameFromRow(r);
       if (!group || !name) continue;
 
@@ -3350,25 +3354,23 @@ const ps = {
                     <table style={styles.table}>
                       <thead>
                         <tr>
-                          <th style={styles.th}>Foursome</th>
+                          <th style={styles.th}>Team</th>
                           <th style={styles.th}>Tee</th>
                           <th style={styles.th}>Hole</th>
                           <th style={styles.th}>Name</th>
                           <th style={styles.th}>HCP</th>
                           <th style={styles.th}>Charity</th>
-                          <th style={styles.th}>Team</th>
                         </tr>
                       </thead>
                       <tbody>
                         {teeSheetRows.slice(0, 5).map((r, i) => (
                           <tr key={i}>
-                            <td style={styles.td}>{r.foursome || "—"}</td>
+                            <td style={styles.td}>{r.team || "—"}</td>
                             <td style={styles.td}>{r.tee_time || "—"}</td>
                             <td style={styles.td}>{r.starting_hole || "—"}</td>
                             <td style={styles.td}>{fullNameFromRow(r) || "—"}</td>
                             <td style={styles.td}>{r.handicap ?? "—"}</td>
                             <td style={styles.td}>{r.charity || "—"}</td>
-                            <td style={styles.td}>{r.team || "—"}</td>
                           </tr>
                         ))}
                       </tbody>
