@@ -2567,7 +2567,22 @@ const ps = {
                 }}
               />
 
-              <div style={styles.homeTitle}>{eventName}</div>
+              <div style={styles.homeTitle}>
+                {(() => {
+                  const words = eventName.trim().split(/\s+/).filter(Boolean);
+                  const first = words[0] || eventName;
+                  const rest = words.slice(1).join(" ");
+                  return rest ? (
+                    <>
+                      {first}
+                      <br />
+                      {rest}
+                    </>
+                  ) : (
+                    first
+                  );
+                })()}
+              </div>
 
               <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
 
