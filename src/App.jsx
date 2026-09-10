@@ -304,6 +304,9 @@ export default function App() {
   // Admin: Excel import (tee sheet)
   const [teeSheetFile, setTeeSheetFile] = useState(null);
   const [teeSheetRows, setTeeSheetRows] = useState([]);
+  // Foursomes sanity-check list is collapsed by default — after an import,
+  // most visits to Admin don't need every player re-scanned every time.
+  const [foursomesExpanded, setFoursomesExpanded] = useState(false);
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
   const [importRoundId, setImportRoundId] = useState(null);
@@ -3130,10 +3133,6 @@ const ps = {
             Reload Data
           </button>
 
-          <button style={styles.dangerBtn} onClick={clearFoursomes}>
-            Clear Foursomes
-          </button>
-
           <label
             style={{
               display: "flex",
@@ -3280,19 +3279,35 @@ const ps = {
 
               {teeSheetRows.length > 0 && (
                 <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                  Preview (first 5 rows):
-                  <pre
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      marginTop: 8,
-                      background: "rgba(7,31,19,0.22)",
-                      padding: 10,
-                      borderRadius: 12,
-                      border: `1px solid ${THEME.border}`,
-                    }}
-                  >
-                    {JSON.stringify(teeSheetRows.slice(0, 5), null, 2)}
-                  </pre>
+                  Preview (first 5 of {teeSheetRows.length} rows):
+                  <div style={{ marginTop: 8, overflowX: "auto" }}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Foursome</th>
+                          <th style={styles.th}>Tee</th>
+                          <th style={styles.th}>Hole</th>
+                          <th style={styles.th}>Name</th>
+                          <th style={styles.th}>HCP</th>
+                          <th style={styles.th}>Charity</th>
+                          <th style={styles.th}>Team</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {teeSheetRows.slice(0, 5).map((r, i) => (
+                          <tr key={i}>
+                            <td style={styles.td}>{r.foursome || "—"}</td>
+                            <td style={styles.td}>{r.tee_time || "—"}</td>
+                            <td style={styles.td}>{r.starting_hole || "—"}</td>
+                            <td style={styles.td}>{fullNameFromRow(r) || "—"}</td>
+                            <td style={styles.td}>{r.handicap ?? "—"}</td>
+                            <td style={styles.td}>{r.charity || "—"}</td>
+                            <td style={styles.td}>{r.team || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
@@ -3312,45 +3327,61 @@ const ps = {
               Sanity check after import: codes, tee time, starting hole, and members.
             </div>
 
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              {foursomes.map((f) => {
-                const members = playersInFoursome(f.id);
-                return (
-                  <div key={f.id} style={styles.foursomeCard}>
-                    <div style={{ fontWeight: 950 }}>
-                      {f.group_name} <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
-                    </div>
+            {foursomes.length === 0 ? (
+              <div style={{ marginTop: 12 }}>
+                <div style={styles.helpText}>No foursomes yet.</div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 12 }}>
+                <button style={styles.smallBtn} onClick={() => setFoursomesExpanded((v) => !v)}>
+                  {foursomesExpanded
+                    ? "Hide"
+                    : `Review ${foursomePlayers.length} players across ${foursomes.length} groups`}
+                </button>
 
-                    <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
-                      {appSettings.multi_round_enabled && (
-                        <>
-                          Round: <b>{rounds.find((r) => r.id === f.round_id)?.label || "—"}</b> •{" "}
-                        </>
-                      )}
-                      Tee: <b>{f.tee_time || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
-                      <b>{members.length}</b>
-                    </div>
+                {foursomesExpanded && (
+                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                    {foursomes.map((f) => {
+                      const members = playersInFoursome(f.id);
+                      return (
+                        <div key={f.id} style={styles.foursomeCard}>
+                          <div style={{ fontWeight: 950 }}>
+                            {f.group_name} <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
+                          </div>
 
-                    <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                      {members.map((p) => (
-                        <div key={p.id} style={styles.playerRow}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                            <div style={styles.playerMeta}>
-                              HCP {clampInt(p.handicap, 0)}
-                              {p.charity ? ` • ${p.charity}` : ""}
-                            </div>
+                          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                            {appSettings.multi_round_enabled && (
+                              <>
+                                Round: <b>{rounds.find((r) => r.id === f.round_id)?.label || "—"}</b> •{" "}
+                              </>
+                            )}
+                            Tee: <b>{f.tee_time || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
+                            <b>{members.length}</b>
+                          </div>
+
+                          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                            {members.map((p) => (
+                              <div key={p.id} style={styles.playerRow}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {p.name}
+                                  </div>
+                                  <div style={styles.playerMeta}>
+                                    HCP {clampInt(p.handicap, 0)}
+                                    {p.charity ? ` • ${p.charity}` : ""}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            {members.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
                           </div>
                         </div>
-                      ))}
-                      {members.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
-                    </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-
-              {foursomes.length === 0 && <div style={styles.helpText}>No foursomes yet.</div>}
-            </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Multi-Game setup */}
@@ -3422,9 +3453,6 @@ const ps = {
                           </button>
                           <button style={styles.smallBtn} onClick={() => toggleGameActive(g)}>
                             {g.active ? "Deactivate" : "Activate"}
-                          </button>
-                          <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
-                            Delete
                           </button>
                         </div>
                       </div>
@@ -3742,9 +3770,6 @@ const ps = {
                               Set Active
                             </button>
                           )}
-                          <button style={styles.dangerBtn} onClick={() => deleteRound(r)}>
-                            Delete
-                          </button>
                         </div>
                       </div>
                     </div>
@@ -3774,6 +3799,77 @@ const ps = {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Danger Zone — every irreversible action lives here, away from routine buttons */}
+          <div style={styles.subCardDanger}>
+            <div style={styles.subTitle}>⚠️ Danger Zone</div>
+            <div style={styles.helpText}>Every action below is irreversible. Each one asks you to confirm first.</div>
+
+            <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+              <div>
+                <div style={styles.sectionLabel}>Clear Foursomes</div>
+                <div style={styles.helpText}>
+                  Removes every foursome and player assignment for this event. Does not delete players or scores.
+                </div>
+                <button style={{ ...styles.dangerBtn, marginTop: 10 }} onClick={clearFoursomes}>
+                  Clear Foursomes
+                </button>
+              </div>
+
+              {games.length > 0 && (
+                <div>
+                  <div style={styles.hr} />
+                  <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Delete a Game</div>
+                  <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                    {games.map((g) => (
+                      <div
+                        key={g.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span style={{ fontSize: 13 }}>{g.name}</span>
+                        <button style={styles.dangerBtn} onClick={() => deleteGame(g)}>
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {appSettings.multi_round_enabled && rounds.length > 0 && (
+                <div>
+                  <div style={styles.hr} />
+                  <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Delete a Round</div>
+                  <div style={styles.helpText}>Also removes that round's foursomes and every score entered for it.</div>
+                  <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                    {rounds.map((r) => (
+                      <div
+                        key={r.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span style={{ fontSize: 13 }}>{r.label}</span>
+                        <button style={styles.dangerBtn} onClick={() => deleteRound(r)}>
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </>
@@ -4077,6 +4173,12 @@ giveBackMark: {
   subCard: {
     background: THEME.surfaceUltraSoft,
     border: `1px solid ${THEME.border}`,
+    borderRadius: 14,
+    padding: 14,
+  },
+  subCardDanger: {
+    background: "rgba(153,75,62,0.08)",
+    border: "1px solid rgba(153,75,62,0.40)",
     borderRadius: 14,
     padding: 14,
   },
