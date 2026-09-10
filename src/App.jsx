@@ -779,23 +779,6 @@ function nowKeyMinute() {
   ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
-function nowKeyHour() {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}`;
-}
-
-// ✅ 20-minute bucket key: 00, 20, 40 (UTC)
-function nowKey20Min() {
-  const d = new Date();
-  const m = d.getUTCMinutes();
-  const bucket = String(Math.floor(m / 20) * 20).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${bucket}`;
-}
-
 function safeDedupeKey(parts) {
   return parts
     .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
@@ -848,11 +831,6 @@ const BROADCAST_TEMPLATES = {
       `${last} is ${dir} ${spots} to #${rank} — through ${holes} holes.`,
     ({ last, dir, spots, rank, holes }) =>
       `Movement: ${last} goes ${dir} ${spots}, now #${rank} through ${holes} holes.`,
-  ],
-  recap: [
-    ({ topLines, bottomLines }) => `Recap — The Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`,
-    ({ topLines, bottomLines }) => `Scoreboard check: The Leaders — ${topLines}.  The LEX — ${bottomLines}.`,
-    ({ topLines, bottomLines }) => `Broadcast Recap: Leaders: ${topLines}.  |  The LEX: ${bottomLines}.`,
   ],
 };
 
@@ -915,8 +893,14 @@ function computeNetStats(row) {
   return { played, netBirdies, bogeyFree, netDoubles, netTriplesPlus, frontNetToPar, backNetToPar };
 }
 
-/** Recap builder (Top 5 + Bottom 5) */
-function buildRecapText(ranked, seedParts) {
+/**
+ * Milestone recap: standings text (Top 5 + Bottom 5) prefixed with a
+ * progress-milestone label, e.g. "Half the field has made the turn".
+ * Replaces the old clock-based 20-min/hourly recap — see the field-progress
+ * check in runBroadcastTick, which fires this at meaningful moments in the
+ * round instead of on a fixed timer.
+ */
+function buildMilestoneRecapText(label, ranked) {
   const fmt = (r, place) => {
     const holes = r.holesPlayed ?? 0;
     const score = formatToPar(r.netToPar);
@@ -931,42 +915,7 @@ function buildRecapText(ranked, seedParts) {
     .map((r, i) => fmt(r, ranked.length - bottom.length + i + 1))
     .join("  •  ");
 
-  const template = pickVariant(BROADCAST_TEMPLATES.recap, seedParts);
-  return template({ topLines, bottomLines });
-}
-
-/** ✅ Runs every 20 minutes (deduped per 20-min bucket) */
-async function run20MinRecap() {
-  const ranked = leaderboardRows
-    .filter((r) => r.holesPlayed > 0)
-    .map((r, idx) => ({ ...r, rank: idx + 1 }));
-
-  if (ranked.length === 0) return;
-
-  const k20 = nowKey20Min();
-  const dedupeParts = ["recap_20", k20];
-
-  const text = buildRecapText(ranked, dedupeParts);
-
-  await insertBroadcast("recap", text, dedupeParts, null);
-  await loadBroadcast();
-}
-
-/** Runs once per hour (deduped per hour bucket) */
-async function runHourlyRecap() {
-  const ranked = leaderboardRows
-    .filter((r) => r.holesPlayed > 0)
-    .map((r, idx) => ({ ...r, rank: idx + 1 }));
-
-  if (ranked.length === 0) return;
-
-  const kHour = nowKeyHour();
-  const dedupeParts = ["recap_hourly", kHour];
-
-  const text = buildRecapText(ranked, dedupeParts);
-
-  await insertBroadcast("recap", text, dedupeParts, null);
-  await loadBroadcast();
+  return `${label} — Leaders: ${topLines}  |  The LEX: ${bottomLines}`;
 }
 
 async function runBroadcastTick() {
@@ -977,6 +926,37 @@ async function runBroadcastTick() {
     .map((r, idx) => ({ ...r, rank: idx + 1 }));
 
   if (ranked.length === 0) return;
+
+  // ---------- Field-progress milestones (replaces the old clock-based
+  // 20-min/hourly recap) — posts once, the moment the field as a whole
+  // crosses a meaningful point in the round, instead of on a timer. "The
+  // turn" means holes played >= 9 for each player individually (not the
+  // literal hole #9), since groups can start on different holes.
+  const activeRoundId = rounds.find((r) => r.is_active)?.id ?? null;
+  const roundFoursomeIds = new Set(foursomes.filter((f) => f.round_id === activeRoundId).map((f) => f.id));
+  const fieldPlayerIds = new Set(
+    foursomePlayers.filter((fp) => roundFoursomeIds.has(fp.foursome_id)).map((fp) => fp.player_id)
+  );
+  const fieldRows = leaderboardRows.filter((r) => fieldPlayerIds.has(r.id));
+
+  if (fieldRows.length > 0) {
+    const turnPct = fieldRows.filter((r) => r.holesPlayed >= 9).length / fieldRows.length;
+    const finishPct = fieldRows.filter((r) => r.holesPlayed >= 18).length / fieldRows.length;
+
+    const milestones = [
+      { key: "half_turn", hit: turnPct >= 0.5, label: "Half the field has made the turn ⛳" },
+      { key: "full_turn", hit: turnPct >= 1, label: "The whole field has made the turn ⛳" },
+      { key: "half_finish", hit: finishPct >= 0.5, label: "Half the field has finished the round 🏁" },
+      { key: "full_finish", hit: finishPct >= 1, label: "The whole field has finished the round 🏁" },
+    ];
+
+    for (const m of milestones) {
+      if (!m.hit) continue;
+      const dedupeParts = ["milestone", m.key, activeRoundId];
+      const text = buildMilestoneRecapText(m.label, ranked);
+      await insertBroadcast("recap", text, dedupeParts, null);
+    }
+  }
 
   const current = new Map();
   for (const r of ranked) {
@@ -1166,41 +1146,6 @@ useEffect(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [players.length]);
 
-// ✅ Recap exactly at next 20-min boundary (UTC), then every 20 minutes
-useEffect(() => {
-  const msToNext20 = (() => {
-    const d = new Date();
-    const minutesToNext = (20 - (d.getUTCMinutes() % 20)) % 20;
-    const ms =
-      minutesToNext * 60 * 1000 +
-      (60 - d.getUTCSeconds()) * 1000 -
-      d.getUTCMilliseconds();
-    return ms === 0 ? 20 * 60 * 1000 : ms;
-  })();
-
-  let intervalId = null;
-
-  const timeoutId = setTimeout(async () => {
-    await loadPlayers();
-    await loadScores();
-    await runBroadcastTick(); // optional
-    await run20MinRecap();
-
-    intervalId = setInterval(async () => {
-      await loadPlayers();
-      await loadScores();
-      await runBroadcastTick();
-      await run20MinRecap();
-    }, 20 * 60 * 1000);
-  }, msToNext20);
-
-  return () => {
-    clearTimeout(timeoutId);
-    if (intervalId) clearInterval(intervalId);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [leaderboardRows.length]);
-
   function enterAdmin() {
     if (adminPin === ADMIN_PIN) {
       setAdminOn(true);
@@ -1210,39 +1155,6 @@ useEffect(() => {
       alert("Wrong PIN");
     }
   }
-
-useEffect(() => {
-  // run exactly at the top of the next hour, then every hour
-  const msToNextHour = (() => {
-    const d = new Date();
-    const next = new Date(d);
-    next.setMinutes(60, 0, 0); // next hour
-    return next.getTime() - d.getTime();
-  })();
-
-  let hourlyIntervalId = null;
-
-  const timeoutId = setTimeout(async () => {
-    await loadPlayers();
-    await loadScores();
-    await runBroadcastTick(); // optional, keeps other events moving
-    await runHourlyRecap();
-
-    hourlyIntervalId = setInterval(async () => {
-      await loadPlayers();
-      await loadScores();
-      await runBroadcastTick();
-      await runHourlyRecap();
-    }, 60 * 60 * 1000);
-  }, msToNextHour);
-
-  return () => {
-    clearTimeout(timeoutId);
-    if (hourlyIntervalId) clearInterval(hourlyIntervalId);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [leaderboardRows.length]);
-
 
   function playersInFoursome(fid) {
     const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
