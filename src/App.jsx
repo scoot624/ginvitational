@@ -2554,7 +2554,17 @@ const ps = {
               <img
                 src="/logo.png"
                 alt={`${eventName} logo`}
-                style={{ width: 210, height: "auto", display: "block", margin: "0 auto" }}
+                style={{
+                  width: 210,
+                  height: "auto",
+                  display: "block",
+                  margin: "0 auto",
+                  // The flag+needle jut out to the right of the spool, so
+                  // centering the image's full bounding box makes the spool
+                  // itself look left-of-center. Nudge right so the spool's
+                  // own base lines up under "The" in the title below.
+                  transform: "translateX(22px)",
+                }}
               />
 
               <div style={styles.homeTitle}>{eventName}</div>
