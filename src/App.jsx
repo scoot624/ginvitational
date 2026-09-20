@@ -3294,7 +3294,11 @@ const ps = {
           <div style={styles.subCard}>
             <div style={styles.subTitle}>Import Tee Sheet</div>
 
-            <div style={{ display: "grid", gap: 10 }}>
+            {/* gridTemplateColumns: minmax(0,1fr) instead of the implicit
+                default column — a grid track otherwise sizes to the widest
+                child's min-content (e.g. the preview table below), which
+                stretches every other field in this grid along with it. */}
+            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
               {appSettings.multi_round_enabled && (
                 <label style={styles.label}>
                   Round
@@ -3335,7 +3339,7 @@ const ps = {
               {importMsg ? <div style={styles.helpText}>{importMsg}</div> : null}
 
               {teeSheetRows.length > 0 && (
-                <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                <div style={{ fontSize: 12, color: THEME.textMuted, minWidth: 0 }}>
                   Preview (first 5 of {teeSheetRows.length} rows):
                   <div style={{ marginTop: 8, overflowX: "auto" }}>
                     <table style={styles.table}>
@@ -4108,6 +4112,11 @@ const styles = {
     padding: 16,
     backdropFilter: "blur(12px)",
     boxShadow: "0 16px 48px rgba(7,31,19,0.35)",
+    // Grid items default to min-width:auto, which lets a wide child (e.g.
+    // the Leaderboard table) stretch this card — and every ancestor up to
+    // the page — past the viewport instead of scrolling inside tableWrap's
+    // own overflow-x. This is what actually lets it shrink and scroll.
+    minWidth: 0,
   },
   cardHeaderRow: {
     display: "flex",
@@ -4157,7 +4166,11 @@ const styles = {
     letterSpacing: 0.2,
   },
 
-  label: { display: "grid", gap: 6, fontSize: 12, color: THEME.textMuted },
+  // minWidth:0 — same grid-item overflow trap as `card`/`subCard`: this is
+  // a grid item wherever it's used (a labeled field inside another grid),
+  // so without it a wide child (e.g. a <select> with a long option) can
+  // stretch the whole chain of ancestors instead of just wrapping/shrinking.
+  label: { display: "grid", gap: 6, fontSize: 12, color: THEME.textMuted, minWidth: 0 },
 
   input: {
     background: "rgba(7,31,19,0.34)",
@@ -4276,12 +4289,14 @@ giveBackMark: {
     border: `1px solid ${THEME.border}`,
     borderRadius: 14,
     padding: 14,
+    minWidth: 0, // see the matching note on `card` — same grid-item overflow trap
   },
   subCardDanger: {
     background: "rgba(153,75,62,0.08)",
     border: "1px solid rgba(153,75,62,0.40)",
     borderRadius: 14,
     padding: 14,
+    minWidth: 0,
   },
   subTitle: {
     fontWeight: 950,
