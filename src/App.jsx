@@ -137,10 +137,16 @@ function errToText(err) {
   }
 }
 
+/**
+ * Full last name — everything after the first word, not just the final
+ * word, so a multi-word surname (e.g. "Van Der Berg") shows in full
+ * instead of being truncated to just "Berg".
+ */
 function lastName(name) {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "";
-  return parts[parts.length - 1];
+  if (parts.length === 1) return parts[0];
+  return parts.slice(1).join(" ");
 }
 
 /** --- Brand palette --- */
@@ -894,7 +900,7 @@ function computeNetStats(row) {
 }
 
 /**
- * Milestone recap: standings text (Top 5 + Bottom 5) prefixed with a
+ * Milestone recap: standings text (Top 3 + Bottom 3) prefixed with a
  * progress-milestone label, e.g. "Half the field has made the turn".
  * Replaces the old clock-based 20-min/hourly recap — see the field-progress
  * check in runBroadcastTick, which fires this at meaningful moments in the
@@ -907,8 +913,8 @@ function buildMilestoneRecapText(label, ranked) {
     return `${place}. ${r.last} ${score} (through ${holes})`;
   };
 
-  const top = ranked.slice(0, 5);
-  const bottom = ranked.slice(Math.max(0, ranked.length - 5));
+  const top = ranked.slice(0, 3);
+  const bottom = ranked.slice(Math.max(0, ranked.length - 3));
 
   const topLines = top.map((r, i) => fmt(r, i + 1)).join("  •  ");
   const bottomLines = bottom
@@ -916,6 +922,74 @@ function buildMilestoneRecapText(label, ranked) {
     .join("  •  ");
 
   return `${label} — Leaders: ${topLines}  |  The LEX: ${bottomLines}`;
+}
+
+/** "A", "A and B", or "A, B, and C" */
+function joinNames(names) {
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * Final results: once the whole field has finished, name the winner and
+ * The LEX by full name instead of the usual Top 3/Bottom 3 standings —
+ * this is the one moment the result is final, so it gets a proper
+ * announcement instead of another "Leaders: ... | The LEX: ..." recap.
+ * Margins are each player's gap to their nearest competitor (winner vs.
+ * runner-up, The LEX vs. second-to-last), not the spread across the
+ * whole field.
+ *
+ * The app has no way to run an on-site tie breaker, so a genuine tie for
+ * the lead or for The LEX is never resolved into a single name — instead
+ * every player involved is named and the message says that award gets
+ * settled on-site instead of declaring anyone the winner/loser.
+ */
+function buildFinalResultsText(ranked, eventName) {
+  const shots = (n) => `${n} shot${n === 1 ? "" : "s"}`;
+
+  const leadScore = ranked[0].netToPar;
+  const leaders = ranked.filter((r) => r.netToPar === leadScore);
+  const lexScore = ranked[ranked.length - 1].netToPar;
+  const lexGroup = ranked.filter((r) => r.netToPar === lexScore);
+
+  const winTieLine = () =>
+    `🏆 It's a ${leaders.length}-way tie for the lead at ${eventName} — ${joinNames(
+      leaders.map((r) => r.name)
+    )}! We'll settle the championship with an on-site tie breaker.`;
+
+  // Only one player has finished — nothing to compare against.
+  if (ranked.length === 1) {
+    return `🏆 Congratulations to ${ranked[0].name} — champion of ${eventName}!`;
+  }
+
+  // Whole field tied at the same score — one line covers it; a separate
+  // LEX line would just be naming the same tie again.
+  if (leaders.length === ranked.length) return winTieLine();
+
+  let winLine;
+  if (leaders.length > 1) {
+    winLine = winTieLine();
+  } else {
+    const winner = leaders[0];
+    const runnerUp = ranked.find((r) => r.netToPar !== leadScore);
+    const winMargin = runnerUp.netToPar - winner.netToPar;
+    winLine = `🏆 Congratulations to ${winner.name} — champion of ${eventName}, winning by ${shots(winMargin)}!`;
+  }
+
+  let lexLine;
+  if (lexGroup.length > 1) {
+    lexLine = `And a ${lexGroup.length}-way tie for The LEX — ${joinNames(
+      lexGroup.map((r) => r.name)
+    )}. We'll settle that one with an on-site tie breaker too!`;
+  } else {
+    const lex = lexGroup[0];
+    const aboveLex = [...ranked].reverse().find((r) => r.netToPar !== lexScore);
+    const lossMargin = lex.netToPar - aboveLex.netToPar;
+    lexLine = `And a nod to The LEX, ${lex.name}, who lost by ${shots(lossMargin)}.`;
+  }
+
+  return `${winLine}  |  ${lexLine}`;
 }
 
 async function runBroadcastTick() {
@@ -953,7 +1027,8 @@ async function runBroadcastTick() {
     for (const m of milestones) {
       if (!m.hit) continue;
       const dedupeParts = ["milestone", m.key, activeRoundId];
-      const text = buildMilestoneRecapText(m.label, ranked);
+      const text =
+        m.key === "full_finish" ? buildFinalResultsText(ranked, eventName) : buildMilestoneRecapText(m.label, ranked);
       await insertBroadcast("recap", text, dedupeParts, null);
     }
   }
