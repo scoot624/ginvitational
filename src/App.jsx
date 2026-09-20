@@ -320,6 +320,9 @@ export default function App() {
   // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({});
+  // True once this foursome has wrapped all the way back around to their
+  // starting hole after entering their 18th hole (shotgun starts).
+  const [roundComplete, setRoundComplete] = useState(false);
 
   // Admin: Excel import (tee sheet)
   const [teeSheetFile, setTeeSheetFile] = useState(null);
@@ -1724,6 +1727,7 @@ useEffect(() => {
     setActivePlayers(memberPlayers);
     setHole(clampInt(f.starting_hole, 1));
     setHoleInputs({});
+    setRoundComplete(false);
     setTab("enter");
   }
 
@@ -3066,61 +3070,102 @@ const ps = {
             </div>
 
             <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>
-                Hole {hole}{" "}
-                <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
-              </div>
+              {(() => {
+                // Shotgun start: a group can start on any hole, plays 18 in
+                // order from there, and wraps around (e.g. start on 10 ->
+                // 10,11,...,18,1,2,...,9). "Last Hole"/"Save & Next" wrap
+                // through 1<->18 instead of stopping dead at the ends, and
+                // "starting hole" — not hole 1 — is this group's true start.
+                const startingHole = clampInt(activeFoursome?.starting_hole, 1);
+                const prevHole = hole === 1 ? 18 : hole - 1;
+                const nextHole = hole === 18 ? 1 : hole + 1;
 
-              <div style={{ display: "grid", gap: 10 }}>
-                {holeEntryGroups(hole, activePlayers).map((grp) => (
-                  <div key={grp.key} style={styles.scoreRow}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {grp.players.map((p) => p.name).join(" / ")}
+                if (roundComplete) {
+                  return (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div style={{ fontSize: 18, fontWeight: 950 }}>All 18 holes entered ✅</div>
+                      <div style={styles.helpText}>
+                        Your group is all set. Tap below if you need to go back and fix a hole.
                       </div>
-                      <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                        {grp.shared
-                          ? "Scramble — team score"
-                          : `HCP ${clampInt(grp.players[0].handicap, 0)}`}
-                      </div>
+                      <button
+                        style={styles.smallBtn}
+                        onClick={() => {
+                          setRoundComplete(false);
+                          saveHoleThenNavigate(prevHole);
+                        }}
+                      >
+                        Review Last Hole
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <>
+                    <div style={{ fontSize: 18, fontWeight: 950 }}>
+                      Hole {hole}{" "}
+                      <span style={{ opacity: 0.75, fontWeight: 700 }}>(Par {PARS[hole - 1]})</span>
                     </div>
 
-                    <input
-                      style={{ ...styles.input, width: 92, textAlign: "center", fontSize: 16, fontWeight: 900 }}
-                      inputMode="numeric"
-                      placeholder="—"
-                      value={holeInputs[grp.players[0].id] ?? ""}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setHoleInputs((prev) => {
-                          const next = { ...prev };
-                          for (const p of grp.players) next[p.id] = val;
-                          return next;
-                        });
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {holeEntryGroups(hole, activePlayers).map((grp) => (
+                        <div key={grp.key} style={styles.scoreRow}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {grp.players.map((p) => p.name).join(" / ")}
+                            </div>
+                            <div style={{ fontSize: 12, color: THEME.textMuted }}>
+                              {grp.shared
+                                ? "Scramble — team score"
+                                : `HCP ${clampInt(grp.players[0].handicap, 0)}`}
+                            </div>
+                          </div>
 
-              <div style={styles.navRow}>
-                <button
-                  style={styles.smallBtn}
-                  disabled={hole === 1}
-                  onClick={() => saveHoleThenNavigate(hole - 1)}
-                >
-                  Last Hole
-                </button>
+                          <input
+                            style={{ ...styles.input, width: 92, textAlign: "center", fontSize: 16, fontWeight: 900 }}
+                            inputMode="numeric"
+                            placeholder="—"
+                            value={holeInputs[grp.players[0].id] ?? ""}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setHoleInputs((prev) => {
+                                const next = { ...prev };
+                                for (const p of grp.players) next[p.id] = val;
+                                return next;
+                              });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
 
-                <button style={styles.bigBtn} onClick={() => saveHoleThenNavigate(Math.min(18, hole + 1))}>
-                  Save & Next
-                </button>
-              </div>
+                    <div style={styles.navRow}>
+                      <button
+                        style={styles.smallBtn}
+                        disabled={hole === startingHole}
+                        onClick={() => saveHoleThenNavigate(prevHole)}
+                      >
+                        Last Hole
+                      </button>
 
-              <div style={styles.helpText}>
-                Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with <b>Last Hole</b>. Leaving
-                a box blank means “no score yet”.
-              </div>
+                      <button
+                        style={styles.bigBtn}
+                        onClick={async () => {
+                          await saveHoleThenNavigate(nextHole);
+                          if (nextHole === startingHole) setRoundComplete(true);
+                        }}
+                      >
+                        {nextHole === startingHole ? "Save & Finish" : "Save & Next"}
+                      </button>
+                    </div>
+
+                    <div style={styles.helpText}>
+                      Type scores for your foursome, then hit <b>Save & Next</b>. You can go back with{" "}
+                      <b>Last Hole</b>. Leaving a box blank means “no score yet”.
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}
