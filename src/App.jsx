@@ -330,6 +330,11 @@ export default function App() {
   // Foursomes sanity-check list is collapsed by default — after an import,
   // most visits to Admin don't need every player re-scanned every time.
   const [foursomesExpanded, setFoursomesExpanded] = useState(false);
+
+  // Admin: which of the setup sections (Event Name, Import, Games, etc.) is
+  // expanded — only one at a time, so the page shows one decision at a time
+  // instead of everything at once. Set on PIN unlock in enterAdmin().
+  const [openAdminSection, setOpenAdminSection] = useState(null);
   const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
   const [importMsg, setImportMsg] = useState("");
   const [importRoundId, setImportRoundId] = useState(null);
@@ -1229,6 +1234,9 @@ useEffect(() => {
       setAdminOn(true);
       setAdminPin("");
       setTab("admin");
+      // First-run: nothing imported yet, so open straight to Import. Once an
+      // event is set up, start collapsed and let them pick what to tweak.
+      setOpenAdminSection(foursomes.length === 0 ? "import" : null);
     } else {
       alert("Wrong PIN");
     }
@@ -3280,9 +3288,12 @@ const ps = {
 
         <div style={styles.adminGrid}>
           {/* Event Name */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Event Name</div>
-
+          <AdminSection
+            title="Event Name"
+            subtitle={eventName || "Not set"}
+            open={openAdminSection === "eventName"}
+            onToggle={() => setOpenAdminSection((k) => (k === "eventName" ? null : "eventName"))}
+          >
             <div style={styles.helpText}>Shown on Home, the top nav, print scorecards, and the browser tab.</div>
 
             <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -3301,12 +3312,15 @@ const ps = {
             </div>
 
             {eventNameMsg ? <div style={styles.helpText}>{eventNameMsg}</div> : null}
-          </div>
+          </AdminSection>
 
           {/* Handicap Basis */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Handicap Basis</div>
-
+          <AdminSection
+            title="Handicap Basis"
+            subtitle={appSettings.handicap_basis === "field_relative" ? "Field-Relative" : "Course Handicap"}
+            open={openAdminSection === "handicapBasis"}
+            onToggle={() => setOpenAdminSection((k) => (k === "handicapBasis" ? null : "handicapBasis"))}
+          >
             <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
               <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
                 <input
@@ -3333,11 +3347,15 @@ const ps = {
               Applies to the Leaderboard, print scorecards, and the scorecard popup. A plus handicap now correctly
               gives strokes back (marked with a "+") instead of being treated as scratch.
             </div>
-          </div>
+          </AdminSection>
 
           {/* Import Tee Sheet */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Import Tee Sheet</div>
+          <AdminSection
+            title="Import Tee Sheet"
+            subtitle={players.length > 0 ? `${players.length} players imported` : "No import yet"}
+            open={openAdminSection === "import"}
+            onToggle={() => setOpenAdminSection((k) => (k === "import" ? null : "import"))}
+          >
 
             {/* gridTemplateColumns: minmax(0,1fr) instead of the implicit
                 default column — a grid track otherwise sizes to the widest
@@ -3421,12 +3439,15 @@ const ps = {
                 </div>
               ) : null}
             </div>
-          </div>
+          </AdminSection>
 
           {/* Foursomes sanity check */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Foursomes</div>
-
+          <AdminSection
+            title="Foursomes"
+            subtitle={foursomes.length > 0 ? `${foursomes.length} groups configured` : "No foursomes yet"}
+            open={openAdminSection === "foursomes"}
+            onToggle={() => setOpenAdminSection((k) => (k === "foursomes" ? null : "foursomes"))}
+          >
             <div style={styles.helpText}>
               Sanity check after import: codes, tee time, starting hole, and members.
             </div>
@@ -3486,11 +3507,19 @@ const ps = {
                 )}
               </div>
             )}
-          </div>
+          </AdminSection>
 
           {/* Multi-Game setup */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Games</div>
+          <AdminSection
+            title="Games"
+            subtitle={
+              games.length > 0
+                ? `${games.length} game${games.length === 1 ? "" : "s"} configured`
+                : "No games yet"
+            }
+            open={openAdminSection === "games"}
+            onToggle={() => setOpenAdminSection((k) => (k === "games" ? null : "games"))}
+          >
 
             <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
               <input
@@ -3875,12 +3904,19 @@ const ps = {
                   </>
                 )}
             </div>
-          </div>
+          </AdminSection>
 
           {/* Multi-Round setup */}
-          <div style={styles.subCard}>
-            <div style={styles.subTitle}>Rounds</div>
-
+          <AdminSection
+            title="Rounds"
+            subtitle={
+              appSettings.multi_round_enabled
+                ? `${rounds.length} round${rounds.length === 1 ? "" : "s"}`
+                : "Single round"
+            }
+            open={openAdminSection === "rounds"}
+            onToggle={() => setOpenAdminSection((k) => (k === "rounds" ? null : "rounds"))}
+          >
             <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
               <input
                 type="checkbox"
@@ -3949,11 +3985,15 @@ const ps = {
                 </div>
               </div>
             )}
-          </div>
+          </AdminSection>
 
           {/* Danger Zone — every irreversible action lives here, away from routine buttons */}
-          <div style={styles.subCardDanger}>
-            <div style={styles.subTitle}>⚠️ Danger Zone</div>
+          <AdminSection
+            title="⚠️ Danger Zone"
+            danger
+            open={openAdminSection === "danger"}
+            onToggle={() => setOpenAdminSection((k) => (k === "danger" ? null : "danger"))}
+          >
             <div style={styles.helpText}>Every action below is irreversible. Each one asks you to confirm first.</div>
 
             <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
@@ -4020,7 +4060,7 @@ const ps = {
                 </div>
               )}
             </div>
-          </div>
+          </AdminSection>
         </div>
       </>
     )}
@@ -4053,6 +4093,47 @@ const ps = {
   />
 )}
 </div>
+  );
+}
+
+/**
+ * A collapsible Admin sub-section — only one open at a time (accordion),
+ * so the setup page shows one decision at a time instead of everything at
+ * once. `subtitle` is a short at-a-glance status shown under the title
+ * while collapsed (e.g. "24 players imported").
+ */
+function AdminSection({ title, subtitle, open, onToggle, danger, children }) {
+  return (
+    <div style={danger ? styles.subCardDanger : styles.subCard}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          width: "100%",
+          gap: 10,
+          background: "none",
+          border: "none",
+          padding: 0,
+          margin: 0,
+          font: "inherit",
+          color: "inherit",
+          textAlign: "left",
+          cursor: "pointer",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ ...styles.subTitle, marginBottom: subtitle && !open ? 2 : 10 }}>{title}</div>
+          {subtitle && !open ? (
+            <div style={{ fontSize: 12, color: THEME.textMuted }}>{subtitle}</div>
+          ) : null}
+        </div>
+        <span style={{ fontSize: 20, opacity: 0.7, flexShrink: 0 }}>{open ? "−" : "+"}</span>
+      </button>
+      {open && <div style={{ marginTop: 4 }}>{children}</div>}
+    </div>
   );
 }
 
