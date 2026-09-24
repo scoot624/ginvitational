@@ -154,6 +154,7 @@ const PALETTE = {
   // Primary
   fairwayGreen: "#1E3D34",
   deepMeadow: "#071F13",
+  nightFairway: "#0E211A",
   black: "#000000",
   white: "#FFFFFF",
 
@@ -170,31 +171,46 @@ const PALETTE = {
   admiralBlue: "#243144",
 };
 
+// "Fairway Editorial" theme: a solid deep-green page (nightFairway) with
+// cream "paper" cards floating on top, instead of the old light gradient
+// page + dark glass cards. Most of the app lives inside a card, so THEME.*
+// below are tuned for dark ink on a paper surface; the handful of things
+// that sit directly on the dark page itself (the top nav bar) use the
+// separate chrome* tokens instead.
 const THEME = {
-  bg: PALETTE.sandstone,
+  bg: PALETTE.nightFairway,
   ink: PALETTE.deepMeadow,
 
-  surface: "rgba(7, 31, 19, 0.86)",
-  surfaceSoft: "rgba(30, 61, 52, 0.44)",
-  surfaceUltraSoft: "rgba(30, 61, 52, 0.26)",
+  surface: "rgba(247, 242, 231, 0.97)",
+  surfaceSoft: "rgba(247, 242, 231, 0.95)",
+  surfaceUltraSoft: "rgba(22, 35, 29, 0.035)",
 
-  border: "rgba(30, 61, 52, 0.26)",
-  borderStrong: "rgba(30, 61, 52, 0.46)",
+  border: "rgba(22, 35, 29, 0.12)",
+  borderStrong: "rgba(22, 35, 29, 0.22)",
 
-  text: "rgba(242, 235, 221, 0.98)",
-  textMuted: "rgba(242, 235, 221, 0.78)",
-  textFaint: "rgba(242, 235, 221, 0.60)",
+  text: PALETTE.deepMeadow,
+  textMuted: "#4E5C54",
+  textFaint: "#7C8A81",
 
-  btn: "rgba(203, 189, 151, 0.14)",
-  btnBorder: "rgba(242, 235, 221, 0.30)",
-  btnStrong: "rgba(203, 189, 151, 0.20)",
+  btn: "rgba(159, 119, 80, 0.16)",
+  btnBorder: "rgba(22, 35, 29, 0.20)",
+  btnStrong: "rgba(159, 119, 80, 0.30)",
 
   accent: PALETTE.whickerBasket,
   danger: PALETTE.salmonRose,
 
   good: "#2F8F62",
   bad: PALETTE.salmonRose,
+
+  // Chrome — for the top nav bar, which sits directly on the dark page
+  // background rather than inside a paper card.
+  chromeText: "rgba(237, 231, 216, 0.94)",
+  chromeTextMuted: "rgba(237, 231, 216, 0.64)",
+  chromeBorder: "rgba(237, 231, 216, 0.20)",
 };
+
+const FONT_DISPLAY = "'Fraunces', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif";
+const FONT_BODY = "'Public Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
 
 function netColorStyle(netToPar) {
   if (netToPar < 0) return { color: THEME.good };
@@ -2844,7 +2860,7 @@ const ps = {
                     return (
                       <button
                         key={opt.id}
-                        style={isActive ? styles.navBtnActive : styles.navBtn}
+                        style={isActive ? styles.tabBtnActive : styles.tabBtn}
                         onClick={() => setSelectedRoundId(opt.id)}
                       >
                         {opt.label}
@@ -2867,7 +2883,7 @@ const ps = {
                   return (
                     <button
                       key={game.id}
-                      style={isActive ? styles.navBtnActive : styles.navBtn}
+                      style={isActive ? styles.tabBtnActive : styles.tabBtn}
                       onClick={() => setSelectedGameId(game.id)}
                     >
                       {game.locked ? "🔒 " : ""}
@@ -3200,7 +3216,7 @@ const ps = {
           style={{
             whiteSpace: "pre-wrap",
             marginTop: 8,
-            background: "rgba(7,31,19,0.22)",
+            background: "rgba(22,35,29,0.05)",
             padding: 10,
             borderRadius: 12,
             border: `1px solid ${THEME.border}`,
@@ -4149,9 +4165,9 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: 14,
-    background: `radial-gradient(circle at 20% 10%, ${PALETTE.teeSand} 0%, ${PALETTE.sandstone} 34%, ${PALETTE.fairwayGreen} 140%)`,
+    background: THEME.bg,
     color: THEME.text,
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    fontFamily: FONT_BODY,
   },
   shell: {
     maxWidth: 980,
@@ -4179,33 +4195,56 @@ const styles = {
   brand: { minWidth: 240 },
   brandTitle: {
     fontSize: 34,
-    fontWeight: 950,
+    fontWeight: 700,
     letterSpacing: -0.6,
     lineHeight: 1.05,
-    color: THEME.text,
+    color: THEME.chromeText,
+    fontFamily: FONT_DISPLAY,
   },
-  brandSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
+  brandSub: { marginTop: 6, fontSize: 13, color: THEME.chromeTextMuted },
 
+  // Top nav bar — sits directly on the dark page background, so it uses
+  // the chrome* tokens rather than the paper-card text/border tokens.
   nav: { display: "flex", gap: 10, flexWrap: "wrap" },
   navBtn: {
     padding: "10px 12px",
-    borderRadius: 12,
-    background: "rgba(7,31,19,0.40)",
-    border: `1px solid ${THEME.border}`,
-    color: THEME.text,
+    borderRadius: 999,
+    background: "transparent",
+    border: `1px solid ${THEME.chromeBorder}`,
+    color: THEME.chromeText,
     cursor: "pointer",
-    fontWeight: 850,
-    backdropFilter: "blur(8px)",
+    fontWeight: 600,
   },
   navBtnActive: {
     padding: "10px 12px",
+    borderRadius: 999,
+    background: PALETTE.whickerBasket,
+    border: `1px solid ${PALETTE.whickerBasket}`,
+    color: PALETTE.deepMeadow,
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+
+  // In-card pill tabs (Leaderboard round/game switchers, Admin's game
+  // preset picker) — these sit on a paper card, so unlike navBtn/
+  // navBtnActive above they use the ink/border tokens, not chrome*.
+  tabBtn: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "transparent",
+    border: `1px solid ${THEME.border}`,
+    color: THEME.textMuted,
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  tabBtnActive: {
+    padding: "10px 12px",
     borderRadius: 12,
     background: THEME.btnStrong,
-    border: `1px solid ${THEME.borderStrong}`,
+    border: `1px solid ${PALETTE.whickerBasket}`,
     color: THEME.text,
     cursor: "pointer",
     fontWeight: 950,
-    backdropFilter: "blur(8px)",
   },
 
   homeCard: {
@@ -4213,16 +4252,15 @@ const styles = {
     border: `1px solid ${THEME.border}`,
     borderRadius: 22,
     padding: 18,
-    backdropFilter: "blur(14px)",
-    boxShadow: "0 18px 55px rgba(7,31,19,0.35)",
+    boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
   },
   homeTitle: {
     marginTop: 10,
     fontSize: 38,
-    fontWeight: 950,
+    fontWeight: 600,
     letterSpacing: -0.6,
     color: THEME.text,
-    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: FONT_DISPLAY,
   },
   homeSub: {
     marginTop: 10,
@@ -4235,7 +4273,7 @@ const styles = {
     margin: "16px auto 0",
     width: "72%",
     height: 1,
-    background: "rgba(242,235,221,0.32)",
+    background: "rgba(22,35,29,0.15)",
   },
 
   card: {
@@ -4243,8 +4281,7 @@ const styles = {
     border: `1px solid ${THEME.border}`,
     borderRadius: 18,
     padding: 16,
-    backdropFilter: "blur(12px)",
-    boxShadow: "0 16px 48px rgba(7,31,19,0.35)",
+    boxShadow: "0 20px 50px rgba(0,0,0,0.40)",
     // Grid items default to min-width:auto, which lets a wide child (e.g.
     // the Leaderboard table) stretch this card — and every ancestor up to
     // the page — past the viewport instead of scrolling inside tableWrap's
@@ -4260,10 +4297,10 @@ const styles = {
   },
   cardTitle: {
     fontSize: 22,
-    fontWeight: 950,
+    fontWeight: 600,
     letterSpacing: -0.2,
     color: THEME.text,
-    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: FONT_DISPLAY,
   },
   helpText: { marginTop: 10, fontSize: 12, lineHeight: 1.35, color: THEME.textMuted },
 
@@ -4274,18 +4311,18 @@ const styles = {
     border: `1px solid ${THEME.btnBorder}`,
     color: THEME.text,
     cursor: "pointer",
-    fontWeight: 950,
+    fontWeight: 700,
     fontSize: 16,
     letterSpacing: 0.2,
   },
   smallBtn: {
     padding: "10px 12px",
     borderRadius: 12,
-    background: "rgba(242,235,221,0.08)",
+    background: "rgba(22,35,29,0.05)",
     border: `1px solid ${THEME.border}`,
     color: THEME.text,
     cursor: "pointer",
-    fontWeight: 900,
+    fontWeight: 700,
     letterSpacing: 0.2,
   },
   dangerBtn: {
@@ -4306,7 +4343,7 @@ const styles = {
   label: { display: "grid", gap: 6, fontSize: 12, color: THEME.textMuted, minWidth: 0 },
 
   input: {
-    background: "rgba(7,31,19,0.34)",
+    background: "rgba(22,35,29,0.05)",
     border: `1px solid ${THEME.border}`,
     color: THEME.text,
     padding: "12px 12px",
@@ -4320,7 +4357,7 @@ const styles = {
     overflowX: "auto",
     borderRadius: 14,
     border: `1px solid ${THEME.border}`,
-    background: "rgba(7,31,19,0.20)",
+    background: "rgba(22,35,29,0.03)",
   },
   table: {
     width: "100%",
@@ -4359,7 +4396,7 @@ const styles = {
     fontSize: 15,
     textAlign: "left",
     textUnderlineOffset: 3,
-    textDecorationColor: "rgba(242,235,221,0.45)",
+    textDecorationColor: "rgba(159,119,80,0.55)",
   },
   playerMeta: { marginTop: 4, fontSize: 12, color: THEME.textMuted, whiteSpace: "normal" },
 
@@ -4408,7 +4445,7 @@ giveBackMark: {
     padding: 12,
     borderRadius: 14,
     border: `1px solid ${THEME.border}`,
-    background: "rgba(7,31,19,0.16)",
+    background: "rgba(22,35,29,0.035)",
   },
 
   adminGrid: {
@@ -4445,7 +4482,7 @@ giveBackMark: {
     color: THEME.text,
     letterSpacing: 0.2,
   },
-  hr: { height: 1, background: "rgba(242,235,221,0.16)", margin: "8px 0" },
+  hr: { height: 1, background: "rgba(22,35,29,0.12)", margin: "8px 0" },
 
   playerRow: {
     display: "flex",
@@ -4454,7 +4491,7 @@ giveBackMark: {
     gap: 10,
     padding: "10px 10px",
     borderRadius: 12,
-    background: "rgba(7,31,19,0.18)",
+    background: "rgba(22,35,29,0.035)",
     border: `1px solid ${THEME.border}`,
   },
 
@@ -4462,7 +4499,7 @@ giveBackMark: {
     padding: 12,
     borderRadius: 14,
     border: `1px solid ${THEME.border}`,
-    background: "rgba(7,31,19,0.16)",
+    background: "rgba(22,35,29,0.035)",
   },
 
   scoreRow: {
@@ -4473,7 +4510,7 @@ giveBackMark: {
     padding: "10px 10px",
     borderRadius: 14,
     border: `1px solid ${THEME.border}`,
-    background: "rgba(7,31,19,0.16)",
+    background: "rgba(22,35,29,0.035)",
   },
   navRow: {
     marginTop: 10,
@@ -4485,7 +4522,7 @@ giveBackMark: {
   modalOverlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(7,31,19,0.72)",
+    background: "rgba(6,14,11,0.72)",
     display: "grid",
     placeItems: "center",
     padding: 14,
@@ -4495,11 +4532,11 @@ giveBackMark: {
     width: "min(920px, 96vw)",
     maxHeight: "86vh",
     overflow: "auto",
-    background: "rgba(7,31,19,0.92)",
+    background: THEME.surface,
     border: `1px solid ${THEME.borderStrong}`,
     borderRadius: 18,
     padding: 14,
-    boxShadow: "0 22px 70px rgba(7,31,19,0.55)",
+    boxShadow: "0 22px 70px rgba(0,0,0,0.50)",
   },
   modalHeader: {
     display: "flex",
@@ -4510,10 +4547,10 @@ giveBackMark: {
   },
   modalTitle: {
     fontSize: 18,
-    fontWeight: 950,
+    fontWeight: 600,
     lineHeight: 1.1,
     color: THEME.text,
-    fontFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+    fontFamily: FONT_DISPLAY,
   },
   modalSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
 };
