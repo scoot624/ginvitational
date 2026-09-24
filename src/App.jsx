@@ -2881,6 +2881,13 @@ const ps = {
             {(() => {
               const showRoundTabs = appSettings.multi_round_enabled && rounds.length > 1;
 
+              // Tighter cells than the app-wide table styles, just for the
+              // Leaderboard — keeps Player + Score visible together on a
+              // phone screen without horizontal scrolling.
+              const lbTh = { ...styles.th, padding: "6px 6px", fontSize: 11 };
+              const lbTd = { ...styles.td, padding: "8px 6px", fontSize: 13 };
+              const lbPill = { ...styles.pill, minWidth: 22, padding: "3px 8px", fontSize: 11 };
+
               const lockCheckEntry =
                 gameResults.length > 0
                   ? gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0]
@@ -2902,13 +2909,13 @@ const ps = {
                 </div>
 
                 <div style={styles.tableWrap}>
-                  <table style={styles.table}>
+                  <table style={{ ...styles.table, minWidth: 340 }}>
                     <thead>
                       <tr>
-                        <th style={styles.th}>#</th>
-                        <th style={styles.th}>Player</th>
-                        <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
-                        <th style={{ ...styles.th, textAlign: "center" }}>Net vs Par</th>
+                        <th style={lbTh}>#</th>
+                        <th style={lbTh}>Player</th>
+                        <th style={{ ...lbTh, textAlign: "center" }}>Net vs Par</th>
+                        <th style={{ ...lbTh, textAlign: "center" }}>Holes</th>
                       </tr>
                     </thead>
 
@@ -2922,9 +2929,9 @@ const ps = {
 
                         return (
                           <tr key={r.id}>
-                            <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+                            <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
 
-                            <td style={{ ...styles.td, minWidth: 180 }}>
+                            <td style={{ ...lbTd, minWidth: 120 }}>
                               <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
                                 {r.name}
                               </button>
@@ -2934,12 +2941,12 @@ const ps = {
                               </div>
                             </td>
 
-                            <td style={{ ...styles.td, textAlign: "center" }}>
-                              <span style={styles.pill}>{r.holesPlayed}</span>
+                            <td style={{ ...lbTd, textAlign: "center" }}>
+                              <span style={netStyle}>{displayNet}</span>
                             </td>
 
-                            <td style={{ ...styles.td, textAlign: "center" }}>
-                              <span style={netStyle}>{displayNet}</span>
+                            <td style={{ ...lbTd, textAlign: "center" }}>
+                              <span style={lbPill}>{r.holesPlayed}</span>
                             </td>
                           </tr>
                         );
@@ -2947,7 +2954,7 @@ const ps = {
 
                       {leaderboardRows.length === 0 && (
                         <tr>
-                          <td style={styles.td} colSpan={4}>
+                          <td style={lbTd} colSpan={4}>
                             No players yet.
                           </td>
                         </tr>
@@ -2978,13 +2985,13 @@ const ps = {
                     </div>
 
                     <div style={styles.tableWrap}>
-                      <table style={styles.table}>
+                      <table style={{ ...styles.table, minWidth: 340 }}>
                         <thead>
                           <tr>
-                            <th style={styles.th}>#</th>
-                            <th style={styles.th}>{isTeamFormat ? "Team" : "Player"}</th>
-                            <th style={{ ...styles.th, textAlign: "center" }}>Holes</th>
-                            <th style={{ ...styles.th, textAlign: "center" }}>{scoreLabel}</th>
+                            <th style={lbTh}>#</th>
+                            <th style={lbTh}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...lbTh, textAlign: "center" }}>{scoreLabel}</th>
+                            <th style={{ ...lbTh, textAlign: "center" }}>Holes</th>
                           </tr>
                         </thead>
 
@@ -2998,9 +3005,9 @@ const ps = {
 
                             return (
                               <tr key={r.id}>
-                                <td style={styles.td}>{r.displayRank ?? idx + 1}</td>
+                                <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
 
-                                <td style={{ ...styles.td, minWidth: 180 }}>
+                                <td style={{ ...lbTd, minWidth: 120 }}>
                                   {isTeamFormat ? (
                                     <>
                                       <div style={{ fontWeight: 950 }}>{r.name}</div>
@@ -3021,12 +3028,12 @@ const ps = {
                                   )}
                                 </td>
 
-                                <td style={{ ...styles.td, textAlign: "center" }}>
-                                  <span style={styles.pill}>{r.holesPlayed}</span>
+                                <td style={{ ...lbTd, textAlign: "center" }}>
+                                  <span style={scoreStyle}>{displayScore}</span>
                                 </td>
 
-                                <td style={{ ...styles.td, textAlign: "center" }}>
-                                  <span style={scoreStyle}>{displayScore}</span>
+                                <td style={{ ...lbTd, textAlign: "center" }}>
+                                  <span style={lbPill}>{r.holesPlayed}</span>
                                 </td>
                               </tr>
                             );
@@ -3034,7 +3041,7 @@ const ps = {
 
                           {rows.length === 0 && (
                             <tr>
-                              <td style={styles.td} colSpan={4}>
+                              <td style={lbTd} colSpan={4}>
                                 No {isTeamFormat ? "teams" : "players"} yet.
                               </td>
                             </tr>
