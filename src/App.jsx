@@ -2698,7 +2698,7 @@ const ps = {
             </div>
 
             <div style={{ marginTop: 14, textAlign: "center", fontSize: 12, color: THEME.textMuted }}>
-              Manufacturers Golf &amp; CC • May 2026
+              Manufacturers Golf &amp; CC
             </div>
           </div>
         )}
