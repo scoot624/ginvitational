@@ -4526,13 +4526,11 @@ strokeDot: {
   height: 8,
   borderRadius: "50%",
   background: "rgba(203,189,151,0.85)",
-  marginLeft: 6,
 },
 // A plus-handicap player gives a stroke back on this hole, instead of
 // receiving one — marked with "+" rather than the filled dot above.
 giveBackMark: {
   display: "inline-block",
-  marginLeft: 6,
   fontSize: 11,
   fontWeight: 950,
   lineHeight: 1,
