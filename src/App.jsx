@@ -273,6 +273,184 @@ function LockedBoardPanel({ game, onUnlock }) {
   );
 }
 
+/** Chevron shown next to an expandable player name, rotated open/closed. */
+function expandChevronStyle(open) {
+  return {
+    display: "inline-block",
+    fontSize: 10,
+    opacity: 0.7,
+    transition: "transform 0.15s ease",
+    transform: open ? "rotate(90deg)" : "rotate(0deg)",
+  };
+}
+
+/**
+ * The <td> wrapping an expanded scorecard row — a light tint, not a card.
+ * `width: "1px"` is a standard table trick: in auto table layout, a
+ * colSpan cell's own content would otherwise force the whole table (and
+ * everything above it) wider to fit all 18 hole columns. This tells the
+ * layout engine the cell itself needs no extra width, so the table stays
+ * sized by the normal row's columns, and ScorecardDetail's own
+ * `overflow-x: auto` div is what ends up scrolling, not the whole table.
+ */
+const expandRowCellStyle = {
+  width: "1px",
+  padding: 0,
+  background: "rgba(22,35,29,0.035)",
+  borderTop: `1px solid ${THEME.border}`,
+  borderBottom: `1px solid ${THEME.border}`,
+};
+
+/**
+ * Hole-by-hole scorecard, shown inline under a Leaderboard row when that
+ * player is expanded (replaces the old full-screen modal).
+ */
+function ScorecardDetail({ player }) {
+  // One entry per hole — computed once, then laid out as COLUMNS below
+  // (holes running left-to-right, like a real scorecard) instead of rows.
+  const holes = (() => {
+    let cum = 0; // running cumulative NET-to-par across holes
+
+    return Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
+      const par = PARS[h - 1];
+      const sc = player.scoresByHole[h];
+      const si = STROKE_INDEX[h - 1];
+      const strokes = strokesOnHole(player.playingHandicap, h);
+
+      const netSc = sc != null ? netScoreForHole(sc, player.playingHandicap, h) : null;
+      const netDiff = netSc != null ? netSc - par : null;
+      if (netDiff != null) cum += netDiff;
+
+      // The "Net +/-" row shows the running cumulative-to-par through this
+      // hole (what used to be a separate "Total" row), so it's colored by
+      // the cumulative's sign, not the single hole's.
+      const cumStyle =
+        netDiff == null
+          ? {}
+          : cum < 0
+          ? { color: THEME.good, fontWeight: 900 }
+          : cum > 0
+          ? { color: THEME.bad, fontWeight: 900 }
+          : { opacity: 0.9, fontWeight: 900 };
+
+      return { h, par, sc, si, strokes, netDiff, cum, cumStyle };
+    });
+  })();
+
+  // The row-label column is pinned (position: sticky) so it stays in view,
+  // with a faint right-edge shadow so it visually reads as a "frozen" pane,
+  // while the 18 hole columns scroll underneath it horizontally.
+  const stickyShadow = "2px 0 4px rgba(0,0,0,0.10)";
+  const labelHeadStyle = {
+    ...styles.th,
+    position: "sticky",
+    left: 0,
+    background: THEME.surface,
+    boxShadow: stickyShadow,
+    fontSize: 10,
+    padding: "6px 8px",
+    zIndex: 1,
+  };
+  const labelCellStyle = {
+    ...styles.td,
+    position: "sticky",
+    left: 0,
+    background: THEME.surface,
+    boxShadow: stickyShadow,
+    fontWeight: 800,
+    fontSize: 11,
+    padding: "6px 8px",
+    zIndex: 1,
+  };
+  // table-layout: fixed (below) splits the remaining width evenly across
+  // all 18 hole <col>s, so every hole lines up in a uniform grid — a
+  // hole's own content (the stroke dot/"+") no longer makes its column
+  // render wider or narrower than its neighbors.
+  const headStyle = { ...styles.th, textAlign: "center", fontSize: 10, padding: "6px 4px" };
+  const cellStyle = { ...styles.td, textAlign: "center", fontSize: 11, padding: "6px 4px" };
+  // Fixed-height slot under every hole number, whether or not that hole
+  // has a stroke mark — this is what keeps the hole numbers themselves
+  // sitting at the same height across every column.
+  const markSlotStyle = { height: 9, display: "flex", alignItems: "center", justifyContent: "center" };
+
+  return (
+    <div style={{ padding: "10px 8px" }}>
+      {/* overscrollBehaviorX stops a horizontal scroll here from chaining
+          into the Leaderboard's own horizontally-scrollable table once this
+          one hits its edge. */}
+      <div style={{ width: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+        <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 56 + holes.length * 26 }}>
+          <colgroup>
+            <col style={{ width: 56 }} />
+            {holes.map((hd) => (
+              <col key={hd.h} style={{ width: 26 }} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={labelHeadStyle}>Hole</th>
+              {holes.map((hd) => (
+                <th key={hd.h} style={headStyle}>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                    <span>{hd.h}</span>
+                    <span style={markSlotStyle}>
+                      {hd.strokes > 0 ? (
+                        <span style={styles.strokeDot} />
+                      ) : hd.strokes < 0 ? (
+                        <span style={styles.giveBackMark}>+</span>
+                      ) : null}
+                    </span>
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+
+          <tbody>
+            <tr>
+              <td style={labelCellStyle}>SI</td>
+              {holes.map((hd) => (
+                <td key={hd.h} style={cellStyle}>
+                  {hd.si}
+                </td>
+              ))}
+            </tr>
+            <tr>
+              <td style={labelCellStyle}>Par</td>
+              {holes.map((hd) => (
+                <td key={hd.h} style={cellStyle}>
+                  {hd.par}
+                </td>
+              ))}
+            </tr>
+            <tr>
+              <td style={labelCellStyle}>Score</td>
+              {holes.map((hd) => (
+                <td key={hd.h} style={cellStyle}>
+                  {hd.sc != null ? hd.sc : "—"}
+                </td>
+              ))}
+            </tr>
+            <tr>
+              <td style={labelCellStyle}>Net +/-</td>
+              {holes.map((hd) => (
+                <td key={hd.h} style={{ ...cellStyle, ...hd.cumStyle }}>
+                  {hd.netDiff == null ? "—" : formatToPar(hd.cum)}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
+        Net +/- uses real handicap allocation by Stroke Index.
+        {player.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
@@ -2523,113 +2701,6 @@ const ps = {
       }
     `}</style>
 
-    {/* Scorecard modal (leaderboard) */}
-{scorecardPlayer && (
-  <div style={styles.modalOverlay} onClick={() => setScorecardPlayerId(null)}>
-    <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-      <div style={styles.modalHeader}>
-        <div style={{ minWidth: 0 }}>
-          <div style={styles.modalTitle}>
-            {scorecardPlayer.name}{" "}
-            <span style={{ opacity: 0.75, fontWeight: 700 }}>(HCP {scorecardPlayer.handicap})</span>
-            {scorecardPlayer.playingHandicap !== scorecardPlayer.handicap && (
-              <span style={{ opacity: 0.75, fontWeight: 700 }}> • plays as {scorecardPlayer.playingHandicap}</span>
-            )}
-          </div>
-          <div style={styles.modalSub}>
-            Holes: {scorecardPlayer.holesPlayed} • Net vs Par:{" "}
-            {scorecardPlayer.holesPlayed === 0 ? (
-              <span style={{ opacity: 0.75 }}>—</span>
-            ) : (
-              <span style={{ fontWeight: 950, ...netColorStyle(scorecardPlayer.netToPar) }}>
-                {formatToPar(scorecardPlayer.netToPar)}
-              </span>
-            )}
-          </div>
-        </div>
-        <button style={styles.smallBtn} onClick={() => setScorecardPlayerId(null)}>
-          Close
-        </button>
-      </div>
-
-      <div style={{ marginTop: 12, overflowX: "auto" }}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Hole</th>
-              <th style={styles.th}>SI</th>
-              <th style={styles.th}>Par</th>
-              <th style={styles.th}>Score</th>
-              <th style={styles.th}>Net +/-</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {(() => {
-              // running cumulative NET-to-par across holes
-              let cum = 0;
-
-              return Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
-                const par = PARS[h - 1];
-                const sc = scorecardPlayer.scoresByHole[h];
-                const si = STROKE_INDEX[h - 1];
-                const strokes = strokesOnHole(scorecardPlayer.playingHandicap, h);
-
-                const netSc = sc != null ? netScoreForHole(sc, scorecardPlayer.playingHandicap, h) : null;
-                const netDiff = netSc != null ? netSc - par : null;
-
-                if (netDiff != null) cum += netDiff;
-
-                const diffStyle =
-                  netDiff == null
-                    ? {}
-                    : netDiff < 0
-                    ? { color: THEME.good, fontWeight: 900 }
-                    : netDiff > 0
-                    ? { color: THEME.bad, fontWeight: 900 }
-                    : { opacity: 0.9, fontWeight: 900 };
-
-                return (
-                  <tr key={h}>
-                    <td style={styles.td}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                        <span>{h}</span>
-                        {strokes > 0 && <span style={styles.strokeDot} />}
-                        {strokes < 0 && <span style={styles.giveBackMark}>+</span>}
-                      </span>
-                    </td>
-                    <td style={styles.td}>{si}</td>
-                    <td style={styles.td}>{par}</td>
-                    <td style={styles.td}>{sc != null ? sc : "—"}</td>
-
-                    <td style={{ ...styles.td, ...diffStyle }}>
-                      {netDiff == null ? (
-                        "—"
-                      ) : (
-                        <>
-                          {formatToPar(netDiff)}
-                          <div style={{ fontSize: 11, opacity: 0.78, marginTop: 2, color: THEME.textMuted }}>
-                            {formatToPar(cum)}
-                          </div>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                );
-              });
-            })()}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
-        Net +/- uses real handicap allocation by Stroke Index.
-        {scorecardPlayer.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
-      </div>
-    </div>
-  </div>
-)}
-
       <div style={styles.shell}>
         {/* HOME (no top nav) */}
         {tab === "home" && (
@@ -2925,13 +2996,18 @@ const ps = {
                 </div>
 
                 <div style={styles.tableWrap}>
-                  <table style={{ ...styles.table, minWidth: 340 }}>
+                  {/* table-layout: fixed + explicit column widths — without
+                      this, an expanded player's 18-hole scorecard (below,
+                      in a colSpan cell) would force this whole table, and
+                      everything above it, as wide as all 18 holes instead
+                      of scrolling inside its own row. */}
+                  <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                     <thead>
                       <tr>
-                        <th style={lbTh}>#</th>
-                        <th style={lbTh}>Player</th>
-                        <th style={{ ...lbTh, textAlign: "center" }}>Net vs Par</th>
-                        <th style={{ ...lbTh, textAlign: "center" }}>Holes</th>
+                        <th style={{ ...lbTh, width: "8%" }}>#</th>
+                        <th style={{ ...lbTh, width: "52%" }}>Player</th>
+                        <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>Net vs Par</th>
+                        <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
                       </tr>
                     </thead>
 
@@ -2943,13 +3019,19 @@ const ps = {
                             ? { opacity: 0.6, color: THEME.textMuted }
                             : { fontWeight: 950, ...netColorStyle(r.netToPar) };
 
-                        return (
+                        const expanded = r.id === scorecardPlayerId;
+
+                        return [
                           <tr key={r.id}>
                             <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
 
                             <td style={{ ...lbTd, minWidth: 120 }}>
-                              <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                              <button
+                                style={{ ...styles.playerLink, display: "inline-flex", alignItems: "center", gap: 6 }}
+                                onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
+                              >
                                 {r.name}
+                                <span style={expandChevronStyle(expanded)}>▸</span>
                               </button>
                               <div style={styles.playerMeta}>
                                 HCP {r.handicap}
@@ -2964,8 +3046,15 @@ const ps = {
                             <td style={{ ...lbTd, textAlign: "center" }}>
                               <span style={lbPill}>{r.holesPlayed}</span>
                             </td>
-                          </tr>
-                        );
+                          </tr>,
+                          expanded && (
+                            <tr key={`${r.id}-detail`}>
+                              <td colSpan={4} style={expandRowCellStyle}>
+                                <ScorecardDetail player={scorecardPlayer} />
+                              </td>
+                            </tr>
+                          ),
+                        ];
                       })}
 
                       {leaderboardRows.length === 0 && (
@@ -3001,13 +3090,15 @@ const ps = {
                     </div>
 
                     <div style={styles.tableWrap}>
-                      <table style={{ ...styles.table, minWidth: 340 }}>
+                      {/* table-layout: fixed — see the matching comment on
+                          the simple leaderboard table above. */}
+                      <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                         <thead>
                           <tr>
-                            <th style={lbTh}>#</th>
-                            <th style={lbTh}>{isTeamFormat ? "Team" : "Player"}</th>
-                            <th style={{ ...lbTh, textAlign: "center" }}>{scoreLabel}</th>
-                            <th style={{ ...lbTh, textAlign: "center" }}>Holes</th>
+                            <th style={{ ...lbTh, width: "8%" }}>#</th>
+                            <th style={{ ...lbTh, width: "52%" }}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>{scoreLabel}</th>
+                            <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
                           </tr>
                         </thead>
 
@@ -3019,7 +3110,9 @@ const ps = {
                                 ? { opacity: 0.6, color: THEME.textMuted }
                                 : { fontWeight: 950, ...netColorStyle(r.toPar) };
 
-                            return (
+                            const expanded = !isTeamFormat && r.id === scorecardPlayerId;
+
+                            return [
                               <tr key={r.id}>
                                 <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
 
@@ -3033,8 +3126,17 @@ const ps = {
                                     </>
                                   ) : (
                                     <>
-                                      <button style={styles.playerLink} onClick={() => setScorecardPlayerId(r.id)}>
+                                      <button
+                                        style={{
+                                          ...styles.playerLink,
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                        }}
+                                        onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
+                                      >
                                         {r.name}
+                                        <span style={expandChevronStyle(expanded)}>▸</span>
                                       </button>
                                       <div style={styles.playerMeta}>
                                         HCP {r.handicap}
@@ -3051,8 +3153,15 @@ const ps = {
                                 <td style={{ ...lbTd, textAlign: "center" }}>
                                   <span style={lbPill}>{r.holesPlayed}</span>
                                 </td>
-                              </tr>
-                            );
+                              </tr>,
+                              expanded && (
+                                <tr key={`${r.id}-detail`}>
+                                  <td colSpan={4} style={expandRowCellStyle}>
+                                    <ScorecardDetail player={scorecardPlayer} />
+                                  </td>
+                                </tr>
+                              ),
+                            ];
                           })}
 
                           {rows.length === 0 && (
@@ -4518,41 +4627,6 @@ giveBackMark: {
     gap: 10,
     gridTemplateColumns: "1fr 1fr",
   },
-
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(6,14,11,0.72)",
-    display: "grid",
-    placeItems: "center",
-    padding: 14,
-    zIndex: 50,
-  },
-  modalCard: {
-    width: "min(920px, 96vw)",
-    maxHeight: "86vh",
-    overflow: "auto",
-    background: THEME.surface,
-    border: `1px solid ${THEME.borderStrong}`,
-    borderRadius: 18,
-    padding: 14,
-    boxShadow: "0 22px 70px rgba(0,0,0,0.50)",
-  },
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 600,
-    lineHeight: 1.1,
-    color: THEME.text,
-    fontFamily: FONT_DISPLAY,
-  },
-  modalSub: { marginTop: 6, fontSize: 13, color: THEME.textMuted },
 };
 
 // Wider screens
