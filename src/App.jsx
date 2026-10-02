@@ -285,6 +285,72 @@ function expandChevronStyle(open) {
 }
 
 /**
+ * Trophy badge shown in the # column in place of the rank number for
+ * whoever is in sole or tied first place. The PNG is pre-cropped to just
+ * the crystal (no nameplate base) and pre-shrunk to ~4x its display size —
+ * letting the browser squash the original 1672px photo down to a ~26px
+ * icon is what made it look blurry.
+ */
+function LeaderIcon() {
+  return (
+    <img
+      src="/leader-trophy.png"
+      alt="1st"
+      title="Current leader"
+      style={{ display: "block", width: 28, height: 20 }}
+    />
+  );
+}
+
+/**
+ * The LEX (iron headcover) badge shown in the # column in place of the rank
+ * number for whoever is in last place. Pre-trimmed and pre-shrunk like the
+ * trophy (see LeaderIcon); width:height matches the trimmed artwork's ~1.89
+ * ratio.
+ */
+function LastPlaceIcon() {
+  return (
+    <img
+      src="/lex-headcover.png"
+      alt="Last"
+      title="The LEX"
+      style={{ display: "block", width: 38, height: 20 }}
+    />
+  );
+}
+
+/** True once a leaderboard row's own rank/holesPlayed show it's in the lead. */
+function isLeaderRow(r) {
+  return r.displayRank === 1 && r.holesPlayed > 0;
+}
+
+/**
+ * The displayRank that counts as "last place" — taken from the worst row
+ * among players who have actually played a hole (unstarted players sit
+ * below them but aren't last yet). Returns null when nobody has played, or
+ * when every scored player is tied for first, so the leader's trophy always
+ * wins and a field with no scores is simply numbered.
+ */
+function lastPlaceRank(rows) {
+  const scored = rows.filter((r) => r.holesPlayed > 0);
+  if (scored.length === 0) return null;
+  const rank = scored[scored.length - 1].displayRank;
+  return rank === 1 ? null : rank;
+}
+
+/** True for rows tied at the bottom of the scored field (see lastPlaceRank). */
+function isLastRow(r, lastRank) {
+  return lastRank != null && r.holesPlayed > 0 && r.displayRank === lastRank;
+}
+
+/** What the # column shows: trophy for 1st, LEX for last, otherwise the number. */
+function rankCellContent(r, idx, lastRank) {
+  if (isLeaderRow(r)) return <LeaderIcon />;
+  if (isLastRow(r, lastRank)) return <LastPlaceIcon />;
+  return r.displayRank ?? idx + 1;
+}
+
+/**
  * The <td> wrapping an expanded scorecard row — a light tint, not a card.
  * `width: "1px"` is a standard table trick: in auto table layout, a
  * colSpan cell's own content would otherwise force the whole table (and
@@ -2989,6 +3055,7 @@ const ps = {
               }
 
               if (gameResults.length <= 1 && !showRoundTabs) {
+                const lastRank = lastPlaceRank(leaderboardRows);
                 return (
               <>
                 <div style={styles.helpText}>
@@ -3004,8 +3071,8 @@ const ps = {
                   <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                     <thead>
                       <tr>
-                        <th style={{ ...lbTh, width: "8%" }}>#</th>
-                        <th style={{ ...lbTh, width: "52%" }}>Player</th>
+                        <th style={{ ...lbTh, width: "16%" }}>#</th>
+                        <th style={{ ...lbTh, width: "44%" }}>Player</th>
                         <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>Net vs Par</th>
                         <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
                       </tr>
@@ -3023,7 +3090,7 @@ const ps = {
 
                         return [
                           <tr key={r.id}>
-                            <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
+                            <td style={{ ...lbTd, padding: "8px 2px 8px 6px" }}>{rankCellContent(r, idx, lastRank)}</td>
 
                             <td style={{ ...lbTd, minWidth: 120 }}>
                               <button
@@ -3072,6 +3139,7 @@ const ps = {
               }
 
               const { game, rows } = lockCheckEntry;
+              const lastRank = lastPlaceRank(rows);
               const isTeamFormat =
                 game.format === "better_ball_2" ||
                 game.format === "better_ball_4" ||
@@ -3095,8 +3163,8 @@ const ps = {
                       <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                         <thead>
                           <tr>
-                            <th style={{ ...lbTh, width: "8%" }}>#</th>
-                            <th style={{ ...lbTh, width: "52%" }}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...lbTh, width: "16%" }}>#</th>
+                            <th style={{ ...lbTh, width: "44%" }}>{isTeamFormat ? "Team" : "Player"}</th>
                             <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>{scoreLabel}</th>
                             <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
                           </tr>
@@ -3114,7 +3182,7 @@ const ps = {
 
                             return [
                               <tr key={r.id}>
-                                <td style={lbTd}>{r.displayRank ?? idx + 1}</td>
+                                <td style={{ ...lbTd, padding: "8px 2px 8px 6px" }}>{rankCellContent(r, idx, lastRank)}</td>
 
                                 <td style={{ ...lbTd, minWidth: 120 }}>
                                   {isTeamFormat ? (
