@@ -517,7 +517,25 @@ function ScorecardDetail({ player }) {
   );
 }
 
+/**
+ * Live CSS media-query match. Inline styles can't carry @media rules, and a
+ * one-time check at load goes stale the moment a tablet rotates or a
+ * desktop window is resized, so this re-renders when the match changes.
+ */
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 export default function App() {
+  const isWide = useMediaQuery("(min-width: 820px)"); // 2-column Admin on tablets/desktops
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const [status, setStatus] = useState("Loading...");
 
@@ -3486,7 +3504,7 @@ const ps = {
 
         </div>
 
-        <div style={styles.adminGrid}>
+        <div style={{ ...styles.adminGrid, gridTemplateColumns: isWide ? "1fr 1fr" : "1fr" }}>
           {/* Event Name */}
           <AdminSection
             title="Event Name"
@@ -4425,6 +4443,12 @@ const styles = {
   },
 
   homeCard: {
+    // A menu card, not a page: on wide screens keep it phone-card sized and
+    // centered instead of stretching its buttons across the whole shell.
+    boxSizing: "border-box",
+    width: "100%",
+    maxWidth: 460,
+    justifySelf: "center",
     background: THEME.surfaceSoft,
     border: `1px solid ${THEME.border}`,
     borderRadius: 22,
@@ -4694,9 +4718,3 @@ giveBackMark: {
     gridTemplateColumns: "1fr 1fr",
   },
 };
-
-// Wider screens
-const media = typeof window !== "undefined" ? window.matchMedia("(min-width: 820px)") : null;
-if (media && media.matches) {
-  styles.adminGrid.gridTemplateColumns = "1fr 1fr";
-}
