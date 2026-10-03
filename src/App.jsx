@@ -2979,6 +2979,16 @@ function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, l
             <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
           </div>
         )}
+        <div style={ps.metaLine}>
+          <span style={ps.metaLabel}>Handicap:</span>{" "}
+          <span>
+            {game ? game.name : "Course Handicap"}
+            {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
+              ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
+              : ""}
+            {offset !== 0 ? " • Field-Relative" : ""}
+          </span>
+        </div>
         {hasSharedHoles && (
           <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
             Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
