@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
+import { computeBroadcastEvents, planPosts, safeDedupeKey, shortName, SWING_WINDOW_MS } from "./lib/broadcastEngine";
 
 /** ✅ Supabase via env vars */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -807,6 +808,9 @@ function TvMode({ eventName, subtitle, board, messages, forms, onExit }) {
                 <span style={{ flex: "none", minWidth: "4.5em", fontSize: "0.65em", color: TV.muted }}>
                   {new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                 </span>
+                <span style={{ flex: "none", alignSelf: "center", display: "flex" }}>
+                  <BroadcastIcon kind={m.kind} height="1.1em" />
+                </span>
                 <span
                   style={{
                     fontWeight: 600,
@@ -1081,7 +1085,14 @@ export default function App() {
 
   // Broadcast
   const [broadcastMsgs, setBroadcastMsgs] = useState([]);
-  const lastSnapshotRef = useRef(null);
+  const [broadcastLoaded, setBroadcastLoaded] = useState(false);
+  const [acePopup, setAcePopup] = useState(null);
+  // Admin → Danger Zone
+  const [dangerUnlocked, setDangerUnlocked] = useState(false);
+  const [dangerPin, setDangerPin] = useState("");
+  const [dangerPinMsg, setDangerPinMsg] = useState("");
+  const [clearMsg, setClearMsg] = useState("");
+  const [clearNeedsSetup, setClearNeedsSetup] = useState(false);
 
   // Leaderboard scorecard modal
   const [scorecardPlayerId, setScorecardPlayerId] = useState(null);
@@ -1320,13 +1331,14 @@ export default function App() {
       .from("broadcast_messages")
       .select("id,created_at,kind,text,player_id,dedupe_key")
       .order("created_at", { ascending: false })
-      .limit(5000);
+      .limit(400);
 
     if (error) {
       console.error("loadBroadcast error:", error);
       return { ok: false, where: "broadcast_messages", error: errToText(error) };
     }
     setBroadcastMsgs(data || []);
+    setBroadcastLoaded(true);
     return { ok: true, where: "broadcast_messages" };
   }
 
@@ -1457,102 +1469,10 @@ export default function App() {
     return Math.min(...players.map((p) => clampInt(p.handicap, 0)));
   }, [players, appSettings.handicap_basis]);
 
-  const leaderboardRows = useMemo(() => {
-    // Scoped to the active round. In Simple Mode there's only ever one
-    // round, so this filter matches every row and changes nothing.
-    const activeRoundId = rounds.find((r) => r.is_active)?.id ?? null;
-
-    // last-write-wins scores by player/hole
-    const scoresByPlayer = new Map();
-    for (const s of scores) {
-      if (activeRoundId != null && s.round_id !== activeRoundId) continue;
-      const pid = s.player_id;
-      const h = clampInt(s.hole, 0);
-      const sc = clampInt(s.score, 0);
-      if (h < 1 || h > 18) continue;
-      if (!scoresByPlayer.has(pid)) scoresByPlayer.set(pid, {});
-      const blob = scoresByPlayer.get(pid);
-      if (!blob.scoresByHole) blob.scoresByHole = {};
-      blob.scoresByHole[h] = sc;
-    }
-
-    const rows = players.map((p) => {
-      const blob = scoresByPlayer.get(p.id) || {};
-      const scoresByHole = blob.scoresByHole || {};
-
-      const playedHoles = Object.keys(scoresByHole)
-        .map((x) => clampInt(x, 0))
-        .filter((h) => h >= 1 && h <= 18)
-        .sort((a, b) => a - b);
-
-      const holesPlayed = playedHoles.length;
-      // `handicap` is the player's real course handicap (shown as their
-      // "HCP" badge). `playingHandicap` is what stroke/net-score math
-      // actually uses — the same number, unless Field-Relative mode shifts
-      // it by the field's lowest handicap.
-      const handicap = clampInt(p.handicap, 0);
-      const playingHandicap = handicap - fieldOffset;
-
-      const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
-      const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
-
-      // Real net (stroke index allocation)
-      const netGross = playedHoles.reduce((acc, h) => {
-        const grossHole = scoresByHole[h];
-        const netHole = netScoreForHole(grossHole, playingHandicap, h);
-        return acc + netHole;
-      }, 0);
-
-      const netToPar = holesPlayed === 0 ? 9999 : netGross - parPlayed;
-
-      return {
-        id: p.id,
-        name: p.name,
-        last: lastName(p.name),
-        handicap,
-        playingHandicap,
-        charity: p.charity,
-        holesPlayed,
-        netToPar,
-        scoresByHole,
-        gross,
-      };
-    });
-
-    // Sort: scored first, then netToPar, then holesPlayed desc, then name
-    rows.sort((a, b) => {
-      const aHas = a.holesPlayed > 0;
-      const bHas = b.holesPlayed > 0;
-      if (aHas !== bHas) return aHas ? -1 : 1;
-      if (a.netToPar !== b.netToPar) return a.netToPar - b.netToPar;
-      if (a.holesPlayed !== b.holesPlayed) return b.holesPlayed - a.holesPlayed;
-      return a.name.localeCompare(b.name);
-    });
-
-    // ✅ Assign display ranks with tie handling: 1, 1, 3...
-// Tie rule: same netToPar AND same holesPlayed
-let lastKey = null;
-
-for (let i = 0; i < rows.length; i++) {
-  const r = rows[i];
-
-  // Only tie players who have scores; otherwise don't tie the "—" rows
-  const key = r.holesPlayed > 0 ? `${r.netToPar}|${r.holesPlayed}` : `noscore|${r.id}`;
-
-  if (i === 0) {
-    r.displayRank = 1;
-  } else if (key === lastKey) {
-    r.displayRank = rows[i - 1].displayRank; // same rank as previous row
-  } else {
-    r.displayRank = i + 1; // competition ranking jump
-  }
-
-  lastKey = key;
-}
-
-return rows;
-
-  }, [players, scores, rounds, fieldOffset]);
+  const leaderboardRows = useMemo(
+    () => buildLeaderboardRows(players, scores, rounds.find((r) => r.is_active)?.id ?? null, fieldOffset),
+    [players, scores, rounds, fieldOffset]
+  );
 
   // --- Multi-Game (Stage 2) ---
   // Computed alongside the original leaderboardRows above, which is left
@@ -1667,454 +1587,189 @@ return rows;
     return out;
   }, [leaderboardRows, foursomes, foursomePlayers, activeRound]);
 
-/** -----------------------
- *  BROADCAST ENGINE
- *  Runs every 3 minutes
- * ----------------------*/
+  /** -----------------------
+   *  THE BROADCAST
+   *  What counts as a "moment" lives in ./lib/broadcastEngine (pure and
+   *  tested). This just feeds it the data that is already loaded and saves
+   *  whatever it decides. It runs whenever the scores change (a save here, or
+   *  a refresh from anyone's phone) — not on a timer — and every card has a
+   *  unique key in the database, so two phones can never post the same one.
+   * ----------------------*/
 
-/** Broadcast helpers */
-function nowKeyMinute() {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
-    d.getUTCDate()
-  ).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-}
+  // The tick reads everything from this ref so it always sees the latest data,
+  // not whatever was loaded when the function was created.
+  const liveRef = useRef(null);
+  const tickBusyRef = useRef(false);
+  useEffect(() => {
+    liveRef.current = { leaderboardRows, scores, players, rounds, foursomes, foursomePlayers, broadcastMsgs, eventName, fieldOffset };
+  });
 
-function safeDedupeKey(parts) {
-  return parts
-    .map((p) => String(p ?? "").trim().toLowerCase().replace(/\s+/g, "_"))
-    .join("|")
-    .slice(0, 240);
-}
-
-// Deterministic variant selection (same seed => same template)
-function fnv1a(str) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-function pickVariant(templates, seedParts) {
-  if (!templates || templates.length === 0) return "";
-  const seed = safeDedupeKey(seedParts);
-  const idx = fnv1a(seed) % templates.length;
-  return templates[idx];
-}
-
-/** Template library */
-const BROADCAST_TEMPLATES = {
-  leader: [
-    ({ last, net, holes }) => `${last} takes the lead — net ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `New leader: ${last}. Net ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `${last} is on top. ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `${last} out front — ${net} through ${holes} holes.`,
-  ],
-  lex: [
-    ({ last, net, holes }) =>
-      `${last} is now The LEX — net ${net} through ${holes} holes. Someone check on them.`,
-    ({ last, net, holes }) => `The LEX crown goes to ${last}. ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `${last} drops to The LEX. Net ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `It’s ${last} at The LEX. ${net} through ${holes} holes.`,
-  ],
-  top5: [
-    ({ last, net, holes }) => `${last} just cracked the Top 5 — ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `Top 5 alert: ${last} is in. Net ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `${last} climbs into the Top 5 — ${net} through ${holes} holes.`,
-    ({ last, net, holes }) => `${last} joins the Leaders. ${net} through ${holes} holes.`,
-  ],
-  move: [
-    ({ last, dir, spots, rank, holes }) =>
-      `${last} moved ${dir} ${spots} spot${spots === 1 ? "" : "s"} to #${rank} through ${holes} holes.`,
-    ({ last, dir, spots, rank, holes }) =>
-      `${last} is ${dir} ${spots} to #${rank} — through ${holes} holes.`,
-    ({ last, dir, spots, rank, holes }) =>
-      `Movement: ${last} goes ${dir} ${spots}, now #${rank} through ${holes} holes.`,
-  ],
-};
-
-async function insertBroadcast(kind, text, dedupeParts, player_id = null) {
-  const dedupe_key = safeDedupeKey(dedupeParts);
-
-  const { error } = await supabase.from("broadcast_messages").insert({ kind, text, player_id, dedupe_key });
-
-  // Ignore duplicates (unique dedupe_key)
-  if (error) {
-    const msg = errToText(error);
-    if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) return;
-    console.error("insertBroadcast error:", error);
-  }
-}
-
-function computeNetStats(row) {
-  const played = Object.keys(row.scoresByHole || {})
-    .map((x) => clampInt(x, 0))
-    .filter((h) => h >= 1 && h <= 18)
-    .sort((a, b) => a - b);
-
-  let netBirdies = 0;
-  let bogeyFree = true;
-  let netDoubles = 0;
-  let netTriplesPlus = 0;
-
-  for (const h of played) {
-    const gross = row.scoresByHole[h];
-    const net = netScoreForHole(gross, row.playingHandicap, h);
-    const par = PARS[h - 1];
-
-    if (net <= par - 1) netBirdies += 1;
-    if (net > par) bogeyFree = false;
-
-    const over = net - par;
-    if (over >= 2 && over < 3) netDoubles += 1;
-    if (over >= 3) netTriplesPlus += 1;
-  }
-
-  const front = played.filter((h) => h >= 1 && h <= 9);
-  const back = played.filter((h) => h >= 10 && h <= 18);
-
-  const frontNetToPar =
-    front.length === 0
-      ? null
-      : front.reduce(
-          (acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.playingHandicap, h) - PARS[h - 1]),
-          0
-        );
-
-  const backNetToPar =
-    back.length === 0
-      ? null
-      : back.reduce(
-          (acc, h) => acc + (netScoreForHole(row.scoresByHole[h], row.playingHandicap, h) - PARS[h - 1]),
-          0
-        );
-
-  return { played, netBirdies, bogeyFree, netDoubles, netTriplesPlus, frontNetToPar, backNetToPar };
-}
-
-/**
- * Milestone recap: standings text (Top 3 + Bottom 3) prefixed with a
- * progress-milestone label, e.g. "Half the field has made the turn".
- * Replaces the old clock-based 20-min/hourly recap — see the field-progress
- * check in runBroadcastTick, which fires this at meaningful moments in the
- * round instead of on a fixed timer.
- */
-function buildMilestoneRecapText(label, ranked) {
-  const fmt = (r, place) => {
-    const holes = r.holesPlayed ?? 0;
-    const score = formatToPar(r.netToPar);
-    return `${place}. ${r.last} ${score} (through ${holes})`;
-  };
-
-  const top = ranked.slice(0, 3);
-  const bottom = ranked.slice(Math.max(0, ranked.length - 3));
-
-  const topLines = top.map((r, i) => fmt(r, i + 1)).join("  •  ");
-  const bottomLines = bottom
-    .map((r, i) => fmt(r, ranked.length - bottom.length + i + 1))
-    .join("  •  ");
-
-  return `${label} — Leaders: ${topLines}  |  The LEX: ${bottomLines}`;
-}
-
-/** "A", "A and B", or "A, B, and C" */
-function joinNames(names) {
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-}
-
-/**
- * Final results: once the whole field has finished, name the winner and
- * The LEX by full name instead of the usual Top 3/Bottom 3 standings —
- * this is the one moment the result is final, so it gets a proper
- * announcement instead of another "Leaders: ... | The LEX: ..." recap.
- * Margins are each player's gap to their nearest competitor (winner vs.
- * runner-up, The LEX vs. second-to-last), not the spread across the
- * whole field.
- *
- * The app has no way to run an on-site tie breaker, so a genuine tie for
- * the lead or for The LEX is never resolved into a single name — instead
- * every player involved is named and the message says that award gets
- * settled on-site instead of declaring anyone the winner/loser.
- */
-function buildFinalResultsText(ranked, eventName) {
-  const shots = (n) => `${n} shot${n === 1 ? "" : "s"}`;
-
-  const leadScore = ranked[0].netToPar;
-  const leaders = ranked.filter((r) => r.netToPar === leadScore);
-  const lexScore = ranked[ranked.length - 1].netToPar;
-  const lexGroup = ranked.filter((r) => r.netToPar === lexScore);
-
-  const winTieLine = () =>
-    `🏆 It's a ${leaders.length}-way tie for the lead at ${eventName} — ${joinNames(
-      leaders.map((r) => r.name)
-    )}! We'll settle the championship with an on-site tie breaker.`;
-
-  // Only one player has finished — nothing to compare against.
-  if (ranked.length === 1) {
-    return `🏆 Congratulations to ${ranked[0].name} — champion of ${eventName}!`;
-  }
-
-  // Whole field tied at the same score — one line covers it; a separate
-  // LEX line would just be naming the same tie again.
-  if (leaders.length === ranked.length) return winTieLine();
-
-  let winLine;
-  if (leaders.length > 1) {
-    winLine = winTieLine();
-  } else {
-    const winner = leaders[0];
-    const runnerUp = ranked.find((r) => r.netToPar !== leadScore);
-    const winMargin = runnerUp.netToPar - winner.netToPar;
-    winLine = `🏆 Congratulations to ${winner.name} — champion of ${eventName}, winning by ${shots(winMargin)}!`;
-  }
-
-  let lexLine;
-  if (lexGroup.length > 1) {
-    lexLine = `And a ${lexGroup.length}-way tie for The LEX — ${joinNames(
-      lexGroup.map((r) => r.name)
-    )}. We'll settle that one with an on-site tie breaker too!`;
-  } else {
-    const lex = lexGroup[0];
-    const aboveLex = [...ranked].reverse().find((r) => r.netToPar !== lexScore);
-    const lossMargin = lex.netToPar - aboveLex.netToPar;
-    lexLine = `And a nod to The LEX, ${lex.name}, who lost by ${shots(lossMargin)}.`;
-  }
-
-  return `${winLine}  |  ${lexLine}`;
-}
-
-async function runBroadcastTick() {
-  if (!leaderboardRows || leaderboardRows.length === 0) return;
-
-  const ranked = leaderboardRows
-    .filter((r) => r.holesPlayed > 0)
-    .map((r, idx) => ({ ...r, rank: idx + 1 }));
-
-  if (ranked.length === 0) return;
-
-  // ---------- Field-progress milestones (replaces the old clock-based
-  // 20-min/hourly recap) — posts once, the moment the field as a whole
-  // crosses a meaningful point in the round, instead of on a timer. "The
-  // turn" means holes played >= 9 for each player individually (not the
-  // literal hole #9), since groups can start on different holes.
-  const activeRoundId = rounds.find((r) => r.is_active)?.id ?? null;
-  const roundFoursomeIds = new Set(foursomes.filter((f) => f.round_id === activeRoundId).map((f) => f.id));
-  const fieldPlayerIds = new Set(
-    foursomePlayers.filter((fp) => roundFoursomeIds.has(fp.foursome_id)).map((fp) => fp.player_id)
-  );
-  const fieldRows = leaderboardRows.filter((r) => fieldPlayerIds.has(r.id));
-
-  if (fieldRows.length > 0) {
-    const turnPct = fieldRows.filter((r) => r.holesPlayed >= 9).length / fieldRows.length;
-    const finishPct = fieldRows.filter((r) => r.holesPlayed >= 18).length / fieldRows.length;
-
-    const milestones = [
-      { key: "half_turn", hit: turnPct >= 0.5, label: "Half the field has made the turn ⛳" },
-      { key: "full_turn", hit: turnPct >= 1, label: "The whole field has made the turn ⛳" },
-      { key: "half_finish", hit: finishPct >= 0.5, label: "Half the field has finished the round 🏁" },
-      { key: "full_finish", hit: finishPct >= 1, label: "The whole field has finished the round 🏁" },
-    ];
-
-    for (const m of milestones) {
-      if (!m.hit) continue;
-      const dedupeParts = ["milestone", m.key, activeRoundId];
-      const text =
-        m.key === "full_finish" ? buildFinalResultsText(ranked, eventName) : buildMilestoneRecapText(m.label, ranked);
-      await insertBroadcast("recap", text, dedupeParts, null);
+  async function insertBroadcastRows(rows) {
+    for (const r of rows) {
+      const { error } = await supabase
+        .from("broadcast_messages")
+        .insert({ kind: r.kind, text: r.text, player_id: r.playerId, dedupe_key: safeDedupeKey(r.dedupe) });
+      if (!error) continue;
+      const msg = errToText(error).toLowerCase();
+      if (msg.includes("duplicate") || msg.includes("unique")) continue; // another phone got there first
+      console.error("insertBroadcast error:", error);
     }
   }
 
-  const current = new Map();
-  for (const r of ranked) {
-    const stats = computeNetStats(r);
-    current.set(r.id, {
-      id: r.id,
-      last: r.last,
-      name: r.name,
-      rank: r.rank,
-      holes: r.holesPlayed,
-      netToPar: r.netToPar,
-      stats,
-    });
-  }
+  async function runBroadcastTick() {
+    const s = liveRef.current;
+    if (!s || tickBusyRef.current || s.leaderboardRows.length === 0) return;
+    tickBusyRef.current = true;
+    try {
+      const now = Date.now();
+      const roundId = s.rounds.find((r) => r.is_active)?.id ?? null;
 
-  const prev = lastSnapshotRef.current;
-  lastSnapshotRef.current = current;
-
-  // First run: baseline only
-  if (!prev) return;
-
-  const leader = ranked[0];
-  const lex = ranked[ranked.length - 1];
-
-  const prevLeader = Array.from(prev.values()).find((x) => x.rank === 1) || null;
-  const prevLex = Array.from(prev.values()).reduce((acc, x) => (!acc || x.rank > acc.rank ? x : acc), null);
-
-  // New leader
-  if (prevLeader && prevLeader.id !== leader.id) {
-    const dedupeParts = ["leader", nowKeyMinute(), leader.id, leader.netToPar, leader.holesPlayed];
-    const template = pickVariant(BROADCAST_TEMPLATES.leader, dedupeParts);
-    const t = template({
-      last: leader.last,
-      net: formatToPar(leader.netToPar),
-      holes: leader.holesPlayed,
-    });
-    await insertBroadcast("leader", t, dedupeParts, leader.id);
-  }
-
-  // New LEX
-  if (prevLex && prevLex.id !== lex.id) {
-    const dedupeParts = ["lex", nowKeyMinute(), lex.id, lex.netToPar, lex.holesPlayed];
-    const template = pickVariant(BROADCAST_TEMPLATES.lex, dedupeParts);
-    const t = template({
-      last: lex.last,
-      net: formatToPar(lex.netToPar),
-      holes: lex.holesPlayed,
-    });
-    await insertBroadcast("lex", t, dedupeParts, lex.id);
-  }
-
-  // New Top 5 entrant
-  const prevTop5 = new Set(Array.from(prev.values()).filter((x) => x.rank <= 5).map((x) => x.id));
-  for (const r of ranked.filter((x) => x.rank <= 5)) {
-    if (!prevTop5.has(r.id)) {
-      const dedupeParts = ["top5_in", nowKeyMinute(), r.id, r.rank, r.netToPar, r.holesPlayed];
-      const template = pickVariant(BROADCAST_TEMPLATES.top5, dedupeParts);
-      const t = template({
-        last: r.last,
-        net: formatToPar(r.netToPar),
-        holes: r.holesPlayed,
-      });
-      await insertBroadcast("top5", t, dedupeParts, r.id);
-    }
-  }
-
-  // Moved up/down >= 2 spots
-  for (const r of ranked) {
-    const p = prev.get(r.id);
-    if (!p) continue;
-    const delta = p.rank - r.rank;
-    if (Math.abs(delta) >= 2) {
-      const dir = delta > 0 ? "up" : "down";
-      const spots = Math.abs(delta);
-
-      const dedupeParts = ["move", nowKeyMinute(), r.id, p.rank, r.rank, r.netToPar, r.holesPlayed];
-      const template = pickVariant(BROADCAST_TEMPLATES.move, dedupeParts);
-      const t = template({ last: r.last, dir, spots, rank: r.rank, holes: r.holesPlayed });
-
-      await insertBroadcast("move", t, dedupeParts, r.id);
-    }
-  }
-
-  // Player-specific triggers (unchanged text except minor “through holes” where rank-based)
-  for (const r of ranked) {
-    const cur = current.get(r.id);
-    const p = prev.get(r.id);
-    if (!cur || !p) continue;
-
-    const curStats = cur.stats;
-    const prevStats = p.stats;
-
-    if ((prevStats?.netBirdies ?? 0) < 3 && curStats.netBirdies >= 3) {
-      const t = `${r.last} just posted their 3rd net birdie of the day. Heating up.`;
-      await insertBroadcast("birdies", t, ["3rd_net_birdie", nowKeyMinute(), r.id, curStats.netBirdies, cur.holes], r.id);
-    }
-
-    const milestones = [6, 9, 12, 15, 18];
-    for (const m of milestones) {
-      const was = (p.holes ?? 0) >= m && prevStats?.bogeyFree;
-      const now = cur.holes >= m && curStats.bogeyFree;
-      if (!was && now) {
-        const t = `${r.last} is bogey-free through ${m}. Quietly lethal.`;
-        await insertBroadcast("bogeyfree", t, ["bogeyfree", m, nowKeyMinute(), r.id, cur.holes], r.id);
-      }
-    }
-
-    if ((prevStats?.netDoubles ?? 0) < curStats.netDoubles) {
-      const t = `${r.last} just took a net double. Damage control mode.`;
-      await insertBroadcast("disaster", t, ["net_double", nowKeyMinute(), r.id, curStats.netDoubles, cur.holes], r.id);
-    }
-    if ((prevStats?.netTriplesPlus ?? 0) < curStats.netTriplesPlus) {
-      const t = `${r.last} just found a net triple (or worse). The course demanded tribute.`;
-      await insertBroadcast("disaster", t, ["net_triple", nowKeyMinute(), r.id, curStats.netTriplesPlus, cur.holes], r.id);
-    }
-
-    const isLeaderOrTop5 = r.rank <= 5;
-    const isLex = r.id === lex.id;
-
-    if (isLeaderOrTop5 || isLex) {
-      const prevFrontDone = (prevStats?.played || []).filter((h) => h <= 9).length >= 9;
-      const curFrontDone = (curStats.played || []).filter((h) => h <= 9).length >= 9;
-
-      if (!prevFrontDone && curFrontDone && curStats.frontNetToPar != null) {
-        const t = `${r.last} turned in ${formatToPar(curStats.frontNetToPar)} on the front.`;
-        await insertBroadcast("split", t, ["front_split", nowKeyMinute(), r.id, curStats.frontNetToPar], r.id);
-      }
-
-      const prevBackDone = (prevStats?.played || []).filter((h) => h >= 10).length >= 9;
-      const curBackDone = (curStats.played || []).filter((h) => h >= 10).length >= 9;
-
-      if (!prevBackDone && curBackDone && curStats.backNetToPar != null) {
-        const t = `${r.last} played the back in ${formatToPar(curStats.backNetToPar)}.`;
-        await insertBroadcast("split", t, ["back_split", nowKeyMinute(), r.id, curStats.backNetToPar], r.id);
-      }
-    }
-
-    const prevPlayed = new Set(prevStats?.played || []);
-    const newHoles = (curStats.played || []).filter((h) => !prevPlayed.has(h));
-
-const highlightAllowed = r.id === leader.id || r.id === lex.id;
-
-if (highlightAllowed && newHoles.length > 0) {
-  for (const h of newHoles) {
-    const gross = r.scoresByHole[h];
-    if (gross == null) continue;
-
-    const net = netScoreForHole(gross, r.playingHandicap, h);
-    const par = PARS[h - 1];
-
-    if (net <= par - 1) {
-      const who = r.id === leader.id ? "Leader" : "The LEX";
-      const diff = net - par;
-
-      let t;
-
-      if (diff === -1) {
-        // Only call it birdie if exactly -1
-        t = `${who} alert: ${r.last} made a net birdie on #${h}.`;
-      } else {
-        // -2 or better → show actual net score
-        t = `${who} alert: ${r.last} posted a net ${net} on #${h}.`;
-      }
-
-      await insertBroadcast(
-        "highlight",
-        t,
-        ["highlight_score", nowKeyMinute(), r.id, h, net, par, r.rank],
-        r.id
+      // Which group each player is in this round, and where that group starts.
+      const roundFoursomes = new Map(
+        s.foursomes.filter((f) => !f.round_id || f.round_id === roundId).map((f) => [f.id, f])
       );
+      const startByPlayer = new Map();
+      const groupByPlayer = new Map();
+      for (const fp of s.foursomePlayers) {
+        const f = roundFoursomes.get(fp.foursome_id);
+        if (!f) continue;
+        startByPlayer.set(fp.player_id, f.starting_hole);
+        groupByPlayer.set(fp.player_id, f.group_name);
+      }
+
+      const scoreTimes = {};
+      for (const sc of s.scores) {
+        if (roundId != null && sc.round_id !== roundId) continue;
+        scoreTimes[`${sc.player_id}|${sc.hole}`] = new Date(sc.created_at).getTime();
+      }
+
+      const rows = s.leaderboardRows.map((r) => {
+        const vsPar = {};
+        for (const [h, g] of Object.entries(r.scoresByHole)) {
+          vsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h)) - PARS[Number(h) - 1];
+        }
+        return {
+          id: r.id,
+          name: r.name,
+          holesPlayed: r.holesPlayed,
+          netToPar: r.netToPar,
+          displayRank: r.displayRank,
+          gross: r.scoresByHole,
+          vsPar,
+          startHole: startByPlayer.get(r.id) ?? 1,
+          group: groupByPlayer.get(r.id) || null,
+        };
+      });
+
+      // "Standings a few minutes ago": the same leaderboard math, ignoring scores saved since.
+      const prevRows = buildLeaderboardRows(s.players, s.scores, roundId, s.fieldOffset, now - SWING_WINDOW_MS);
+      const prevRanks = new Map(prevRows.filter((r) => r.holesPlayed > 0).map((r) => [r.id, r.displayRank]));
+      const fieldIds = new Set(startByPlayer.keys());
+
+      const events = computeBroadcastEvents({
+        now,
+        eventName: s.eventName,
+        roundId,
+        pars: PARS,
+        rows,
+        scoreTimes,
+        prevRanks,
+        fieldIds,
+        messages: s.broadcastMsgs,
+      });
+      if (events.length === 0) return;
+      await insertBroadcastRows(planPosts(events, { now, messages: s.broadcastMsgs }));
+      await loadBroadcast();
+    } finally {
+      tickBusyRef.current = false;
     }
   }
-}
+
+  // Check for new cards whenever fresh scores/players arrive (and once the saved log has loaded).
+  useEffect(() => {
+    if (!broadcastLoaded) return;
+    runBroadcastTick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scores, players, broadcastLoaded]);
+
+  // Every open phone picks up new cards (and a hole-in-one popup) within ~30 seconds.
+  useEffect(() => {
+    const id = setInterval(loadBroadcast, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Keep players/scores fresh for anyone just sitting on another tab.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      await loadPlayers();
+      await loadScores();
+    }, 180_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Hole-in-one popup: the newest ace from the last 10 minutes this phone hasn't dismissed yet.
+  useEffect(() => {
+    if (acePopup) return;
+    const seen = readSeenAces();
+    const m = broadcastMsgs.find(
+      (x) => x.kind === "ace" && Date.now() - new Date(x.created_at).getTime() < ACE_POPUP_MS && !seen.includes(x.id)
+    );
+    if (m) setAcePopup(m);
+  }, [broadcastMsgs, acePopup]);
+
+  function dismissAce() {
+    if (acePopup) rememberSeenAce(acePopup.id);
+    setAcePopup(null);
   }
 
-  await loadBroadcast();
-}
+  // Cards the feed and TV Mode show (hidden rows only exist so nothing is announced twice).
+  const visibleBroadcast = useMemo(
+    () => broadcastMsgs.filter((m) => !String(m.kind || "").startsWith("hidden_")),
+    [broadcastMsgs]
+  );
 
-// Broadcast tick every 3 minutes
-useEffect(() => {
-  const id = setInterval(async () => {
-    await loadPlayers();
-    await loadScores();
-    await runBroadcastTick();
-  }, 180_000);
-  return () => clearInterval(id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [players.length]);
+  // Admin → Danger Zone → Clear all messages
+  async function clearBroadcastMessages() {
+    if (!adminOn) return alert("Admin only.");
+    const head = await supabase.from("broadcast_messages").select("id", { count: "exact", head: true });
+    const total = head.count ?? broadcastMsgs.length;
+    if (!total) {
+      setClearMsg("There are no Broadcast messages to clear.");
+      return;
+    }
+    if (!confirm(`Delete all ${total} Broadcast messages? This can't be undone.`)) return;
+    setClearMsg("Clearing…");
+    const { data, error } = await supabase
+      .from("broadcast_messages")
+      .delete()
+      .gte("created_at", "1970-01-01T00:00:00Z")
+      .select("id");
+    if (error) {
+      console.error(error);
+      setClearMsg(`Error clearing messages: ${errToText(error)}`);
+      return;
+    }
+    if ((data || []).length === 0) {
+      // The database accepted the request but removed nothing: delete isn't allowed yet.
+      setClearNeedsSetup(true);
+      setClearMsg("Nothing was deleted. The database needs a one-time permission first (see below).");
+      return;
+    }
+    setClearNeedsSetup(false);
+    await loadBroadcast();
+    setClearMsg(`Cleared ${data.length} messages ✅`);
+  }
+
+  function unlockDanger() {
+    if (dangerPin === ADMIN_PIN) {
+      setDangerUnlocked(true);
+      setDangerPin("");
+      setDangerPinMsg("");
+    } else {
+      setDangerPinMsg("Wrong passcode.");
+      setDangerPin("");
+    }
+  }
 
   function enterAdmin() {
     if (adminPin === ADMIN_PIN) {
@@ -2779,7 +2434,6 @@ useEffect(() => {
     }
 
     await loadScores();
-    await runBroadcastTick(); // immediate check after a save (still respects dedupe)
     setHole(nextHole);
   }
 
@@ -3489,7 +3143,7 @@ const ps = {
             .filter(Boolean)
             .join(" · ")}
           board={gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0] || null}
-          messages={broadcastMsgs}
+          messages={visibleBroadcast}
           forms={tvForms}
           onExit={() => setTab("home")}
         />
@@ -3662,7 +3316,6 @@ const ps = {
                   onClick={async () => {
                     await loadPlayers();
                     await loadScores();
-                    await runBroadcastTick();
                     await loadBroadcast();
                   }}
                 >
@@ -3679,23 +3332,7 @@ const ps = {
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              {broadcastMsgs.length === 0 && (
-                <div style={styles.broadcastItem}>
-                  <div style={{ fontWeight: 950 }}>No updates yet</div>
-                  <div style={{ marginTop: 6, color: THEME.textMuted, fontSize: 12 }}>
-                    Once scores start coming in, this will fill up automatically every ~3 minutes.
-                  </div>
-                </div>
-              )}
-
-              {broadcastMsgs.map((m) => (
-                <div key={m.id} style={styles.broadcastItem}>
-                  <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                    {new Date(m.created_at).toLocaleString()}
-                  </div>
-                  <div style={{ marginTop: 6, fontWeight: 950 }}>{m.text}</div>
-                </div>
-              ))}
+              <BroadcastFeed messages={visibleBroadcast} />
             </div>
           </div>
         )}
@@ -5094,8 +4731,41 @@ const ps = {
             title="⚠️ Danger Zone"
             danger
             open={openAdminSection === "danger"}
-            onToggle={() => setOpenAdminSection((k) => (k === "danger" ? null : "danger"))}
+            onToggle={() => {
+              // Opening the Danger Zone always asks for the passcode again.
+              setDangerUnlocked(false);
+              setDangerPin("");
+              setDangerPinMsg("");
+              setOpenAdminSection((k) => (k === "danger" ? null : "danger"));
+            }}
           >
+            {!dangerUnlocked ? (
+              <div style={{ display: "grid", gap: 10, maxWidth: 360 }}>
+                <div style={styles.helpText}>Enter the Admin passcode to open the Danger Zone.</div>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  style={{ ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box" }}
+                  value={dangerPin}
+                  onChange={(e) => {
+                    setDangerPin(e.target.value);
+                    setDangerPinMsg("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") unlockDanger();
+                  }}
+                  placeholder="Passcode"
+                />
+                <button style={{ ...styles.bigBtn, minHeight: 48 }} onClick={unlockDanger}>
+                  Unlock Danger Zone
+                </button>
+                {dangerPinMsg ? (
+                  <div style={{ fontSize: 13, color: THEME.danger, fontWeight: 700 }}>{dangerPinMsg}</div>
+                ) : null}
+              </div>
+            ) : (
+              <>
             <div style={styles.helpText}>Every action below is irreversible. Each one asks you to confirm first.</div>
 
             <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
@@ -5107,6 +4777,19 @@ const ps = {
                 <button style={{ ...styles.dangerBtn, marginTop: 10 }} onClick={clearFoursomes}>
                   Clear Foursomes
                 </button>
+              </div>
+
+              <div>
+                <div style={styles.hr} />
+                <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Clear all messages</div>
+                <div style={styles.helpText}>
+                  Deletes every message on The Broadcast (and the TV Mode strip). Scores and players are not touched.
+                </div>
+                <button style={{ ...styles.dangerBtn, marginTop: 10, minHeight: 44 }} onClick={clearBroadcastMessages}>
+                  Clear all messages
+                </button>
+                {clearMsg ? <div style={styles.helpText}>{clearMsg}</div> : null}
+                {clearNeedsSetup ? <ClearMessagesSetupNotice /> : null}
               </div>
 
               {games.length > 0 && (
@@ -5162,6 +4845,8 @@ const ps = {
                 </div>
               )}
             </div>
+              </>
+            )}
           </AdminSection>
         </div>
         )}
@@ -5181,6 +4866,7 @@ const ps = {
           </div>
         )}
       </div>
+   {acePopup && <AcePopup msg={acePopup} players={players} onClose={dismissAce} />}
    {printAllOn && (
   <PrintTwoUpScorecards
     foursomes={foursomes}
@@ -5871,6 +5557,348 @@ function PhoneSetup({
     </div>
   );
 }
+
+/**
+ * The leaderboard rows (everything the Leaderboard, TV Mode and the Broadcast
+ * rank from). `cutoffMs`, when given, ignores scores saved after that moment —
+ * that's how the Broadcast asks "what were the standings a few minutes ago?".
+ */
+function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset, cutoffMs = null) {
+  // last-write-wins scores by player/hole
+  const scoresByPlayer = new Map();
+  for (const s of scores) {
+    if (activeRoundId != null && s.round_id !== activeRoundId) continue;
+    if (cutoffMs != null && new Date(s.created_at).getTime() > cutoffMs) continue;
+    const pid = s.player_id;
+    const h = clampInt(s.hole, 0);
+    const sc = clampInt(s.score, 0);
+    if (h < 1 || h > 18) continue;
+    if (!scoresByPlayer.has(pid)) scoresByPlayer.set(pid, {});
+    const blob = scoresByPlayer.get(pid);
+    if (!blob.scoresByHole) blob.scoresByHole = {};
+    blob.scoresByHole[h] = sc;
+  }
+
+  const rows = players.map((p) => {
+    const blob = scoresByPlayer.get(p.id) || {};
+    const scoresByHole = blob.scoresByHole || {};
+
+    const playedHoles = Object.keys(scoresByHole)
+      .map((x) => clampInt(x, 0))
+      .filter((h) => h >= 1 && h <= 18)
+      .sort((a, b) => a - b);
+
+    const holesPlayed = playedHoles.length;
+    // `handicap` is the player's real course handicap (shown as their
+    // "HCP" badge). `playingHandicap` is what stroke/net-score math
+    // actually uses — the same number, unless Field-Relative mode shifts
+    // it by the field's lowest handicap.
+    const handicap = clampInt(p.handicap, 0);
+    const playingHandicap = handicap - fieldOffset;
+
+    const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
+    const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
+
+    // Real net (stroke index allocation)
+    const netGross = playedHoles.reduce((acc, h) => {
+      const grossHole = scoresByHole[h];
+      const netHole = netScoreForHole(grossHole, playingHandicap, h);
+      return acc + netHole;
+    }, 0);
+
+    const netToPar = holesPlayed === 0 ? 9999 : netGross - parPlayed;
+
+    return {
+      id: p.id,
+      name: p.name,
+      last: lastName(p.name),
+      handicap,
+      playingHandicap,
+      charity: p.charity,
+      holesPlayed,
+      netToPar,
+      scoresByHole,
+      gross,
+    };
+  });
+
+  // Sort: scored first, then netToPar, then holesPlayed desc, then name
+  rows.sort((a, b) => {
+    const aHas = a.holesPlayed > 0;
+    const bHas = b.holesPlayed > 0;
+    if (aHas !== bHas) return aHas ? -1 : 1;
+    if (a.netToPar !== b.netToPar) return a.netToPar - b.netToPar;
+    if (a.holesPlayed !== b.holesPlayed) return b.holesPlayed - a.holesPlayed;
+    return a.name.localeCompare(b.name);
+  });
+
+  // ✅ Assign display ranks with tie handling: 1, 1, 3...
+  // Tie rule: same netToPar AND same holesPlayed
+  let lastKey = null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+
+    // Only tie players who have scores; otherwise don't tie the "—" rows
+    const key = r.holesPlayed > 0 ? `${r.netToPar}|${r.holesPlayed}` : `noscore|${r.id}`;
+
+    if (i === 0) {
+      r.displayRank = 1;
+    } else if (key === lastKey) {
+      r.displayRank = rows[i - 1].displayRank; // same rank as previous row
+    } else {
+      r.displayRank = i + 1; // competition ranking jump
+    }
+
+    lastKey = key;
+  }
+
+  return rows;
+}
+
+/** Hole-in-one popup: shown for 10 minutes after the card is posted, once per phone. */
+const ACE_POPUP_MS = 10 * 60 * 1000;
+const SEEN_ACES_KEY = "ginv_seen_aces";
+let seenAcesFallback = [];
+
+function readSeenAces() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEEN_ACES_KEY) || "[]");
+    return Array.isArray(v) ? v : seenAcesFallback;
+  } catch {
+    return seenAcesFallback;
+  }
+}
+
+function rememberSeenAce(id) {
+  seenAcesFallback = [...seenAcesFallback, id].slice(-50);
+  try {
+    localStorage.setItem(SEEN_ACES_KEY, JSON.stringify([...readSeenAces().filter((x) => x !== id), id].slice(-50)));
+  } catch {
+    /* blocked storage: the in-memory list still stops a repeat until the page reloads */
+  }
+}
+
+function AcePopup({ msg, players, onClose }) {
+  const player = players.find((p) => p.id === msg.player_id);
+  const hole = String(msg.dedupe_key || "").split("|")[2];
+  const name = player ? shortName(player.name) : null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Hole in one"
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 300,
+        display: "grid",
+        placeItems: "center",
+        padding: 16,
+        background: "rgba(5, 12, 9, 0.78)",
+      }}
+    >
+      <style>{"@keyframes acePop { 0% { transform: scale(0.8); opacity: 0; } 60% { transform: scale(1.04); } 100% { transform: scale(1); opacity: 1; } }"}</style>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(420px, 100%)",
+          boxSizing: "border-box",
+          textAlign: "center",
+          padding: "28px 20px 22px",
+          borderRadius: 22,
+          background: THEME.surface,
+          border: `2px solid ${THEME.accent}`,
+          boxShadow: "0 24px 60px rgba(0,0,0,0.55)",
+          animation: "acePop 0.35s ease-out",
+        }}
+      >
+        <div style={{ fontSize: 44, lineHeight: 1 }}>🎉⛳🎉</div>
+        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 28, marginTop: 10, color: THEME.text }}>
+          HOLE IN ONE!
+        </div>
+        <div style={{ fontSize: 17, lineHeight: 1.4, marginTop: 10, color: THEME.text, overflowWrap: "anywhere" }}>
+          {name
+            ? `${name} just made a hole-in-one${hole ? ` on #${hole}` : ""}! Drinks are on them. 🍻`
+            : msg.text}
+        </div>
+        <button style={{ ...styles.bigBtn, marginTop: 18, minHeight: 48, width: "100%" }} onClick={onClose}>
+          Let's go! 🎉
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// How each kind of Broadcast card looks. Older kinds from earlier versions fall back to a plain 📣 card.
+const BROADCAST_KIND = {
+  leader: { label: "New leader", accent: "#B08A2E", big: false },
+  champion: { label: "Champion", accent: "#B08A2E", big: true },
+  lex: { label: "The LEX", accent: "#994B3E", big: false },
+  lexfinal: { label: "The LEX", accent: "#994B3E", big: true },
+  fire: { label: "On fire", emoji: "🔥", accent: "#E0732B" },
+  ice: { label: "Iced", emoji: "❄️", accent: "#4C8FBF" },
+  swing: { label: "Big swing", emoji: "↕️", accent: "#6B7F73" },
+  eagle: { label: "Eagle", emoji: "🦅", accent: "#2F7D5B", big: true },
+  ace: { label: "Hole in one", emoji: "🎉", accent: "#D4A017", big: true },
+  war: { label: "Lead battle", emoji: "⚔️", accent: "#7A4E8C" },
+  hotgroup: { label: "Hot group", emoji: "🌶️", accent: "#E0732B" },
+  recap: { label: "Recap", emoji: "⛳", accent: "#4E5C54" },
+  roundup: { label: "Roundup", emoji: "📣", accent: "#4E5C54" },
+};
+
+function BroadcastIcon({ kind, height = "22px" }) {
+  if (kind === "leader" || kind === "champion") return <LeaderIcon height={height} />;
+  if (kind === "lex" || kind === "lexfinal") return <LastPlaceIcon height={height} />;
+  return <span style={{ fontSize: height, lineHeight: 1 }}>{BROADCAST_KIND[kind]?.emoji || "📣"}</span>;
+}
+
+function timeAgo(ms, now) {
+  const mins = Math.max(0, Math.round((now - ms) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 24 * 60) return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** The Broadcast page: newest 25 cards, grouped, with a "Show earlier" button. */
+function BroadcastFeed({ messages }) {
+  const [shown, setShown] = useState(25);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (messages.length === 0) {
+    return (
+      <div style={styles.broadcastItem}>
+        <div style={{ fontWeight: 950 }}>No updates yet</div>
+        <div style={{ marginTop: 6, color: THEME.textMuted, fontSize: 12 }}>
+          Once scores start coming in, the moments worth talking about will show up here.
+        </div>
+      </div>
+    );
+  }
+
+  const today = new Date(now).toDateString();
+  const groupOf = (ms) => {
+    if (now - ms < 15 * 60000) return "Just now";
+    return new Date(ms).toDateString() === today
+      ? "Earlier today"
+      : new Date(ms).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+  };
+
+  const visible = messages.slice(0, shown);
+  const groups = visible.map((m) => groupOf(new Date(m.created_at).getTime()));
+  return (
+    <>
+      {visible.map((m, i) => {
+        const ms = new Date(m.created_at).getTime();
+        const meta = BROADCAST_KIND[m.kind] || { label: "Update", accent: THEME.borderStrong };
+        const heading = i === 0 || groups[i] !== groups[i - 1] ? groups[i] : null;
+        return (
+          <div key={m.id} style={{ display: "grid", gap: 8 }}>
+            {heading ? (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  letterSpacing: 1.6,
+                  textTransform: "uppercase",
+                  color: THEME.textMuted,
+                }}
+              >
+                {heading}
+              </div>
+            ) : null}
+            <div
+              style={{
+                ...styles.broadcastItem,
+                display: "flex",
+                gap: 12,
+                alignItems: "flex-start",
+                borderLeft: `5px solid ${meta.accent}`,
+                background: meta.big ? "rgba(159, 119, 80, 0.12)" : styles.broadcastItem.background,
+              }}
+            >
+              <div style={{ flex: "none", width: 48, minHeight: 28, display: "grid", placeItems: "center" }}>
+                <BroadcastIcon kind={m.kind} height={meta.big ? "30px" : "24px"} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 700, color: THEME.textMuted }}>
+                  {meta.label} • {timeAgo(ms, now)}
+                </div>
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontWeight: meta.big ? 800 : 600,
+                    fontSize: meta.big ? 17 : 15,
+                    lineHeight: 1.35,
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {m.text}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {messages.length > shown ? (
+        <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setShown((n) => n + 25)}>
+          Show earlier ({messages.length - shown} more)
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/** Shown in the Danger Zone until the database allows deleting Broadcast messages (migration 0011). */
+function ClearMessagesSetupNotice() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800 }}>One-time setup needed</div>
+      <div style={styles.helpText}>
+        The database doesn't allow deleting Broadcast messages yet. In Supabase, open <b>SQL Editor</b>, paste the
+        lines below and click <b>Run</b>, then come back here and tap <b>Clear all messages</b> again.
+      </div>
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          marginTop: 8,
+          padding: 10,
+          borderRadius: 12,
+          border: `1px solid ${THEME.border}`,
+          background: "rgba(22,35,29,0.05)",
+          fontSize: 12,
+          color: THEME.text,
+        }}
+      >
+        {CLEAR_MESSAGES_SQL}
+      </pre>
+      <button
+        style={{ ...styles.smallBtn, marginTop: 8, minHeight: 44 }}
+        onClick={() => {
+          Promise.resolve(navigator.clipboard?.writeText(CLEAR_MESSAGES_SQL)).then(
+            () => setCopied(true),
+            () => setCopied(false)
+          );
+        }}
+      >
+        {copied ? "Copied ✅" : "Copy SQL"}
+      </button>
+    </div>
+  );
+}
+
+const CLEAR_MESSAGES_SQL = `drop policy if exists "allow delete broadcast_messages" on broadcast_messages;
+create policy "allow delete broadcast_messages"
+  on broadcast_messages for delete
+  using (true);`;
 
 /**
  * A collapsible Admin sub-section — only one open at a time (accordion),
