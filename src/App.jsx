@@ -2969,42 +2969,47 @@ function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, l
 
   return (
     <div style={ps.cardOuter}>
-      {/* Header row: title left + logo right */}
+      {/* Header: title + group details on the left, spool logo top-right. The
+          logo spans the height of the text beside it, so it adds no height. */}
       <div style={ps.headerRow}>
-        <div style={ps.title}>{eventName || "The Ginvitational"}</div>
-      </div>
+        <div style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div style={ps.title}>{eventName || "The Ginvitational"}</div>
 
-      {/* Meta block */}
-      <div style={ps.metaBlock}>
-        <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Group Name:</span> <span>{f.group_name || ""}</span>
+          {/* Meta block */}
+          <div style={ps.metaBlock}>
+            <div style={ps.metaLine}>
+              <span style={ps.metaLabel}>Group Name:</span> <span>{f.group_name || ""}</span>
+            </div>
+            {/* Only the detail that tells the groups apart: tee time when everyone
+                starts on the same hole, otherwise the starting hole. */}
+            {showTeeTime ? (
+              <div style={ps.metaLine}>
+                <span style={ps.metaLabel}>Tee Time:</span> <span>{formatTeeTime(f.tee_time)}</span>
+              </div>
+            ) : (
+              <div style={ps.metaLine}>
+                <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
+              </div>
+            )}
+            <div style={ps.metaLine}>
+              <span style={ps.metaLabel}>Handicap:</span>{" "}
+              <span>
+                {game ? game.name : "Course Handicap"}
+                {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
+                  ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
+                  : ""}
+                {offset !== 0 ? " • Field-Relative" : ""}
+              </span>
+            </div>
+            {hasSharedHoles && (
+              <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
+                Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
+              </div>
+            )}
+          </div>
         </div>
-        {/* Only the detail that tells the groups apart: tee time when everyone
-            starts on the same hole, otherwise the starting hole. */}
-        {showTeeTime ? (
-          <div style={ps.metaLine}>
-            <span style={ps.metaLabel}>Tee Time:</span> <span>{formatTeeTime(f.tee_time)}</span>
-          </div>
-        ) : (
-          <div style={ps.metaLine}>
-            <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
-          </div>
-        )}
-        <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Handicap:</span>{" "}
-          <span>
-            {game ? game.name : "Course Handicap"}
-            {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
-              ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
-              : ""}
-            {offset !== 0 ? " • Field-Relative" : ""}
-          </span>
-        </div>
-        {hasSharedHoles && (
-          <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
-            Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
-          </div>
-        )}
+
+        <img src="/logo.png" alt="" style={ps.logo} />
       </div>
 
       {/* Main table */}
@@ -3090,6 +3095,8 @@ const ps = {
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   title: { fontSize: 24, fontWeight: 900, lineHeight: 1.1, textAlign: "left" },
+  // ~76px tall = the height of the title + group details beside it.
+  logo: { flex: "none", display: "block", height: 76, width: "auto" },
 
   // Meta
   metaBlock: { marginTop: 4, marginBottom: 6, fontSize: 11, lineHeight: 1.25 },
@@ -3876,6 +3883,14 @@ const ps = {
     await loadFoursomes();
     await loadFoursomePlayers();
     await loadPlayers();
+    // The cards carry the logo: make sure it's loaded before the print dialog
+    // opens, even if this page was opened straight to Admin (never showed Home).
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = resolve;
+      img.onerror = resolve;
+      img.src = "/logo.png";
+    });
 
     setPrintAllOn(true);
     setTimeout(() => window.print(), 100);
