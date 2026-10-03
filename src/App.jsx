@@ -96,6 +96,17 @@ function clampInt(v, fallback = 0) {
   return Math.trunc(n);
 }
 
+/** "13:12:00" -> "1:12 PM". The database keeps 24-hour time with seconds; this is how people read a tee time. */
+function formatTeeTime(t) {
+  const raw = String(t ?? "").trim();
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(raw);
+  if (!m) return raw;
+  const hour24 = Number(m[1]);
+  if (hour24 > 23) return raw;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${m[2]} ${hour24 < 12 ? "AM" : "PM"}`;
+}
+
 function formatToPar(n) {
   if (n === 0) return "E";
   if (n > 0) return `+${n}`;
@@ -2972,7 +2983,7 @@ function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, l
             starts on the same hole, otherwise the starting hole. */}
         {showTeeTime ? (
           <div style={ps.metaLine}>
-            <span style={ps.metaLabel}>Tee Time:</span> <span>{f.tee_time || ""}</span>
+            <span style={ps.metaLabel}>Tee Time:</span> <span>{formatTeeTime(f.tee_time)}</span>
           </div>
         ) : (
           <div style={ps.metaLine}>
@@ -4073,7 +4084,7 @@ const ps = {
                                 Round: <b>{rounds.find((r) => r.id === f.round_id)?.label || "—"}</b> •{" "}
                               </>
                             )}
-                            Tee: <b>{f.tee_time || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
+                            Tee: <b>{formatTeeTime(f.tee_time) || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
                             <b>{members.length}</b>
                           </div>
 
