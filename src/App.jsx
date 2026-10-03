@@ -2848,6 +2848,12 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
     membersByFid.set(f.id, mem);
   }
 
+  // Everyone starting on the same hole (just different tee times) → the tee
+  // time is what tells the cards apart, so print that. If starting holes
+  // differ (shotgun / split tees) → print the starting hole instead.
+  const startHoles = new Set(foursomes.map((f) => String(f.starting_hole ?? "").trim() || "1"));
+  const showTeeTime = startHoles.size <= 1;
+
   // 2 per page
   const pages = [];
   for (let i = 0; i < foursomes.length; i += 2) pages.push([foursomes[i], foursomes[i + 1] || null]);
@@ -2862,6 +2868,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                 <PrintOneGroupCard
                   f={pair[0]}
                   members={membersByFid.get(pair[0].id) || []}
+                  showTeeTime={showTeeTime}
                   strokesOnHole={strokesOnHole}
                   clampInt={clampInt}
                   lastName={lastName}
@@ -2878,6 +2885,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                 <PrintOneGroupCard
                   f={pair[1]}
                   members={membersByFid.get(pair[1].id) || []}
+                  showTeeTime={showTeeTime}
                   strokesOnHole={strokesOnHole}
                   clampInt={clampInt}
                   lastName={lastName}
@@ -2895,7 +2903,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
+function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
   const offset = clampInt(fieldOffset, 0);
 
@@ -2960,22 +2968,17 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
         <div style={ps.metaLine}>
           <span style={ps.metaLabel}>Group Name:</span> <span>{f.group_name || ""}</span>
         </div>
-        <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Tee Time:</span> <span>{f.tee_time || ""}</span>
-        </div>
-        <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
-        </div>
-        <div style={ps.metaLine}>
-          <span style={ps.metaLabel}>Handicap:</span>{" "}
-          <span>
-            {game ? game.name : "Course Handicap"}
-            {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
-              ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
-              : ""}
-            {offset !== 0 ? " • Field-Relative" : ""}
-          </span>
-        </div>
+        {/* Only the detail that tells the groups apart: tee time when everyone
+            starts on the same hole, otherwise the starting hole. */}
+        {showTeeTime ? (
+          <div style={ps.metaLine}>
+            <span style={ps.metaLabel}>Tee Time:</span> <span>{f.tee_time || ""}</span>
+          </div>
+        ) : (
+          <div style={ps.metaLine}>
+            <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
+          </div>
+        )}
         {hasSharedHoles && (
           <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
             Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
@@ -3052,75 +3055,74 @@ function PrintOneGroupCard({ f, members, strokesOnHole, clampInt, lastName, STRO
 }
 
 const ps = {
+  // Laid out for ONE landscape sheet holding two cards side by side (see the
+  // @page rule below). Widths are percentages and the card height is ~7.2in
+  // at most, so it fits Letter and A4 landscape with no print-preview zoom.
   root: { background: "white", color: "black" },
   page: { width: "100%" },
-  twoUpRow: { display: "flex", gap: 5 },
-  col: { flex: "0 0 49%", maxWidth: "49%", minWidth: 0 },
+  twoUpRow: { display: "flex", gap: "0.2in", alignItems: "flex-start" },
+  col: { flex: "1 1 0", minWidth: 0 },
 
-  // Outer card border (thick)
-  cardOuter: { border: "3px solid #000", padding: 18 },
+  // Outer card border
+  cardOuter: { border: "2px solid #000", padding: 10, boxSizing: "border-box" },
 
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  title: { fontSize: 40, fontWeight: 900, lineHeight: 1.05, textAlign: "left" },
-  logo: { width: 120, height: "auto", marginTop: 40 },
+  title: { fontSize: 24, fontWeight: 900, lineHeight: 1.1, textAlign: "left" },
 
   // Meta
-  metaBlock: { marginTop: 4, marginBottom: 4, fontSize: 12, lineHeight: 1.35 },
-  metaLine: { marginTop: 2 },
-  metaLabel: { display: "inline-block", width: 92 },
+  metaBlock: { marginTop: 4, marginBottom: 6, fontSize: 11, lineHeight: 1.25 },
+  metaLine: { marginTop: 1 },
+  metaLabel: { display: "inline-block", width: 84 },
 
-  // Table
+  // Table — fixed layout with percentage columns so it can never be wider
+  // than its card: 10% hole + 10% index + 4 player columns of 20%.
   table: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
 
-  thHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
-  thHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 30 },
-  thPlayer: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center", width: 65 },
+  thHole: { border: "1px solid #000", padding: 3, fontSize: 11, textAlign: "center", width: "10%" },
+  thHi: { border: "1px solid #000", padding: 3, fontSize: 11, textAlign: "center", width: "10%" },
+  thPlayer: { border: "1px solid #000", padding: 3, fontSize: 11, textAlign: "center", width: "20%", overflow: "hidden" },
 
-  tdHole: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right" },
-  tdHi: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "center" },
+  tdHole: { border: "1px solid #000", padding: "2px 4px", fontSize: 11, textAlign: "right" },
+  tdHi: { border: "1px solid #000", padding: "2px 4px", fontSize: 11, textAlign: "center" },
 
   // Score cell with corner dots
-  tdScore: { border: "1px solid #000", padding: 4, position: "relative", height: 22 },
-  scoreWriteArea: { height: 22, width: "100%" },
-  dotCorner: { position: "absolute", top: 2, right: 4, fontSize: 10, letterSpacing: 1 },
+  // No explicit cell height: it would stack on top of the padding and make
+  // every row taller than the write area inside it.
+  tdScore: { border: "1px solid #000", padding: 2, position: "relative" },
+  scoreWriteArea: { height: 21, width: "100%" },
+  dotCorner: { position: "absolute", top: 1, right: 3, fontSize: 12, lineHeight: 1, letterSpacing: 1 },
 
-  tdOutInTotal: { border: "1px solid #000", padding: 4, fontSize: 11, textAlign: "right", fontWeight: 700 },
+  tdOutInTotal: { border: "1px solid #000", padding: "2px 4px", fontSize: 11, textAlign: "right", fontWeight: 700 },
 
-  playerLast: { fontWeight: 900, fontSize: 11, lineHeight: 1.1 },
-  playerHcp: { fontWeight: 700, fontSize: 10, marginTop: 2 },
+  playerLast: { fontWeight: 900, fontSize: 11, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  playerHcp: { fontWeight: 700, fontSize: 10, marginTop: 1 },
 
   // Bottom code
-  bottomRow: { marginTop: 10, display: "flex", justifyContent: "center" },
+  bottomRow: { marginTop: 8, display: "flex", justifyContent: "center" },
   bottomInner: { fontSize: 11 },
 };
 
   return (
-  <div style={styles.page}>
+  <div className="appPage" style={styles.page}>
 
-    <style>{`
-      @media print {
-        body * { visibility: hidden !important; }
-        #printRoot, #printRoot * { visibility: visible !important; }
-
-        #printRoot {
-          position: absolute !important;
-          left: 0 !important;
-          top: 0 !important;
-          width: 100% !important;
-          background: white !important;
-          color: black !important;
-          padding: 0 !important;
-          margin: 0 !important;
+    {/* Scorecard printing: only while a print is in progress (printAllOn),
+        so the landscape page setup never leaks into any other printing. One
+        landscape sheet = two cards side by side. The rest of the app is
+        display:none'd (not just invisible) so it can't add blank sheets. */}
+    {printAllOn && (
+      <style>{`
+        @page { size: landscape; margin: 0.3in; }
+        @media print {
+          html, body { background: #fff !important; margin: 0 !important; }
+          .noPrint { display: none !important; }
+          .appPage { padding: 0 !important; min-height: 0 !important; background: #fff !important; }
+          #printRoot { background: #fff !important; color: #000 !important; padding: 0 !important; margin: 0 !important; }
+          .printPage { break-after: page; page-break-after: always; break-inside: avoid; }
+          .printPage:last-child { break-after: auto; page-break-after: auto; }
         }
-
-        .printPage {
-          page-break-after: always;
-          break-after: page;
-          padding: 6mm;
-        }
-      }
-    `}</style>
+      `}</style>
+    )}
 
       {tab === "tv" && (
         <TvMode
@@ -3144,7 +3146,7 @@ const ps = {
         />
       )}
 
-      <div style={tab === "tv" ? { display: "none" } : styles.shell}>
+      <div className="noPrint" style={tab === "tv" ? { display: "none" } : styles.shell}>
         {/* HOME (no top nav) */}
         {tab === "home" && (
           <div style={styles.homeCard}>
