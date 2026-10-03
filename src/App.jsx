@@ -96,6 +96,54 @@ function clampInt(v, fallback = 0) {
   return Math.trunc(n);
 }
 
+const DEFAULT_TAGLINE = "Drink Good. Play Good. Do Good.";
+
+/** What an admin runs once in Supabase before the tagline/logo settings can be saved (same as migrations/0010). */
+const BRANDING_SQL =
+  "alter table app_settings add column if not exists tagline text;\n" +
+  "alter table app_settings add column if not exists logo_data text;";
+
+/**
+ * Turns an uploaded image file into a small PNG data URL for the main logo.
+ * The logo is stored with the other settings and loaded on every visit, so
+ * it's resized in the browser first (longest side <= 640px — plenty for the
+ * Home screen at 3x and for print) and shrunk further if it's still big.
+ * Transparency is kept. Throws an Error with a plain-English message.
+ */
+async function fileToLogoDataUrl(file) {
+  if (!file || !/^image\//.test(file.type)) {
+    throw new Error("Please choose an image file (PNG, JPG, WebP or SVG).");
+  }
+  if (file.size > 8 * 1024 * 1024) throw new Error("That image is over 8 MB — please pick a smaller one.");
+
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("Couldn't read that image — try a PNG or JPG."));
+      el.src = url;
+    });
+    const w0 = img.naturalWidth || 512; // an SVG with no size can report 0
+    const h0 = img.naturalHeight || 512;
+
+    for (const maxDim of [640, 480, 320]) {
+      const scale = Math.min(1, maxDim / Math.max(w0, h0));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w0 * scale));
+      canvas.height = Math.max(1, Math.round(h0 * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/png");
+      if (dataUrl.length <= 450_000 || maxDim === 320) return dataUrl;
+    }
+    throw new Error("Couldn't shrink that image enough — try a simpler one.");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** "13:12:00" -> "1:12 PM". The database keeps 24-hour time with seconds; this is how people read a tee time. */
 function formatTeeTime(t) {
   const raw = String(t ?? "").trim();
@@ -987,6 +1035,14 @@ export default function App() {
   const [eventNameDraft, setEventNameDraft] = useState("");
   const [eventNameMsg, setEventNameMsg] = useState("");
 
+  // Admin: editable tagline + uploadable main logo. `brandingReady` is false
+  // until the one-time database change (migration 0010) has been made.
+  const [brandingReady, setBrandingReady] = useState(true);
+  const [taglineDraft, setTaglineDraft] = useState("");
+  const [taglineMsg, setTaglineMsg] = useState("");
+  const [logoDraft, setLogoDraft] = useState(null); // data URL awaiting "Save logo"
+  const [logoMsg, setLogoMsg] = useState("");
+
   // Foursomes data (admin + enter scores)
   const [foursomes, setFoursomes] = useState([]);
   const [foursomePlayers, setFoursomePlayers] = useState([]);
@@ -1155,16 +1211,26 @@ export default function App() {
   }
 
   async function loadAppSettings() {
-    const { data, error } = await supabase
+    const baseCols = "id,multi_game_enabled,multi_round_enabled,event_name,handicap_basis,updated_at";
+
+    // Ask for the tagline/logo columns too. Until migration 0010 has been run
+    // they don't exist and that query fails — so fall back to the original
+    // columns instead of taking the whole app down.
+    let { data, error } = await supabase
       .from("app_settings")
-      .select("id,multi_game_enabled,multi_round_enabled,event_name,handicap_basis,updated_at")
+      .select(`${baseCols},tagline,logo_data`)
       .eq("id", 1)
       .maybeSingle();
+    const brandingColumnsExist = !error;
+    if (error) {
+      ({ data, error } = await supabase.from("app_settings").select(baseCols).eq("id", 1).maybeSingle());
+    }
 
     if (error) {
       console.error("loadAppSettings error:", error);
       return { ok: false, where: "app_settings", error: errToText(error) };
     }
+    setBrandingReady(brandingColumnsExist);
     setAppSettings(
       data || {
         multi_game_enabled: false,
@@ -1278,6 +1344,34 @@ export default function App() {
   useEffect(() => {
     setEventNameDraft(eventName);
   }, [eventName]);
+
+  // Tagline: not set yet (null) means the default; saved blank means none.
+  const tagline = appSettings.tagline == null ? DEFAULT_TAGLINE : appSettings.tagline.trim();
+  useEffect(() => {
+    setTaglineDraft(tagline);
+  }, [tagline]);
+
+  // Main logo: the uploaded one if there is one, else the built-in spool.
+  const customLogo = !!appSettings.logo_data;
+  const logoSrc = appSettings.logo_data || "/logo.png";
+
+  // Carry a custom logo to the browser tab icon and the iOS "Add to Home
+  // Screen" icon too (the originals are put back if it's reset). An app that
+  // was already installed to a home screen keeps the icon it was installed
+  // with — that one comes from the install manifest, not from this page.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]').forEach((el) => {
+      if (el.dataset.origHref === undefined) {
+        el.dataset.origHref = el.getAttribute("href") || "";
+        el.dataset.origType = el.getAttribute("type") || "";
+      }
+      el.setAttribute("href", appSettings.logo_data || el.dataset.origHref);
+      if (appSettings.logo_data) el.setAttribute("type", "image/png");
+      else if (el.dataset.origType) el.setAttribute("type", el.dataset.origType);
+      else el.removeAttribute("type");
+    });
+  }, [appSettings.logo_data]);
 
   // Field-Relative handicap basis: every player's handicap minus the lowest
   // handicap among everyone imported for the event (0 in Course Handicap
@@ -2041,6 +2135,57 @@ useEffect(() => {
     }
     await loadAppSettings();
     setEventNameMsg("Saved ✅");
+  }
+
+  async function saveTagline() {
+    if (!adminOn) return alert("Admin only.");
+    setTaglineMsg("Saving…");
+
+    // Blank is allowed and means "no tagline" (stored as "", not null — null
+    // is reserved for "never set", which shows the default).
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ tagline: taglineDraft.trim(), updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      setTaglineMsg(`Error saving: ${errToText(error)}`);
+      return;
+    }
+    await loadAppSettings();
+    setTaglineMsg("Saved ✅");
+  }
+
+  async function onLogoPicked(file) {
+    if (!file) return;
+    setLogoMsg("Processing…");
+    try {
+      setLogoDraft(await fileToLogoDataUrl(file));
+      setLogoMsg("Preview above — click Save logo to use it everywhere.");
+    } catch (e) {
+      setLogoDraft(null);
+      setLogoMsg(e.message || "Couldn't use that image.");
+    }
+  }
+
+  async function saveLogo(nextLogoData) {
+    if (!adminOn) return alert("Admin only.");
+    setLogoMsg("Saving…");
+
+    const { error } = await supabase
+      .from("app_settings")
+      .update({ logo_data: nextLogoData, updated_at: new Date().toISOString() })
+      .eq("id", 1);
+
+    if (error) {
+      console.error(error);
+      setLogoMsg(`Error saving: ${errToText(error)}`);
+      return;
+    }
+    setLogoDraft(null);
+    await loadAppSettings();
+    setLogoMsg(nextLogoData ? "Saved ✅ — the new logo is live." : "Back to the default logo ✅");
   }
 
   async function setMultiRoundEnabled(next) {
@@ -2945,7 +3090,7 @@ async function importFromTeeSheet() {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, logoSrc, game, fieldOffset }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -2980,6 +3125,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
+                  logoSrc={logoSrc}
                   game={game}
                   fieldOffset={fieldOffset}
                 />
@@ -2997,6 +3143,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   lastName={lastName}
                   STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
+                  logoSrc={logoSrc}
                   game={game}
                   fieldOffset={fieldOffset}
                 />
@@ -3009,7 +3156,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, game, fieldOffset }) {
+function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, logoSrc, game, fieldOffset }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
   const offset = clampInt(fieldOffset, 0);
 
@@ -3104,7 +3251,7 @@ function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, l
           </div>
         </div>
 
-        <img src="/logo.png" alt="" style={ps.logo} />
+        <img src={logoSrc} alt="" style={ps.logo} />
       </div>
 
       {/* Main table */}
@@ -3191,7 +3338,8 @@ const ps = {
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   title: { fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2, textAlign: "left" },
   // ~76px tall = the height of the title + group details beside it.
-  logo: { flex: "none", display: "block", height: 76, width: "auto" },
+  // An uploaded logo can be any shape, so cap its width and fit it inside the box.
+  logo: { flex: "none", display: "block", height: 76, width: "auto", maxWidth: 110, objectFit: "contain" },
 
   // Meta
   metaBlock: { marginTop: 4, marginBottom: 6, fontSize: 11, lineHeight: 1.25 },
@@ -3275,18 +3423,22 @@ const ps = {
           <div style={styles.homeCard}>
             <div style={{ textAlign: "center" }}>
               <img
-                src="/logo.png"
+                src={logoSrc}
                 alt={`${eventName} logo`}
                 style={{
                   width: 210,
                   height: "auto",
+                  // A tall uploaded logo shouldn't push the menu off screen.
+                  maxHeight: 200,
+                  objectFit: "contain",
                   display: "block",
                   margin: "0 auto",
-                  // The flag+needle jut out to the right of the spool, so
-                  // centering the image's full bounding box makes the spool
-                  // itself look left-of-center. Nudge right so the spool's
-                  // own base lines up under "The" in the title below.
-                  transform: "translateX(22px)",
+                  // The built-in spool's flag+needle jut out to the right, so
+                  // centering its full bounding box makes the spool itself
+                  // look left-of-center. Nudge right so the spool's own base
+                  // lines up under "The" in the title below. (An uploaded
+                  // logo is centered as-is.)
+                  transform: customLogo ? "none" : "translateX(22px)",
                 }}
               />
 
@@ -3307,7 +3459,7 @@ const ps = {
                 })()}
               </div>
 
-              <div style={styles.homeSub}>Drink Good. Play Good. Do Good.</div>
+              {tagline ? <div style={styles.homeSub}>{tagline}</div> : null}
 
               <div style={styles.homeRule} />
             </div>
@@ -3986,7 +4138,7 @@ const ps = {
         const img = new Image();
         img.onload = resolve;
         img.onerror = resolve;
-        img.src = "/logo.png";
+        img.src = logoSrc;
       }),
       document.fonts ? document.fonts.load("600 26px Fraunces").catch(() => {}) : null,
     ]);
@@ -4030,6 +4182,120 @@ const ps = {
             </div>
 
             {eventNameMsg ? <div style={styles.helpText}>{eventNameMsg}</div> : null}
+          </AdminSection>
+
+          {/* Tagline */}
+          <AdminSection
+            title="Tagline"
+            subtitle={tagline || "None"}
+            open={openAdminSection === "tagline"}
+            onToggle={() => setOpenAdminSection((k) => (k === "tagline" ? null : "tagline"))}
+          >
+            <div style={styles.helpText}>
+              Shown on the Home screen under the event name. Leave it blank to show no tagline.
+            </div>
+
+            {!brandingReady ? (
+              <BrandingSetupNotice />
+            ) : (
+              <>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <input
+                    style={{ ...styles.input, flex: 1, minWidth: 200 }}
+                    value={taglineDraft}
+                    onChange={(e) => {
+                      setTaglineDraft(e.target.value);
+                      setTaglineMsg("");
+                    }}
+                    placeholder={DEFAULT_TAGLINE}
+                  />
+                  <button style={styles.bigBtn} onClick={saveTagline}>
+                    Save
+                  </button>
+                </div>
+                {taglineMsg ? <div style={styles.helpText}>{taglineMsg}</div> : null}
+              </>
+            )}
+          </AdminSection>
+
+          {/* Main logo */}
+          <AdminSection
+            title="Logo"
+            subtitle={customLogo ? "Custom logo" : "Default logo"}
+            open={openAdminSection === "logo"}
+            onToggle={() => setOpenAdminSection((k) => (k === "logo" ? null : "logo"))}
+          >
+            <div style={styles.helpText}>
+              Your main logo — shown on the Home screen, the printed scorecards, and as the browser tab icon. Any
+              image works; it's resized automatically. A PNG with a transparent background looks best.
+            </div>
+
+            {!brandingReady ? (
+              <BrandingSetupNotice />
+            ) : (
+              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+                <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ ...styles.label, marginBottom: 6 }}>{logoDraft ? "Current" : "Current logo"}</div>
+                    <img
+                      src={logoSrc}
+                      alt="Current logo"
+                      style={{ display: "block", maxWidth: 140, maxHeight: 110, objectFit: "contain" }}
+                    />
+                  </div>
+                  {logoDraft ? (
+                    <div>
+                      <div style={{ ...styles.label, marginBottom: 6 }}>New logo (not saved yet)</div>
+                      <img
+                        src={logoDraft}
+                        alt="New logo preview"
+                        style={{ display: "block", maxWidth: 140, maxHeight: 110, objectFit: "contain" }}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  onChange={(e) => {
+                    onLogoPicked(e.target.files?.[0] || null);
+                    e.target.value = ""; // picking the same file again should still fire
+                  }}
+                />
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {logoDraft ? (
+                    <>
+                      <button style={styles.bigBtn} onClick={() => saveLogo(logoDraft)}>
+                        Save logo
+                      </button>
+                      <button
+                        style={styles.smallBtn}
+                        onClick={() => {
+                          setLogoDraft(null);
+                          setLogoMsg("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : null}
+                  {customLogo && !logoDraft ? (
+                    <button
+                      style={styles.smallBtn}
+                      onClick={() => {
+                        if (confirm("Go back to the default logo?")) saveLogo(null);
+                      }}
+                    >
+                      Use default logo
+                    </button>
+                  ) : null}
+                </div>
+
+                {logoMsg ? <div style={styles.helpText}>{logoMsg}</div> : null}
+              </div>
+            )}
           </AdminSection>
 
           {/* Handicap Basis */}
@@ -4806,6 +5072,7 @@ const ps = {
     lastName={lastName}
     STROKE_INDEX={STROKE_INDEX}
     eventName={eventName}
+    logoSrc={logoSrc}
     game={printGame}
     fieldOffset={fieldOffset}
   />
@@ -4851,6 +5118,48 @@ function AdminSection({ title, subtitle, open, onToggle, danger, children }) {
         <span style={{ fontSize: 20, opacity: 0.7, flexShrink: 0 }}>{open ? "−" : "+"}</span>
       </button>
       {open && <div style={{ marginTop: 4 }}>{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * Shown in the Tagline/Logo sections until the database has the two columns
+ * they save into (migration 0010). Gives the admin the exact SQL to run.
+ */
+function BrandingSetupNotice() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800 }}>One-time setup needed</div>
+      <div style={styles.helpText}>
+        This needs two new settings in the database. In Supabase, open <b>SQL Editor</b>, paste the lines below and
+        click <b>Run</b>, then come back here and tap <b>Reload Data</b>.
+      </div>
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          marginTop: 8,
+          padding: 10,
+          borderRadius: 12,
+          border: `1px solid ${THEME.border}`,
+          background: "rgba(22,35,29,0.05)",
+          fontSize: 12,
+          color: THEME.text,
+        }}
+      >
+        {BRANDING_SQL}
+      </pre>
+      <button
+        style={{ ...styles.smallBtn, marginTop: 8 }}
+        onClick={() => {
+          navigator.clipboard
+            ?.writeText(BRANDING_SQL)
+            .then(() => setCopied(true))
+            .catch(() => {});
+        }}
+      >
+        {copied ? "Copied ✅" : "Copy SQL"}
+      </button>
     </div>
   );
 }
