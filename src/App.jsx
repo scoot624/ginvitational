@@ -1174,6 +1174,10 @@ export default function App() {
   // scorecards, and the browser tab title.
   const eventName = appSettings.event_name || "The Ginvitational";
 
+  // The "Connected ✅" status is an admin detail. Everywhere else it stays
+  // hidden — except a failure, which is worth seeing wherever it happens.
+  const visibleStatus = tab === "admin" || status.startsWith("FAIL") ? status : "";
+
   useEffect(() => {
     if (typeof document !== "undefined") document.title = eventName;
   }, [eventName]);
@@ -3254,7 +3258,7 @@ const ps = {
               <button style={styles.smallBtn} onClick={() => setTab("home")}>
                 Home
               </button>
-              <div style={{ fontSize: 12, color: THEME.textMuted }}>{status}</div>
+              {visibleStatus ? <div style={{ fontSize: 12, color: THEME.textMuted }}>{visibleStatus}</div> : null}
             </div>
 
             <div style={{ marginTop: 12, fontSize: 22, fontWeight: 950, letterSpacing: -0.2 }}>
@@ -3290,7 +3294,7 @@ const ps = {
             <div style={styles.headerTop}>
               <div style={styles.brand}>
                 <div style={styles.brandTitle}>{eventName}</div>
-                <div style={styles.brandSub}>{status}</div>
+                {visibleStatus ? <div style={styles.brandSub}>{visibleStatus}</div> : null}
               </div>
 
               <nav style={styles.nav}>
