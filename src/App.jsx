@@ -362,13 +362,53 @@ const TV = {
 };
 
 /**
+ * "On fire" / "ice cold" for a player's most recent holes, judged NET vs par
+ * (same basis as the leaderboard and the broadcast's "net birdie" lines):
+ *   fire — last two holes both net birdie or better
+ *   ice  — last two holes both net bogey or worse, OR the last hole alone is
+ *          net double bogey or worse
+ * "Last" follows the order the group actually plays — a shotgun group that
+ * starts on 10 plays 10…18 then 1…9 — not hole-number order. Nothing is
+ * remembered between refreshes; it only reads the scores already loaded, so
+ * a streak ends the moment the next hole breaks it. Finished players get
+ * nothing (they're not "on" anything any more). Returns "fire", "ice" or null.
+ */
+function formStreak(p, startHole) {
+  if (!p || !p.scoresByHole || p.holesPlayed >= 18) return null;
+  const start = Math.min(18, Math.max(1, clampInt(startHole, 1)));
+
+  const vsPar = [];
+  for (let i = 0; i < 18; i++) {
+    const h = ((start - 1 + i) % 18) + 1;
+    const gross = p.scoresByHole[h];
+    vsPar.push(gross == null ? null : netScoreForHole(gross, p.playingHandicap, h) - PARS[h - 1]);
+  }
+
+  let last = -1;
+  for (let i = 17; i >= 0; i--) {
+    if (vsPar[i] != null) {
+      last = i;
+      break;
+    }
+  }
+  if (last < 0) return null;
+
+  const a = vsPar[last];
+  const b = last > 0 ? vsPar[last - 1] : null;
+  if (a >= 2) return "ice";
+  if (b != null && a >= 1 && b >= 1) return "ice";
+  if (b != null && a <= -1 && b <= -1) return "fire";
+  return null;
+}
+
+/**
  * TV Mode — one static, full-screen, display-only layout for a big screen:
  * standings on top (~72%), the latest broadcast messages along the bottom.
  * Everything is sized with clamp()/vh/em so it scales with the screen; the
  * standings flow into as many columns as it takes to keep every player on
  * screen at a readable size, so nothing needs scrolling.
  */
-function TvMode({ eventName, subtitle, board, messages, onExit }) {
+function TvMode({ eventName, subtitle, board, messages, forms, onExit }) {
   const rows = board?.rows || [];
   const locked = !!board?.game?.locked;
   // Fewer, wider columns beat many narrow ones: a name needs ~400px at TV
@@ -397,6 +437,7 @@ function TvMode({ eventName, subtitle, board, messages, onExit }) {
         overflow: "hidden",
       }}
     >
+      <style>{"@keyframes tvFlicker { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }"}</style>
       <button
         onClick={onExit}
         title="Exit TV Mode"
@@ -507,8 +548,28 @@ function TvMode({ eventName, subtitle, board, messages, onExit }) {
                   <div style={{ display: "flex", alignItems: "center", fontWeight: 700, color: TV.muted }}>
                     {rankCellContent(r, idx, lastRank, "1.1em")}
                   </div>
-                  <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.name}
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.35em", minWidth: 0 }}>
+                    <span
+                      style={{
+                        minWidth: 0,
+                        fontWeight: 700,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {r.name}
+                    </span>
+                    {forms?.[r.id] === "fire" && (
+                      <span title="On fire" style={{ flex: "none", animation: "tvFlicker 1.1s ease-in-out infinite" }}>
+                        🔥
+                      </span>
+                    )}
+                    {forms?.[r.id] === "ice" && (
+                      <span title="Ice cold" style={{ flex: "none" }}>
+                        ❄️
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontWeight: 900, minWidth: "2.4em", textAlign: "right", color: scoreColor }}>
                     {played ? formatToPar(r.toPar) : "—"}
@@ -1314,6 +1375,25 @@ return rows;
     if (!scorecardPlayerId) return null;
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
   }, [scorecardPlayerId, leaderboardRows]);
+
+  // TV Mode flames/ice cubes: { [playerId]: "fire" | "ice" }. Each group's
+  // starting hole decides which holes count as their "most recent" ones.
+  const tvForms = useMemo(() => {
+    const roundId = activeRound?.id;
+    const startByFoursome = new Map(
+      foursomes.filter((f) => !f.round_id || f.round_id === roundId).map((f) => [f.id, f.starting_hole])
+    );
+    const startByPlayer = new Map();
+    for (const fp of foursomePlayers) {
+      if (startByFoursome.has(fp.foursome_id)) startByPlayer.set(fp.player_id, startByFoursome.get(fp.foursome_id));
+    }
+    const out = {};
+    for (const p of leaderboardRows) {
+      const form = formStreak(p, startByPlayer.get(p.id));
+      if (form) out[p.id] = form;
+    }
+    return out;
+  }, [leaderboardRows, foursomes, foursomePlayers, activeRound]);
 
 /** -----------------------
  *  BROADCAST ENGINE
@@ -3059,6 +3139,7 @@ const ps = {
             .join(" · ")}
           board={gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0] || null}
           messages={broadcastMsgs}
+          forms={tvForms}
           onExit={() => setTab("home")}
         />
       )}
