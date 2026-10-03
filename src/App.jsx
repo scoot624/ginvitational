@@ -291,13 +291,13 @@ function expandChevronStyle(open) {
  * letting the browser squash the original 1672px photo down to a ~26px
  * icon is what made it look blurry.
  */
-function LeaderIcon() {
+function LeaderIcon({ height = "20px" }) {
   return (
     <img
       src="/leader-trophy.png"
       alt="1st"
       title="Current leader"
-      style={{ display: "block", width: 28, height: 20 }}
+      style={{ display: "block", height, width: `calc(${height} * 1.4)` }}
     />
   );
 }
@@ -308,13 +308,13 @@ function LeaderIcon() {
  * trophy (see LeaderIcon); width:height matches the trimmed artwork's ~1.89
  * ratio.
  */
-function LastPlaceIcon() {
+function LastPlaceIcon({ height = "20px" }) {
   return (
     <img
       src="/lex-headcover.png"
       alt="Last"
       title="The LEX"
-      style={{ display: "block", width: 38, height: 20 }}
+      style={{ display: "block", height, width: `calc(${height} * 1.9)` }}
     />
   );
 }
@@ -344,10 +344,248 @@ function isLastRow(r, lastRank) {
 }
 
 /** What the # column shows: trophy for 1st, LEX for last, otherwise the number. */
-function rankCellContent(r, idx, lastRank) {
-  if (isLeaderRow(r)) return <LeaderIcon />;
-  if (isLastRow(r, lastRank)) return <LastPlaceIcon />;
+function rankCellContent(r, idx, lastRank, iconHeight) {
+  if (isLeaderRow(r)) return <LeaderIcon height={iconHeight} />;
+  if (isLastRow(r, lastRank)) return <LastPlaceIcon height={iconHeight} />;
   return r.displayRank ?? idx + 1;
+}
+
+/** Display-only palette for TV Mode: dark ground, light text, brighter score colors for across-the-room reading. */
+const TV = {
+  bg: "#0A1812",
+  text: "#F7F2E7",
+  muted: "rgba(247, 242, 231, 0.62)",
+  line: "rgba(237, 231, 216, 0.18)",
+  gold: PALETTE.whickerBasket,
+  under: "#6EE7A8",
+  over: "#FF9C8A",
+};
+
+/**
+ * TV Mode — one static, full-screen, display-only layout for a big screen:
+ * standings on top (~72%), the latest broadcast messages along the bottom.
+ * Everything is sized with clamp()/vh/em so it scales with the screen; the
+ * standings flow into as many columns as it takes to keep every player on
+ * screen at a readable size, so nothing needs scrolling.
+ */
+function TvMode({ eventName, subtitle, board, messages, onExit }) {
+  const rows = board?.rows || [];
+  const locked = !!board?.game?.locked;
+  // Fewer, wider columns beat many narrow ones: a name needs ~400px at TV
+  // text sizes, so 3 columns (not 4) for a typical 40-ish player field.
+  const cols = rows.length <= 10 ? 1 : rows.length <= 24 ? 2 : rows.length <= 45 ? 3 : 4;
+  const perCol = Math.max(1, Math.ceil(rows.length / cols));
+  // ~62vh is what the standings get after the header; text is ~55% of a row.
+  const rowFont = `clamp(14px, ${((62 / perCol) * 0.55).toFixed(2)}vh, 44px)`;
+  const lastRank = lastPlaceRank(rows);
+  const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const recent = (messages || []).slice(0, 4);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        boxSizing: "border-box",
+        display: "flex",
+        flexDirection: "column",
+        padding: "clamp(12px, 2.2vh, 32px) clamp(16px, 2.6vw, 56px)",
+        background: TV.bg,
+        color: TV.text,
+        fontFamily: FONT_BODY,
+        overflow: "hidden",
+      }}
+    >
+      <button
+        onClick={onExit}
+        title="Exit TV Mode"
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          zIndex: 1,
+          opacity: 0.18,
+          background: "transparent",
+          border: `1px solid ${TV.line}`,
+          color: TV.text,
+          borderRadius: 8,
+          padding: "4px 10px",
+          fontSize: 12,
+          cursor: "pointer",
+        }}
+      >
+        Exit TV Mode
+      </button>
+
+      <section style={{ flex: "0 0 72%", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: 16,
+            paddingRight: "clamp(80px, 8vw, 140px)",
+            paddingBottom: "clamp(4px, 1vh, 14px)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "baseline", gap: "1ch", minWidth: 0 }}>
+            <span
+              style={{
+                fontFamily: FONT_DISPLAY,
+                fontWeight: 600,
+                fontSize: "clamp(20px, 4.2vh, 56px)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {eventName}
+            </span>
+            {subtitle ? (
+              <span style={{ color: TV.muted, fontSize: "clamp(12px, 2vh, 26px)", whiteSpace: "nowrap" }}>
+                {subtitle}
+              </span>
+            ) : null}
+          </div>
+          <span style={{ color: TV.muted, fontSize: "clamp(12px, 2vh, 26px)", whiteSpace: "nowrap" }}>{today}</span>
+        </div>
+
+        {locked ? (
+          <div
+            style={{
+              flex: 1,
+              display: "grid",
+              placeItems: "center",
+              fontSize: "clamp(20px, 5vh, 64px)",
+              fontWeight: 700,
+              color: TV.muted,
+            }}
+          >
+            🔒 This scoreboard is locked
+          </div>
+        ) : rows.length === 0 ? (
+          <div
+            style={{
+              flex: 1,
+              display: "grid",
+              placeItems: "center",
+              fontSize: "clamp(18px, 4vh, 52px)",
+              color: TV.muted,
+            }}
+          >
+            No players yet.
+          </div>
+        ) : (
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "grid",
+              gridAutoFlow: "column",
+              gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${perCol}, minmax(0, 1fr))`,
+              columnGap: "clamp(16px, 2.4vw, 48px)",
+              fontSize: rowFont,
+            }}
+          >
+            {rows.map((r, idx) => {
+              const played = r.holesPlayed > 0;
+              const scoreColor = !played ? TV.muted : r.toPar < 0 ? TV.under : r.toPar > 0 ? TV.over : TV.text;
+              return (
+                <div
+                  key={r.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "2.6em minmax(0, 1fr) auto auto",
+                    alignItems: "center",
+                    columnGap: "0.6em",
+                    padding: "0 0.5em",
+                    minHeight: 0,
+                    borderBottom: `1px solid ${TV.line}`,
+                    background: isLeaderRow(r) ? "rgba(159, 119, 80, 0.22)" : "transparent",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", fontWeight: 700, color: TV.muted }}>
+                    {rankCellContent(r, idx, lastRank, "1.1em")}
+                  </div>
+                  <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r.name}
+                  </div>
+                  <div style={{ fontWeight: 900, minWidth: "2.4em", textAlign: "right", color: scoreColor }}>
+                    {played ? formatToPar(r.toPar) : "—"}
+                  </div>
+                  <div style={{ fontSize: "0.6em", minWidth: "4.4em", textAlign: "right", color: TV.muted }}>
+                    {!played ? "" : r.holesPlayed === 18 ? "F" : `Thru ${r.holesPlayed}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div style={{ height: 1, background: TV.line, margin: "clamp(6px, 1.2vh, 16px) 0" }} />
+
+      <section style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div
+          style={{
+            fontSize: "clamp(11px, 1.6vh, 20px)",
+            letterSpacing: 2,
+            textTransform: "uppercase",
+            fontWeight: 700,
+            color: TV.gold,
+          }}
+        >
+          The Broadcast
+        </div>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-evenly",
+            overflow: "hidden",
+          }}
+        >
+          {recent.length === 0 ? (
+            <div style={{ color: TV.muted, fontSize: "clamp(14px, 2.5vh, 32px)" }}>
+              No updates yet — they'll show up here as scores come in.
+            </div>
+          ) : (
+            recent.map((m) => (
+              <div
+                key={m.id}
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: "0.8em",
+                  fontSize: "clamp(14px, 2.5vh, 32px)",
+                  lineHeight: 1.2,
+                  minHeight: 0,
+                  overflow: "hidden",
+                }}
+              >
+                <span style={{ flex: "none", minWidth: "4.5em", fontSize: "0.65em", color: TV.muted }}>
+                  {new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                </span>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {m.text}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 /**
@@ -833,6 +1071,25 @@ export default function App() {
       await loadScores();
     }, 60_000);
     return () => clearInterval(id);
+  }, [tab]);
+
+  // TV Mode: the standings and the broadcast strip each refresh on their own
+  // timer, with an immediate refresh on entry, so nobody has to touch the TV.
+  useEffect(() => {
+    if (tab !== "tv") return;
+    const refreshStandings = async () => {
+      await loadPlayers();
+      await loadScores();
+      await loadGames(); // picks up a game being locked/unlocked
+    };
+    refreshStandings();
+    loadBroadcast();
+    const standingsId = setInterval(refreshStandings, 30_000);
+    const broadcastId = setInterval(loadBroadcast, 45_000);
+    return () => {
+      clearInterval(standingsId);
+      clearInterval(broadcastId);
+    };
   }, [tab]);
 
   useEffect(() => {
@@ -2785,7 +3042,28 @@ const ps = {
       }
     `}</style>
 
-      <div style={styles.shell}>
+      {tab === "tv" && (
+        <TvMode
+          eventName={eventName}
+          subtitle={[
+            gameResults.length > 1
+              ? (gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0]).game.name
+              : null,
+            appSettings.multi_round_enabled
+              ? (selectedRoundId || activeRound?.id) === ROUND_OVERALL
+                ? "Overall"
+                : rounds.find((r) => r.id === (selectedRoundId || activeRound?.id))?.label
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          board={gameResults.find((g) => g.game.id === selectedGameId) || gameResults[0] || null}
+          messages={broadcastMsgs}
+          onExit={() => setTab("home")}
+        />
+      )}
+
+      <div style={tab === "tv" ? { display: "none" } : styles.shell}>
         {/* HOME (no top nav) */}
         {tab === "home" && (
           <div style={styles.homeCard}>
@@ -3501,6 +3779,10 @@ const ps = {
 >
   Print Scorecards
 </button>
+
+          <button style={styles.smallBtn} onClick={() => setTab("tv")}>
+            Launch TV Mode
+          </button>
 
         </div>
 
