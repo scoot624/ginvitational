@@ -762,6 +762,29 @@ function ScorecardDetail({ player }) {
     });
   })();
 
+  // Front nine / back nine / full-round totals. Par is the full nine's par;
+  // score and net only add up holes actually played (this is live scoring),
+  // and read "—" until a hole in that stretch has a score.
+  const sumRange = (from, to) => {
+    const hs = holes.slice(from, to);
+    const played = hs.filter((x) => x.sc != null);
+    return {
+      par: hs.reduce((a, x) => a + x.par, 0),
+      score: played.length ? played.reduce((a, x) => a + x.sc, 0) : null,
+      net: played.length ? played.reduce((a, x) => a + x.netDiff, 0) : null,
+    };
+  };
+  // Holes 1–9, OUT, holes 10–18, IN, TOT — the usual scorecard order.
+  const columns = [
+    ...holes.slice(0, 9).map((hd) => ({ key: `h${hd.h}`, hd })),
+    { key: "out", label: "OUT", sum: sumRange(0, 9) },
+    ...holes.slice(9).map((hd) => ({ key: `h${hd.h}`, hd })),
+    { key: "in", label: "IN", sum: sumRange(9, 18) },
+    { key: "tot", label: "TOT", sum: sumRange(0, 18) },
+  ];
+  const netSumStyle = (n) =>
+    n == null ? {} : n < 0 ? { color: THEME.good } : n > 0 ? { color: THEME.bad } : { opacity: 0.9 };
+
   // The row-label column is pinned (position: sticky) so it stays in view,
   // with a faint right-edge shadow so it visually reads as a "frozen" pane,
   // while the 18 hole columns scroll underneath it horizontally.
@@ -793,6 +816,10 @@ function ScorecardDetail({ player }) {
   // render wider or narrower than its neighbors.
   const headStyle = { ...styles.th, textAlign: "center", fontSize: 10, padding: "6px 4px" };
   const cellStyle = { ...styles.td, textAlign: "center", fontSize: 11, padding: "6px 4px" };
+  // OUT / IN / TOT columns: bold on a faint tint so they read as totals.
+  const sumTint = "rgba(22,35,29,0.06)";
+  const sumHeadStyle = { ...headStyle, background: sumTint, fontWeight: 900 };
+  const sumCellStyle = { ...cellStyle, background: sumTint, fontWeight: 800 };
   // Fixed-height slot under every hole number, whether or not that hole
   // has a stroke mark — this is what keeps the hole numbers themselves
   // sitting at the same height across every column.
@@ -804,65 +831,80 @@ function ScorecardDetail({ player }) {
           into the Leaderboard's own horizontally-scrollable table once this
           one hits its edge. */}
       <div style={{ width: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
-        <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 56 + holes.length * 26 }}>
+        <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 56 + 18 * 26 + 3 * 36 }}>
           <colgroup>
             <col style={{ width: 56 }} />
-            {holes.map((hd) => (
-              <col key={hd.h} style={{ width: 26 }} />
+            {columns.map((c) => (
+              <col key={c.key} style={{ width: c.hd ? 26 : 36 }} />
             ))}
           </colgroup>
           <thead>
             <tr>
               <th style={labelHeadStyle}>Hole</th>
-              {holes.map((hd) => (
-                <th key={hd.h} style={headStyle}>
-                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                    <span>{hd.h}</span>
-                    <span style={markSlotStyle}>
-                      {hd.strokes > 0 ? (
-                        <span style={styles.strokeDot} />
-                      ) : hd.strokes < 0 ? (
-                        <span style={styles.giveBackMark}>+</span>
-                      ) : null}
+              {columns.map((c) =>
+                c.hd ? (
+                  <th key={c.key} style={headStyle}>
+                    <span style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                      <span>{c.hd.h}</span>
+                      <span style={markSlotStyle}>
+                        {c.hd.strokes > 0 ? (
+                          <span style={styles.strokeDot} />
+                        ) : c.hd.strokes < 0 ? (
+                          <span style={styles.giveBackMark}>+</span>
+                        ) : null}
+                      </span>
                     </span>
-                  </span>
-                </th>
-              ))}
+                  </th>
+                ) : (
+                  <th key={c.key} style={sumHeadStyle}>
+                    <span style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                      <span>{c.label}</span>
+                      <span style={markSlotStyle} />
+                    </span>
+                  </th>
+                )
+              )}
             </tr>
           </thead>
 
           <tbody>
             <tr>
               <td style={labelCellStyle}>SI</td>
-              {holes.map((hd) => (
-                <td key={hd.h} style={cellStyle}>
-                  {hd.si}
+              {columns.map((c) => (
+                <td key={c.key} style={c.hd ? cellStyle : sumCellStyle}>
+                  {c.hd ? c.hd.si : ""}
                 </td>
               ))}
             </tr>
             <tr>
               <td style={labelCellStyle}>Par</td>
-              {holes.map((hd) => (
-                <td key={hd.h} style={cellStyle}>
-                  {hd.par}
+              {columns.map((c) => (
+                <td key={c.key} style={c.hd ? cellStyle : sumCellStyle}>
+                  {c.hd ? c.hd.par : c.sum.par}
                 </td>
               ))}
             </tr>
             <tr>
               <td style={labelCellStyle}>Score</td>
-              {holes.map((hd) => (
-                <td key={hd.h} style={cellStyle}>
-                  {hd.sc != null ? hd.sc : "—"}
+              {columns.map((c) => (
+                <td key={c.key} style={c.hd ? cellStyle : sumCellStyle}>
+                  {c.hd ? (c.hd.sc != null ? c.hd.sc : "—") : c.sum.score != null ? c.sum.score : "—"}
                 </td>
               ))}
             </tr>
             <tr>
               <td style={labelCellStyle}>Net +/-</td>
-              {holes.map((hd) => (
-                <td key={hd.h} style={{ ...cellStyle, ...hd.cumStyle }}>
-                  {hd.netDiff == null ? "—" : formatToPar(hd.cum)}
-                </td>
-              ))}
+              {columns.map((c) =>
+                c.hd ? (
+                  <td key={c.key} style={{ ...cellStyle, ...c.hd.cumStyle }}>
+                    {c.hd.netDiff == null ? "—" : formatToPar(c.hd.cum)}
+                  </td>
+                ) : (
+                  <td key={c.key} style={{ ...sumCellStyle, fontWeight: 900, ...netSumStyle(c.sum.net) }}>
+                    {c.sum.net == null ? "—" : formatToPar(c.sum.net)}
+                  </td>
+                )
+              )}
             </tr>
           </tbody>
         </table>
