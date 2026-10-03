@@ -1145,7 +1145,6 @@ export default function App() {
   const [teeSheetRows, setTeeSheetRows] = useState([]);
   // Foursomes sanity-check list is collapsed by default — after an import,
   // most visits to Admin don't need every player re-scanned every time.
-  const [foursomesExpanded, setFoursomesExpanded] = useState(false);
 
   // Admin: which of the setup sections (Event Name, Import, Games, etc.) is
   // expanded — only one at a time, so the page shows one decision at a time
@@ -1785,9 +1784,32 @@ export default function App() {
     }
   }
 
-  function playersInFoursome(fid) {
-    const pids = foursomePlayers.filter((fp) => fp.foursome_id === fid).map((x) => x.player_id);
-    return players.filter((p) => pids.includes(p.id));
+  // Deletes players along with everything that points at them (their scores,
+  // their group spots, any game-team spots and their Broadcast cards).
+  async function deletePlayers(ids) {
+    if (!adminOn) return "Admin only.";
+    for (let i = 0; i < ids.length; i += 40) {
+      const part = ids.slice(i, i + 40);
+      await supabase.from("broadcast_messages").delete().in("player_id", part); // best effort
+      for (const table of ["foursome_players", "scores", "game_team_members"]) {
+        const { error } = await supabase.from(table).delete().in("player_id", part);
+        if (error) {
+          console.error(error);
+          return `Error removing ${table}: ${errToText(error)}`;
+        }
+      }
+      const { data, error } = await supabase.from("players").delete().in("id", part).select("id");
+      if (error) {
+        console.error(error);
+        return `Error deleting players: ${errToText(error)}`;
+      }
+      if ((data || []).length < part.length) {
+        await initialLoad();
+        return "Some players could not be deleted (the database refused). Reload and check the list.";
+      }
+    }
+    await initialLoad();
+    return `Deleted ${ids.length} player${ids.length === 1 ? "" : "s"} ✅`;
   }
 
   async function clearFoursomes() {
@@ -4180,72 +4202,24 @@ const ps = {
             </div>
           </AdminSection>
 
-          {/* Foursomes sanity check */}
+          {/* Players & Groups — edit after the tournament is set up */}
           <AdminSection
-            title="Foursomes"
-            subtitle={foursomes.length > 0 ? `${foursomes.length} groups configured` : "No foursomes yet"}
+            title="Players & Groups"
+            subtitle={`${players.length} players • ${foursomes.length} groups`}
             open={openAdminSection === "foursomes"}
             onToggle={() => setOpenAdminSection((k) => (k === "foursomes" ? null : "foursomes"))}
           >
-            <div style={styles.helpText}>
-              Sanity check after import: codes, tee time, starting hole, and members.
+            <div style={{ marginTop: 8 }}>
+              <RosterEditor
+                players={players}
+                foursomes={foursomes}
+                foursomePlayers={foursomePlayers}
+                rounds={rounds}
+                activeRound={activeRound}
+                multiRound={!!appSettings.multi_round_enabled}
+                onChanged={initialLoad}
+              />
             </div>
-
-            {foursomes.length === 0 ? (
-              <div style={{ marginTop: 12 }}>
-                <div style={styles.helpText}>No foursomes yet.</div>
-              </div>
-            ) : (
-              <div style={{ marginTop: 12 }}>
-                <button style={styles.smallBtn} onClick={() => setFoursomesExpanded((v) => !v)}>
-                  {foursomesExpanded
-                    ? "Hide"
-                    : `Review ${foursomePlayers.length} players across ${foursomes.length} groups`}
-                </button>
-
-                {foursomesExpanded && (
-                  <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-                    {foursomes.map((f) => {
-                      const members = playersInFoursome(f.id);
-                      return (
-                        <div key={f.id} style={styles.foursomeCard}>
-                          <div style={{ fontWeight: 950 }}>
-                            {f.group_name} <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
-                          </div>
-
-                          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
-                            {appSettings.multi_round_enabled && (
-                              <>
-                                Round: <b>{rounds.find((r) => r.id === f.round_id)?.label || "—"}</b> •{" "}
-                              </>
-                            )}
-                            Tee: <b>{formatTeeTime(f.tee_time) || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
-                            <b>{members.length}</b>
-                          </div>
-
-                          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                            {members.map((p) => (
-                              <div key={p.id} style={styles.playerRow}>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    {p.name}
-                                  </div>
-                                  <div style={styles.playerMeta}>
-                                    HCP {clampInt(p.handicap, 0)}
-                                    {p.charity ? ` • ${p.charity}` : ""}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                            {members.length === 0 && <div style={styles.helpText}>No players assigned.</div>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
           </AdminSection>
 
           {/* Multi-Game setup */}
@@ -4791,6 +4765,18 @@ const ps = {
                 {clearMsg ? <div style={styles.helpText}>{clearMsg}</div> : null}
                 {clearNeedsSetup ? <ClearMessagesSetupNotice /> : null}
               </div>
+
+              <DeletePlayersPanel
+                players={players}
+                groupNameByPlayer={
+                  new Map(
+                    foursomePlayers
+                      .filter((fp) => foursomes.some((f) => f.id === fp.foursome_id && (!f.round_id || f.round_id === activeRound?.id)))
+                      .map((fp) => [fp.player_id, foursomes.find((f) => f.id === fp.foursome_id)?.group_name])
+                  )
+                }
+                onDelete={deletePlayers}
+              />
 
               {games.length > 0 && (
                 <div>
@@ -5899,6 +5885,794 @@ const CLEAR_MESSAGES_SQL = `drop policy if exists "allow delete broadcast_messag
 create policy "allow delete broadcast_messages"
   on broadcast_messages for delete
   using (true);`;
+
+const hcpLabel = (h) => (clampInt(h, 0) < 0 ? `+${Math.abs(clampInt(h, 0))}` : String(clampInt(h, 0)));
+const toTimeInput = (t) => (t ? String(t).slice(0, 5) : "");
+const MAX_GROUP_SIZE = 4;
+
+/** Name / handicap (with Plus box) / charity fields shared by "Add player" and "Edit player". */
+function PlayerFields({ draft, setDraft, onSubmit, submitLabel, onCancel, busy, children }) {
+  const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit();
+      }}
+      style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}
+    >
+      <label style={styles.label}>
+        Name
+        <input
+          style={field}
+          value={draft.name}
+          autoComplete="off"
+          autoCapitalize="words"
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        />
+      </label>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "end" }}>
+        <label style={styles.label}>
+          Handicap
+          <input
+            style={field}
+            value={draft.hcp}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            onChange={(e) => setDraft({ ...draft, hcp: e.target.value.replace(/[^\d]/g, "").slice(0, 2) })}
+          />
+        </label>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", minHeight: 46, fontSize: 14, color: THEME.text }}>
+          <input
+            type="checkbox"
+            style={{ width: 22, height: 22 }}
+            checked={draft.plus}
+            onChange={(e) => setDraft({ ...draft, plus: e.target.checked })}
+          />
+          Plus
+        </label>
+      </div>
+      <label style={styles.label}>
+        Charity (optional)
+        <input style={field} value={draft.charity} autoComplete="off" onChange={(e) => setDraft({ ...draft, charity: e.target.value })} />
+      </label>
+      {children}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button type="submit" disabled={busy} style={{ ...styles.bigBtn, flex: 1, minHeight: 48, opacity: busy ? 0.6 : 1 }}>
+          {submitLabel}
+        </button>
+        {onCancel ? (
+          <button type="button" style={{ ...styles.smallBtn, minHeight: 44 }} onClick={onCancel}>
+            Cancel
+          </button>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+const emptyPlayerDraft = { name: "", hcp: "", plus: false, charity: "" };
+const draftFromPlayer = (p) => ({
+  name: p.name || "",
+  hcp: String(Math.abs(clampInt(p.handicap, 0))),
+  plus: clampInt(p.handicap, 0) < 0,
+  charity: p.charity || "",
+});
+
+/** Validates a player draft; returns { error } or { name, handicap, charity }. */
+function readPlayerDraft(draft, players, selfId) {
+  const name = draft.name.trim().replace(/\s+/g, " ");
+  if (!name) return { error: "Enter the player's name." };
+  if (!/^\d{1,2}$/.test(draft.hcp.trim()) || Number(draft.hcp.trim()) > 54) {
+    return { error: "Enter a handicap from 0 to 54 (use the Plus box for a plus handicap)." };
+  }
+  if (players.some((p) => p.id !== selfId && String(p.name || "").trim().toLowerCase() === name.toLowerCase())) {
+    return { error: `${name} is already a player.` };
+  }
+  const n = Number(draft.hcp.trim());
+  return { name, handicap: draft.plus && n !== 0 ? -n : n, charity: draft.charity.trim() || null };
+}
+
+/** One group: summary, and an editor for its name / tee time / hole / members. */
+function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, ops, busy, multiRound, roundLabel }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(f.group_name || "");
+  const [time, setTime] = useState(toTimeInput(f.tee_time));
+  const [hole, setHole] = useState(String(f.starting_hole || 1));
+  const [addId, setAddId] = useState("");
+  const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
+  const full = members.length >= MAX_GROUP_SIZE;
+
+  const open = () => {
+    setName(f.group_name || "");
+    setTime(toTimeInput(f.tee_time));
+    setHole(String(f.starting_hole || 1));
+    setAddId("");
+    setEditing(true);
+  };
+
+  return (
+    <div style={styles.foursomeCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 950, overflowWrap: "anywhere" }}>
+            {f.group_name} <span style={{ opacity: 0.78, fontWeight: 800 }}>(Code: {f.code})</span>
+          </div>
+          <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+            {multiRound ? <>Round: <b>{roundLabel}</b> • </> : null}
+            Tee: <b>{formatTeeTime(f.tee_time) || "—"}</b> • Start Hole: <b>{f.starting_hole || "—"}</b> • Members:{" "}
+            <b>{members.length}</b>
+          </div>
+        </div>
+        <button style={{ ...styles.smallBtn, minHeight: 44, flex: "none" }} onClick={() => (editing ? setEditing(false) : open())}>
+          {editing ? "Close" : "Edit"}
+        </button>
+      </div>
+
+      {editing ? (
+        <div style={{ display: "grid", gap: 10, marginTop: 12, gridTemplateColumns: "minmax(0, 1fr)" }}>
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 64px" }}>
+            <label style={styles.label}>
+              Group name
+              <input style={field} value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label style={styles.label}>
+              Tee time
+              <input type="time" style={field} value={time} onChange={(e) => setTime(e.target.value)} />
+            </label>
+            <label style={styles.label}>
+              Hole
+              <input
+                style={field}
+                inputMode="numeric"
+                value={hole}
+                onChange={(e) => setHole(e.target.value.replace(/[^\d]/g, "").slice(0, 2))}
+              />
+            </label>
+          </div>
+          <button
+            style={{ ...styles.bigBtn, minHeight: 48, opacity: busy ? 0.6 : 1 }}
+            disabled={busy}
+            onClick={() => ops.saveGroup(f, { name, time, hole })}
+          >
+            Save group
+          </button>
+
+          <div style={styles.sectionLabel}>Members</div>
+          {members.length === 0 ? <div style={styles.helpText}>No players in this group.</div> : null}
+          {members.map((p) => (
+            <div key={p.id} style={{ ...styles.playerRow, flexWrap: "wrap" }}>
+              <div style={{ minWidth: 0, flex: "1 1 140px" }}>
+                <div style={{ fontWeight: 950, overflowWrap: "anywhere" }}>{p.name}</div>
+                <div style={styles.playerMeta}>HCP {hcpLabel(p.handicap)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                {otherGroups.length > 0 ? (
+                  <select
+                    aria-label={`Move ${p.name} to another group`}
+                    style={{ ...field, width: "auto", minHeight: 44, fontSize: 14, padding: "6px 8px" }}
+                    value=""
+                    disabled={busy}
+                    onChange={(e) => e.target.value && ops.moveMember(p, e.target.value)}
+                  >
+                    <option value="">Move to…</option>
+                    {otherGroups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.group_name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <button style={{ ...styles.smallBtn, minHeight: 44 }} disabled={busy} onClick={() => ops.removeMember(f, p)}>
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <label style={styles.label}>
+            Add a player to this group
+            <div style={{ display: "flex", gap: 8 }}>
+              <select style={{ ...field, flex: 1 }} value={addId} disabled={full} onChange={(e) => setAddId(e.target.value)}>
+                <option value="">{full ? `Group is full (${MAX_GROUP_SIZE})` : "Choose a player…"}</option>
+                {unassigned.length > 0 && (
+                  <optgroup label="Not in a group">
+                    {unassigned.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {inOtherGroups.length > 0 && (
+                  <optgroup label="In another group (moves them)">
+                    {inOtherGroups.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              <button
+                style={{ ...styles.smallBtn, minHeight: 46, opacity: !addId || busy || full ? 0.5 : 1 }}
+                disabled={!addId || busy || full}
+                onClick={async () => {
+                  await ops.addMember(addId, f);
+                  setAddId("");
+                }}
+              >
+                Add
+              </button>
+            </div>
+          </label>
+
+          <div style={styles.hr} />
+          <button style={{ ...styles.dangerBtn, minHeight: 44 }} disabled={busy} onClick={() => ops.deleteGroup(f, members)}>
+            Delete this group
+          </button>
+          <div style={styles.helpText}>The players stay in the event; they just won&apos;t be in a group.</div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+          {members.map((p) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14 }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{p.name}</span>
+              <span style={{ color: THEME.textMuted, flex: "none" }}>HCP {hcpLabel(p.handicap)}</span>
+            </div>
+          ))}
+          {members.length === 0 ? <div style={styles.helpText}>No players assigned.</div> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One player row with an inline editor. */
+function RosterPlayerRow({ p, groupName, players, ops, busy }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(draftFromPlayer(p));
+  const [err, setErr] = useState("");
+  return (
+    <div style={{ ...styles.playerRow, flexDirection: "column", alignItems: "stretch" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 950, overflowWrap: "anywhere" }}>{p.name}</div>
+          <div style={styles.playerMeta}>
+            HCP {hcpLabel(p.handicap)}
+            {p.charity ? ` • ${p.charity}` : ""} • {groupName || "No group"}
+          </div>
+        </div>
+        <button
+          style={{ ...styles.smallBtn, minHeight: 44, flex: "none" }}
+          onClick={() => {
+            setDraft(draftFromPlayer(p));
+            setErr("");
+            setEditing((v) => !v);
+          }}
+        >
+          {editing ? "Close" : "Edit"}
+        </button>
+      </div>
+      {editing ? (
+        <div style={{ marginTop: 10 }}>
+          <PlayerFields
+            draft={draft}
+            setDraft={(d) => {
+              setDraft(d);
+              setErr("");
+            }}
+            busy={busy}
+            submitLabel="Save player"
+            onCancel={() => setEditing(false)}
+            onSubmit={async () => {
+              const r = readPlayerDraft(draft, players, p.id);
+              if (r.error) return setErr(r.error);
+              const ok = await ops.savePlayer(p, r);
+              if (ok) setEditing(false);
+            }}
+          >
+            {err ? <div style={{ fontSize: 13, color: THEME.danger, fontWeight: 700 }}>{err}</div> : null}
+          </PlayerFields>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Admin → Players & Groups: edit players (name, handicap, charity), add a
+ * player, and edit groups after they exist (name, tee time, starting hole,
+ * who is in them, add/delete a group). Works on the active round (or the
+ * round you pick when several rounds are on).
+ */
+function RosterEditor({ players, foursomes, foursomePlayers, rounds, activeRound, multiRound, onChanged }) {
+  const [roundPick, setRoundPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [addingGroup, setAddingGroup] = useState(false);
+  const [gDraft, setGDraft] = useState({ name: "", time: "", hole: "1" });
+  const [addingPlayer, setAddingPlayer] = useState(false);
+  const [pDraft, setPDraft] = useState(emptyPlayerDraft);
+  const [pGroup, setPGroup] = useState("");
+  const [pErr, setPErr] = useState("");
+  const [filter, setFilter] = useState("");
+  const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
+
+  const roundId = multiRound ? roundPick || activeRound?.id || "" : activeRound?.id || "";
+  const groups = useMemo(() => {
+    return foursomes
+      .filter((f) => !f.round_id || f.round_id === roundId)
+      .sort(
+        (a, b) =>
+          String(a.tee_time || "99").localeCompare(String(b.tee_time || "99")) ||
+          String(a.group_name).localeCompare(String(b.group_name), undefined, { numeric: true })
+      );
+  }, [foursomes, roundId]);
+
+  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+  const groupOfPlayer = useMemo(() => {
+    const ids = new Set(groups.map((g) => g.id));
+    const m = new Map();
+    for (const fp of foursomePlayers) {
+      if (!ids.has(fp.foursome_id)) continue;
+      m.set(fp.player_id, groups.find((g) => g.id === fp.foursome_id));
+    }
+    return m;
+  }, [groups, foursomePlayers]);
+  const membersOf = (f) =>
+    foursomePlayers
+      .filter((fp) => fp.foursome_id === f.id)
+      .map((fp) => playerById.get(fp.player_id))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+  const sameName = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+
+  // Run one change: show errors, otherwise reload the data and confirm.
+  async function run(fn, okText = "Saved ✅") {
+    if (busy) return false;
+    setBusy(true);
+    setMsg("Saving…");
+    try {
+      const err = await fn();
+      if (err) {
+        setMsg(err);
+        return false;
+      }
+      await onChanged();
+      setMsg(okText);
+      return true;
+    } catch (e) {
+      console.error(e);
+      setMsg(`Something went wrong: ${errToText(e)}`);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // A player's game "team" follows their group name (same as the import does),
+  // but only when it was following the old name, so a hand-set team is left alone.
+  async function syncTeamLabel(playerIds, fromName, toName) {
+    for (const id of playerIds) {
+      const p = playerById.get(id);
+      if (!p) continue;
+      const label = String(p.team_label || "").trim();
+      if (label && !sameName(label, fromName)) continue;
+      const { error } = await supabase.from("players").update({ team_label: toName || null }).eq("id", id);
+      if (error) return errToText(error);
+    }
+    return null;
+  }
+
+  function validateGroup(d, selfId) {
+    const name = d.name.trim();
+    if (!name) return { error: "Give the group a name." };
+    if (groups.some((g) => g.id !== selfId && sameName(g.group_name, name))) return { error: `There is already a group called "${name}".` };
+    const hole = Number(d.hole);
+    if (!(hole >= 1 && hole <= 18)) return { error: "Starting hole must be 1 to 18." };
+    return { name, hole: Math.trunc(hole), tee_time: d.time ? `${d.time}:00` : null };
+  }
+
+  const ops = {
+    saveGroup: (f, d) =>
+      run(async () => {
+        const v = validateGroup(d, f.id);
+        if (v.error) return v.error;
+        const { error } = await supabase
+          .from("foursomes")
+          .update({ group_name: v.name, tee_time: v.tee_time, starting_hole: v.hole })
+          .eq("id", f.id);
+        if (error) return errToText(error);
+        if (!sameName(f.group_name, v.name)) {
+          return syncTeamLabel(membersOf(f).map((p) => p.id), f.group_name, v.name);
+        }
+        return null;
+      }),
+
+    removeMember: (f, p) =>
+      run(async () => {
+        const { error } = await supabase.from("foursome_players").delete().eq("foursome_id", f.id).eq("player_id", p.id);
+        if (error) return errToText(error);
+        return syncTeamLabel([p.id], f.group_name, null);
+      }),
+
+    // Moves (or adds) a player into a group, taking them out of any other group this round.
+    addMember: (playerId, f) =>
+      run(async () => {
+        const p = playerById.get(playerId);
+        if (!p) return "That player no longer exists.";
+        if (membersOf(f).length >= MAX_GROUP_SIZE && groupOfPlayer.get(playerId)?.id !== f.id) {
+          return `${f.group_name} is full (${MAX_GROUP_SIZE} players).`;
+        }
+        const from = groupOfPlayer.get(playerId);
+        if (from?.id === f.id) return null;
+        if (from) {
+          const del = await supabase.from("foursome_players").delete().eq("foursome_id", from.id).eq("player_id", playerId);
+          if (del.error) return errToText(del.error);
+        }
+        const ins = await supabase.from("foursome_players").insert({ foursome_id: f.id, player_id: playerId });
+        if (ins.error) return errToText(ins.error);
+        return syncTeamLabel([playerId], from ? from.group_name : null, f.group_name);
+      }),
+
+    moveMember: (p, toId) => {
+      const to = groups.find((g) => g.id === toId);
+      return to ? ops.addMember(p.id, to) : Promise.resolve(false);
+    },
+
+    deleteGroup: async (f, members) => {
+      if (!confirm(`Delete "${f.group_name}"? Its ${members.length} player(s) stay in the event but won't be in a group.`)) return false;
+      return run(async () => {
+        const a = await supabase.from("foursome_players").delete().eq("foursome_id", f.id);
+        if (a.error) return errToText(a.error);
+        const b = await supabase.from("foursomes").delete().eq("id", f.id);
+        if (b.error) return errToText(b.error);
+        return syncTeamLabel(members.map((p) => p.id), f.group_name, null);
+      }, "Group deleted ✅");
+    },
+
+    savePlayer: (p, v) =>
+      run(async () => {
+        const { error } = await supabase
+          .from("players")
+          .update({ name: v.name, handicap: v.handicap, charity: v.charity })
+          .eq("id", p.id);
+        return error ? errToText(error) : null;
+      }),
+  };
+
+  async function createGroup() {
+    const v = validateGroup(gDraft, null);
+    if (v.error) return setMsg(v.error);
+    if (!roundId) return setMsg("No round to add the group to yet — reload the page and try again.");
+    const ok = await run(async () => {
+      let created = false;
+      for (let tries = 0; tries < 10 && !created; tries++) {
+        const { error } = await supabase
+          .from("foursomes")
+          .insert({ group_name: v.name, code: makeCode(6), tee_time: v.tee_time, starting_hole: v.hole, round_id: roundId });
+        if (!error) created = true;
+      }
+      return created ? null : "Could not create the group (try again).";
+    }, `Added "${v.name}" ✅`);
+    if (ok) {
+      setGDraft({ name: "", time: "", hole: "1" });
+      setAddingGroup(false);
+    }
+  }
+
+  async function createPlayer() {
+    const v = readPlayerDraft(pDraft, players, null);
+    if (v.error) return setPErr(v.error);
+    const group = groups.find((g) => g.id === pGroup) || null;
+    if (group && membersOf(group).length >= MAX_GROUP_SIZE) return setPErr(`${group.group_name} is full (${MAX_GROUP_SIZE} players).`);
+    const ok = await run(async () => {
+      const { data, error } = await supabase
+        .from("players")
+        .insert({ name: v.name, handicap: v.handicap, charity: v.charity, team_label: group ? group.group_name : null })
+        .select("id")
+        .single();
+      if (error) return errToText(error);
+      if (group) {
+        const ins = await supabase.from("foursome_players").insert({ foursome_id: group.id, player_id: data.id });
+        if (ins.error) return errToText(ins.error);
+      }
+      return null;
+    }, `Added ${v.name} ✅`);
+    if (ok) {
+      setPDraft(emptyPlayerDraft);
+      setPGroup("");
+      setPErr("");
+      setAddingPlayer(false);
+    }
+  }
+
+  const shownPlayers = players
+    .filter((p) => !filter.trim() || p.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+      <div style={styles.helpText}>
+        Change a player or a group any time, even after the tournament has started. A player&apos;s scores stay with
+        them. Existing 2-man / 4-man game teams are not changed.
+      </div>
+
+      {multiRound ? (
+        <label style={styles.label}>
+          Round
+          <select style={field} value={roundId} onChange={(e) => setRoundPick(e.target.value)}>
+            {rounds.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.label}
+                {r.is_active ? " (active)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      {msg ? <div style={{ fontSize: 13, fontWeight: 700, color: /✅/.test(msg) ? THEME.text : THEME.danger }}>{msg}</div> : null}
+
+      <div style={styles.sectionLabel}>Groups ({groups.length})</div>
+      {groups.length === 0 ? <div style={styles.helpText}>No groups yet.</div> : null}
+      {groups.map((f) => {
+        const members = membersOf(f);
+        const memberIds = new Set(members.map((p) => p.id));
+        const others = players.filter((p) => !memberIds.has(p.id));
+        return (
+          <RosterGroupCard
+            key={f.id}
+            f={f}
+            members={members}
+            otherGroups={groups.filter((g) => g.id !== f.id)}
+            unassigned={others.filter((p) => !groupOfPlayer.has(p.id)).sort((a, b) => a.name.localeCompare(b.name))}
+            inOtherGroups={others.filter((p) => groupOfPlayer.has(p.id)).sort((a, b) => a.name.localeCompare(b.name))}
+            ops={ops}
+            busy={busy}
+            multiRound={multiRound}
+            roundLabel={rounds.find((r) => r.id === f.round_id)?.label || "—"}
+          />
+        );
+      })}
+
+      {addingGroup ? (
+        <div style={{ ...styles.foursomeCard, display: "grid", gap: 10 }}>
+          <div style={styles.sectionLabel}>New group</div>
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 64px" }}>
+            <label style={styles.label}>
+              Group name
+              <input style={field} value={gDraft.name} onChange={(e) => setGDraft({ ...gDraft, name: e.target.value })} />
+            </label>
+            <label style={styles.label}>
+              Tee time
+              <input type="time" style={field} value={gDraft.time} onChange={(e) => setGDraft({ ...gDraft, time: e.target.value })} />
+            </label>
+            <label style={styles.label}>
+              Hole
+              <input
+                style={field}
+                inputMode="numeric"
+                value={gDraft.hole}
+                onChange={(e) => setGDraft({ ...gDraft, hole: e.target.value.replace(/[^\d]/g, "").slice(0, 2) })}
+              />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...styles.bigBtn, flex: 1, minHeight: 48 }} disabled={busy} onClick={createGroup}>
+              Add group
+            </button>
+            <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setAddingGroup(false)}>
+              Cancel
+            </button>
+          </div>
+          <div style={styles.helpText}>A code is made for it automatically. Add players to it afterwards with Edit.</div>
+        </div>
+      ) : (
+        <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setAddingGroup(true)}>
+          + Add group
+        </button>
+      )}
+
+      <div style={styles.hr} />
+      <div style={styles.sectionLabel}>Players ({players.length})</div>
+
+      {addingPlayer ? (
+        <div style={{ ...styles.foursomeCard }}>
+          <div style={{ ...styles.sectionLabel, marginBottom: 10 }}>New player</div>
+          <PlayerFields
+            draft={pDraft}
+            setDraft={(d) => {
+              setPDraft(d);
+              setPErr("");
+            }}
+            busy={busy}
+            submitLabel="Add player"
+            onCancel={() => setAddingPlayer(false)}
+            onSubmit={createPlayer}
+          >
+            <label style={styles.label}>
+              Put in a group (optional)
+              <select style={field} value={pGroup} onChange={(e) => setPGroup(e.target.value)}>
+                <option value="">No group yet</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id} disabled={membersOf(g).length >= MAX_GROUP_SIZE}>
+                    {g.group_name}
+                    {membersOf(g).length >= MAX_GROUP_SIZE ? " (full)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {pErr ? <div style={{ fontSize: 13, color: THEME.danger, fontWeight: 700 }}>{pErr}</div> : null}
+          </PlayerFields>
+        </div>
+      ) : (
+        <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setAddingPlayer(true)}>
+          + Add player
+        </button>
+      )}
+
+      {players.length > 8 ? (
+        <input
+          style={field}
+          placeholder="Search players"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Search players"
+        />
+      ) : null}
+      <div style={{ display: "grid", gap: 8 }}>
+        {shownPlayers.map((p) => (
+          <RosterPlayerRow key={p.id} p={p} groupName={groupOfPlayer.get(p.id)?.group_name} players={players} ops={ops} busy={busy} />
+        ))}
+        {shownPlayers.length === 0 ? <div style={styles.helpText}>No players match.</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Danger Zone → Delete players: pick some players, or delete everyone.
+ * `onDelete(ids)` removes their scores and group spots too and returns a message.
+ */
+function DeletePlayersPanel({ players, groupNameByPlayer, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [filter, setFilter] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const shown = players
+    .filter((p) => !filter.trim() || p.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const selected = players.filter((p) => picked.has(p.id));
+
+  async function go(list, everyone) {
+    if (busy || list.length === 0) return;
+    if (everyone) {
+      const typed = prompt(
+        `This deletes ALL ${list.length} players and every score they have entered. This can't be undone.\n\nType DELETE ALL to confirm.`
+      );
+      if (typed == null) return;
+      if (typed.trim().toUpperCase() !== "DELETE ALL") {
+        setMsg("Not deleted: you didn't type DELETE ALL.");
+        return;
+      }
+    } else if (
+      !confirm(
+        `Delete ${list.length} player${list.length === 1 ? "" : "s"} (${list
+          .slice(0, 5)
+          .map((p) => p.name)
+          .join(", ")}${list.length > 5 ? ", …" : ""}) and all of their scores? This can't be undone.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setMsg("Deleting…");
+    try {
+      setMsg(await onDelete(list.map((p) => p.id)));
+      setPicked(new Set());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={styles.hr} />
+      <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Delete players</div>
+      <div style={styles.helpText}>
+        Removes the players you choose (or everyone) along with their scores and their spot in a group. Groups stay,
+        just emptier.
+      </div>
+      <button style={{ ...styles.dangerBtn, marginTop: 10, minHeight: 44 }} onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide" : `Delete players… (${players.length})`}
+      </button>
+
+      {open ? (
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          {players.length === 0 ? <div style={styles.helpText}>There are no players.</div> : null}
+          {players.length > 8 ? (
+            <input
+              style={{ ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box" }}
+              placeholder="Search players"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              aria-label="Search players"
+            />
+          ) : null}
+          {players.length > 0 ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                style={{ ...styles.smallBtn, minHeight: 44 }}
+                onClick={() => setPicked(new Set([...picked, ...shown.map((p) => p.id)]))}
+              >
+                Select {filter.trim() ? "shown" : "all"}
+              </button>
+              <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setPicked(new Set())}>
+                Clear selection
+              </button>
+            </div>
+          ) : null}
+          <div style={{ display: "grid", gap: 6, maxHeight: 360, overflowY: "auto" }}>
+            {shown.map((p) => (
+              <label
+                key={p.id}
+                style={{
+                  ...styles.playerRow,
+                  justifyContent: "flex-start",
+                  minHeight: 44,
+                  cursor: "pointer",
+                  background: picked.has(p.id) ? "rgba(153,75,62,0.12)" : styles.playerRow.background,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ width: 22, height: 22, flex: "none" }}
+                  checked={picked.has(p.id)}
+                  onChange={(e) => {
+                    const next = new Set(picked);
+                    if (e.target.checked) next.add(p.id);
+                    else next.delete(p.id);
+                    setPicked(next);
+                  }}
+                />
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ fontWeight: 800, overflowWrap: "anywhere" }}>{p.name}</span>
+                  <span style={{ ...styles.playerMeta, display: "block" }}>
+                    HCP {hcpLabel(p.handicap)} • {groupNameByPlayer.get(p.id) || "No group"}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {players.length > 0 ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              <button
+                style={{ ...styles.dangerBtn, minHeight: 48, opacity: selected.length === 0 || busy ? 0.5 : 1 }}
+                disabled={selected.length === 0 || busy}
+                onClick={() => go(selected, false)}
+              >
+                Delete selected ({selected.length})
+              </button>
+              <button
+                style={{ ...styles.dangerBtn, minHeight: 48, opacity: busy ? 0.5 : 1 }}
+                disabled={busy}
+                onClick={() => go(players, true)}
+              >
+                Delete ALL players ({players.length})
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {msg ? <div style={styles.helpText}>{msg}</div> : null}
+    </div>
+  );
+}
 
 /**
  * A collapsible Admin sub-section — only one open at a time (accordion),
