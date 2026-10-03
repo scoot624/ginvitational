@@ -3094,7 +3094,7 @@ const ps = {
 
   // Header
   headerRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  title: { fontSize: 24, fontWeight: 900, lineHeight: 1.1, textAlign: "left" },
+  title: { fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2, textAlign: "left" },
   // ~76px tall = the height of the title + group details beside it.
   logo: { flex: "none", display: "block", height: 76, width: "auto" },
 
@@ -3883,14 +3883,18 @@ const ps = {
     await loadFoursomes();
     await loadFoursomePlayers();
     await loadPlayers();
-    // The cards carry the logo: make sure it's loaded before the print dialog
-    // opens, even if this page was opened straight to Admin (never showed Home).
-    await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = resolve;
-      img.onerror = resolve;
-      img.src = "/logo.png";
-    });
+    // The cards carry the logo and the serif title: make sure both are loaded
+    // before the print dialog opens, even if this page was opened straight to
+    // Admin (never showed Home).
+    await Promise.all([
+      new Promise((resolve) => {
+        const img = new Image();
+        img.onload = resolve;
+        img.onerror = resolve;
+        img.src = "/logo.png";
+      }),
+      document.fonts ? document.fonts.load("600 26px Fraunces").catch(() => {}) : null,
+    ]);
 
     setPrintAllOn(true);
     setTimeout(() => window.print(), 100);
