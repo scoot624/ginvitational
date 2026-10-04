@@ -37,7 +37,7 @@ function playingHandicap(handicap, handicapPct) {
  * negative on those holes. `net = gross - strokesOnHoleForGame(...)`
  * keeps working unchanged either way.
  */
-function strokesOnHoleForGame(handicap, handicapPct, holeNum, strokeIndex) {
+export function strokesOnHoleForGame(handicap, handicapPct, holeNum, strokeIndex) {
   const h = playingHandicap(handicap, handicapPct);
   if (h === 0) return 0;
   const magnitude = Math.abs(h);
