@@ -1,179 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase, fetchAllRows } from "./lib/supabase";
 import { formatTeeTime, buildPhoneGroups, phoneDraftToSheetRows, phoneSlot, excelTimeToDbTime, fullNameFromRow } from "./lib/teeSheet";
-import { clampInt, lastName, formatToPar, strokesForHandicap } from "./lib/golf";
+import { clampInt, lastName, formatToPar } from "./lib/golf";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds, strokesOnHoleForGame } from "./lib/gameCalc";
 import { computeMatchResult, computeRyderCup, MATCH_TYPES, HANDICAP_MODES, sideLabel } from "./lib/matchPlay";
 import { computeBroadcastEvents, planPosts, safeDedupeKey, shortName, SWING_WINDOW_MS } from "./lib/broadcastEngine";
 import { FONT_BODY, FONT_DISPLAY, PALETTE, THEME, netColorStyle, styles } from "./theme";
-
-/** ⛳ PARS (Blue tees, Par 72; hole 18 is par 5) */
-const PARS = [
-  4, 4, 4, 3, 4, 3, 5, 3, 5,
-  4, 3, 5, 3, 4, 5, 4, 4, 5,
-];
-
-/** 🧮 Stroke Index — Manufacturers GC (Blue Tees, Men’s) (1 = hardest)
- * If these ever change, just update this array.
- */
-const STROKE_INDEX = [
-  12, 10, 4, 14, 2, 8, 6, 18, 16,
-  9, 3, 17, 13, 5, 15, 1, 11, 7,
-];
-
-/** Shared passcode: Admin gate + locked-scoreboard unlock use the same code. */
-const ADMIN_PIN = "112020";
-
-/** Leaderboard round-selector sentinel: cumulative total across every round. */
-const ROUND_OVERALL = "overall";
-
-/** Multi-Game: format labels + one-tap presets (Admin "Add Game" flow) */
-const GAME_FORMAT_LABELS = {
-  individual_net: "Individual Net",
-  individual_gross: "Individual Gross",
-  better_ball_2: "2-Man Better Ball",
-  better_ball_4: "4-Man Better Ball",
-  scramble_2: "2-Man Scramble",
-  scramble_4: "4-Man Scramble",
-  composite: "Multi-Format Round",
-  match_play: "Match Play",
-  ryder_cup: "Ryder Cup",
-};
-
-const GAME_FORMAT_TEAM_SIZE = {
-  individual_net: 1,
-  individual_gross: 1,
-  better_ball_2: 2,
-  better_ball_4: 4,
-  scramble_2: 2,
-  scramble_4: 4,
-  // composite's team size is admin-chosen (newGameTeamSize), not fixed by format
-};
-
-const GAME_SCORE_LABELS = {
-  individual_net: "Net vs Par",
-  individual_gross: "Gross vs Par",
-  better_ball_2: "Team vs Par",
-  better_ball_4: "Team vs Par",
-  scramble_2: "Team vs Par",
-  scramble_4: "Team vs Par",
-  composite: "Team vs Par",
-};
-
-// Default ranked handicap-% allowance (lowest handicap on the team through
-// highest) offered when an admin picks a Scramble format — editable before
-// creating the game.
-const SCRAMBLE_DEFAULT_PCTS = {
-  scramble_2: [35, 15],
-  scramble_4: [40, 30, 20, 10],
-};
-
-// A composite game's per-segment format choices. "individual" segments
-// (Best Ball, Combined Score) reuse the counting-rule engine; "shared"
-// segments (Scramble) use one team score + a blended team handicap.
-const SEGMENT_FORMAT_OPTIONS = {
-  best_ball: { label: "Better Ball (best score counts)", kind: "individual", scoresCounted: 1, slots: ["net"] },
-  combined: { label: "Both Count (two scores added)", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
-  scramble: { label: "Scramble", kind: "shared" },
-};
-
-// Each preset: { label, handicapPct, scoresCounted, slots }
-const GAME_PRESETS = {
-  individual_net: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["net"] }],
-  individual_gross: [{ key: "standard", label: "Standard", handicapPct: 100, scoresCounted: 1, slots: ["gross"] }],
-  better_ball_2: [
-    { key: "best_net", label: "Best Net", handicapPct: 90, scoresCounted: 1, slots: ["net"] },
-    { key: "net_gross", label: "1 Net + 1 Gross", handicapPct: 90, scoresCounted: 2, slots: ["net", "gross"] },
-  ],
-  better_ball_4: [
-    { key: "best_net", label: "Best Net", handicapPct: 80, scoresCounted: 1, slots: ["net"] },
-    { key: "two_net", label: "2 Net", handicapPct: 80, scoresCounted: 2, slots: ["net", "net"] },
-    { key: "two_gross_one_net", label: "2 Gross + 1 Net", handicapPct: 80, scoresCounted: 3, slots: ["gross", "gross", "net"] },
-  ],
-};
-
-const DEFAULT_TAGLINE = "Drink Good. Play Good. Do Good.";
-
-/** What an admin runs once in Supabase before the tagline/logo settings can be saved (same as migrations/0010). */
-const BRANDING_SQL =
-  "alter table app_settings add column if not exists tagline text;\n" +
-  "alter table app_settings add column if not exists logo_data text;";
-
-/**
- * Turns an uploaded image file into a small PNG data URL for the main logo.
- * The logo is stored with the other settings and loaded on every visit, so
- * it's resized in the browser first (longest side <= 640px — plenty for the
- * Home screen at 3x and for print) and shrunk further if it's still big.
- * Transparency is kept. Throws an Error with a plain-English message.
- */
-async function fileToLogoDataUrl(file) {
-  if (!file || !/^image\//.test(file.type)) {
-    throw new Error("Please choose an image file (PNG, JPG, WebP or SVG).");
-  }
-  if (file.size > 8 * 1024 * 1024) throw new Error("That image is over 8 MB — please pick a smaller one.");
-
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error("Couldn't read that image — try a PNG or JPG."));
-      el.src = url;
-    });
-    const w0 = img.naturalWidth || 512; // an SVG with no size can report 0
-    const h0 = img.naturalHeight || 512;
-
-    for (const maxDim of [640, 480, 320]) {
-      const scale = Math.min(1, maxDim / Math.max(w0, h0));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(w0 * scale));
-      canvas.height = Math.max(1, Math.round(h0 * scale));
-      const ctx = canvas.getContext("2d");
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL("image/png");
-      if (dataUrl.length <= 450_000 || maxDim === 320) return dataUrl;
-    }
-    throw new Error("Couldn't shrink that image enough — try a simpler one.");
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
+import { ADMIN_PIN, ROUND_OVERALL } from "./lib/config";
+import { PARS, STROKE_INDEX, netScoreForHole, strokesOnHole } from "./lib/course";
+import { GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, GAME_SCORE_LABELS, SCRAMBLE_DEFAULT_PCTS, SEGMENT_FORMAT_OPTIONS, isMatchFormat } from "./lib/gameConfig";
+import { errToText, makeCode } from "./lib/util";
+import { BRANDING_SQL, DEFAULT_TAGLINE, fileToLogoDataUrl } from "./lib/branding";
+import { buildLeaderboardRows } from "./lib/leaderboard";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 
 /* ---------- Phone setup ("Build on my phone") helpers: pure, no React ---------- */
-
-/**
- * Real handicap allocation by stroke index.
- * A positive handicap RECEIVES strokes, starting at the #1 handicap hole
- * (hardest) and working up. A plus handicap (negative) GIVES strokes back
- * instead, using that same hole order, so the result goes negative on
- * those holes — `net = gross - strokesOnHole(...)` keeps working either way.
- */
-function strokesOnHole(courseHcp, holeNum) {
-  return strokesForHandicap(courseHcp, holeNum, STROKE_INDEX);
-}
-
-function netScoreForHole(grossScore, courseHcp, holeNum) {
-  return grossScore - strokesOnHole(courseHcp, holeNum);
-}
-
-function errToText(err) {
-  if (!err) return "";
-  if (typeof err === "string") return err;
-  if (err.message) return err.message;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-}
-
-function makeCode(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
 
 /** Passcode gate shown in place of a locked game's board on the Leaderboard tab. */
 function LockedBoardPanel({ game, onUnlock }) {
@@ -866,23 +707,6 @@ function ScorecardDetail({ player, game }) {
       </div>
     </div>
   );
-}
-
-/**
- * Live CSS media-query match. Inline styles can't carry @media rules, and a
- * one-time check at load goes stale the moment a tablet rotates or a
- * desktop window is resized, so this re-renders when the match changes.
- */
-function useMediaQuery(query) {
-  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const onChange = () => setMatches(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
 }
 
 export default function App() {
@@ -5866,104 +5690,6 @@ function PhoneSetup({
 }
 
 /**
- * The leaderboard rows (everything the Leaderboard, TV Mode and the Broadcast
- * rank from). `cutoffMs`, when given, ignores scores saved after that moment —
- * that's how the Broadcast asks "what were the standings a few minutes ago?".
- */
-function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset, cutoffMs = null) {
-  // last-write-wins scores by player/hole
-  const scoresByPlayer = new Map();
-  for (const s of scores) {
-    if (activeRoundId != null && s.round_id !== activeRoundId) continue;
-    if (cutoffMs != null && new Date(s.created_at).getTime() > cutoffMs) continue;
-    const pid = s.player_id;
-    const h = clampInt(s.hole, 0);
-    const sc = clampInt(s.score, 0);
-    if (h < 1 || h > 18) continue;
-    if (!scoresByPlayer.has(pid)) scoresByPlayer.set(pid, {});
-    const blob = scoresByPlayer.get(pid);
-    if (!blob.scoresByHole) blob.scoresByHole = {};
-    blob.scoresByHole[h] = sc;
-  }
-
-  const rows = players.map((p) => {
-    const blob = scoresByPlayer.get(p.id) || {};
-    const scoresByHole = blob.scoresByHole || {};
-
-    const playedHoles = Object.keys(scoresByHole)
-      .map((x) => clampInt(x, 0))
-      .filter((h) => h >= 1 && h <= 18)
-      .sort((a, b) => a - b);
-
-    const holesPlayed = playedHoles.length;
-    // `handicap` is the player's real course handicap (shown as their
-    // "HCP" badge). `playingHandicap` is what stroke/net-score math
-    // actually uses — the same number, unless Field-Relative mode shifts
-    // it by the field's lowest handicap.
-    const handicap = clampInt(p.handicap, 0);
-    const playingHandicap = handicap - fieldOffset;
-
-    const gross = playedHoles.reduce((acc, h) => acc + scoresByHole[h], 0);
-    const parPlayed = playedHoles.reduce((acc, h) => acc + PARS[h - 1], 0);
-
-    // Real net (stroke index allocation)
-    const netGross = playedHoles.reduce((acc, h) => {
-      const grossHole = scoresByHole[h];
-      const netHole = netScoreForHole(grossHole, playingHandicap, h);
-      return acc + netHole;
-    }, 0);
-
-    const netToPar = holesPlayed === 0 ? 9999 : netGross - parPlayed;
-
-    return {
-      id: p.id,
-      name: p.name,
-      last: lastName(p.name),
-      handicap,
-      playingHandicap,
-      charity: p.charity,
-      holesPlayed,
-      netToPar,
-      scoresByHole,
-      gross,
-    };
-  });
-
-  // Sort: scored first, then netToPar, then holesPlayed desc, then name
-  rows.sort((a, b) => {
-    const aHas = a.holesPlayed > 0;
-    const bHas = b.holesPlayed > 0;
-    if (aHas !== bHas) return aHas ? -1 : 1;
-    if (a.netToPar !== b.netToPar) return a.netToPar - b.netToPar;
-    if (a.holesPlayed !== b.holesPlayed) return b.holesPlayed - a.holesPlayed;
-    return a.name.localeCompare(b.name);
-  });
-
-  // ✅ Assign display ranks with tie handling: 1, 1, 3...
-  // Tie rule: same netToPar AND same holesPlayed
-  let lastKey = null;
-
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-
-    // Only tie players who have scores; otherwise don't tie the "—" rows
-    const key = r.holesPlayed > 0 ? `${r.netToPar}|${r.holesPlayed}` : `noscore|${r.id}`;
-
-    if (i === 0) {
-      r.displayRank = 1;
-    } else if (key === lastKey) {
-      r.displayRank = rows[i - 1].displayRank; // same rank as previous row
-    } else {
-      r.displayRank = i + 1; // competition ranking jump
-    }
-
-    lastKey = key;
-  }
-
-  return rows;
-}
-
-/**
  * Scores waiting to upload. Entered scores are written here FIRST, then sent,
  * so a dropped signal (or a reload) mid-round never loses them: they stay on
  * the phone and go up the moment the connection is back.
@@ -7022,8 +6748,6 @@ function DeletePlayersPanel({ players, groupNameByPlayer, onDelete }) {
     </div>
   );
 }
-
-const isMatchFormat = (f) => f === "match_play" || f === "ryder_cup";
 
 /** One-time database setup for Match Play / Ryder Cup (same as migrations/0012). */
 const MATCH_PLAY_SQL = `alter table games drop constraint if exists games_format_check;
