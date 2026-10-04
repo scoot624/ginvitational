@@ -71,8 +71,8 @@ const SCRAMBLE_DEFAULT_PCTS = {
 // (Best Ball, Combined Score) reuse the counting-rule engine; "shared"
 // segments (Scramble) use one team score + a blended team handicap.
 const SEGMENT_FORMAT_OPTIONS = {
-  best_ball: { label: "Best Ball", kind: "individual", scoresCounted: 1, slots: ["net"] },
-  combined: { label: "Combined Score", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
+  best_ball: { label: "Better Ball (best score counts)", kind: "individual", scoresCounted: 1, slots: ["net"] },
+  combined: { label: "Both Count (two scores added)", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
   scramble: { label: "Scramble", kind: "shared" },
 };
 
@@ -1176,6 +1176,10 @@ export default function App() {
 
   // Admin: Composite (multi-format) game builder
   const [newGameTeamSize, setNewGameTeamSize] = useState(2);
+  // When a playing group is bigger than a 2-man team: "balanced" pairs the
+  // lowest handicap with the highest, "order" pairs them as listed, "keep"
+  // leaves the whole group as one team.
+  const [newGameSplit, setNewGameSplit] = useState("balanced");
   const [newGameSegments, setNewGameSegments] = useState([]);
 
   // Admin: Scramble ranked handicap-% builder (lowest handicap on the
@@ -2047,8 +2051,8 @@ export default function App() {
     if (format === "composite") {
       setNewGameTeamSize(2);
       setNewGameSegments([
-        { fromHole: 1, toHole: 6, formatKey: "best_ball", handicapPct: 100, lowPct: 35, highPct: 15 },
-        { fromHole: 7, toHole: 12, formatKey: "scramble", handicapPct: 100, lowPct: 35, highPct: 15 },
+        { fromHole: 1, toHole: 6, formatKey: "scramble", handicapPct: 100, lowPct: 35, highPct: 15 },
+        { fromHole: 7, toHole: 12, formatKey: "best_ball", handicapPct: 100, lowPct: 35, highPct: 15 },
         { fromHole: 13, toHole: 18, formatKey: "combined", handicapPct: 100, lowPct: 35, highPct: 15 },
       ]);
       return;
@@ -2120,8 +2124,12 @@ export default function App() {
     });
   }
 
-  /** Groups current players by team_label, for the given team size. */
-  function teamPreviewGroups(teamSize) {
+  /**
+   * Where a game's teams come from: the players' "team" value when there is
+   * one (the tee sheet's team column), otherwise each playing group of the
+   * active round. Returns { teams: [{label, members}], source }.
+   */
+  function baseTeamPool() {
     const byLabel = new Map();
     for (const p of players) {
       const label = String(p.team_label || "").trim();
@@ -2129,11 +2137,51 @@ export default function App() {
       if (!byLabel.has(label)) byLabel.set(label, []);
       byLabel.get(label).push(p);
     }
-    return Array.from(byLabel.entries()).map(([label, members]) => ({
-      label,
-      members,
-      mismatched: members.length !== teamSize,
-    }));
+    if (byLabel.size > 0) {
+      return { source: "column", teams: Array.from(byLabel.entries()).map(([label, members]) => ({ label, members })) };
+    }
+
+    const roundId = activeRound?.id;
+    const byId = new Map(players.map((p) => [p.id, p]));
+    const teams = foursomes
+      .filter((f) => !f.round_id || f.round_id === roundId)
+      .map((f) => ({
+        label: f.group_name,
+        members: foursomePlayers
+          .filter((fp) => fp.foursome_id === f.id)
+          .map((fp) => byId.get(fp.player_id))
+          .filter(Boolean),
+      }))
+      .filter((t) => t.members.length > 0);
+    return { source: "groups", teams };
+  }
+
+  /** Teams for the given team size, ready to preview or save. */
+  function teamPreviewGroups(teamSize) {
+    const { teams } = baseTeamPool();
+    const out = [];
+    for (const t of teams) {
+      if (teamSize === 2 && t.members.length > 2 && newGameSplit !== "keep") {
+        // Split a bigger group into pairs: balanced = low + high handicap together.
+        const sorted =
+          newGameSplit === "order"
+            ? [...t.members]
+            : [...t.members].sort((x, y) => clampInt(x.handicap, 0) - clampInt(y.handicap, 0));
+        const pairs = [];
+        if (newGameSplit === "order") {
+          for (let i = 0; i < sorted.length; i += 2) pairs.push(sorted.slice(i, i + 2));
+        } else {
+          let lo = 0;
+          let hi = sorted.length - 1;
+          while (lo < hi) pairs.push([sorted[lo++], sorted[hi--]]);
+          if (lo === hi) pairs.push([sorted[lo]]);
+        }
+        pairs.forEach((members, i) => out.push({ label: `${t.label} ${String.fromCharCode(65 + i)}`, members, mismatched: members.length !== teamSize }));
+      } else {
+        out.push({ label: t.label, members: t.members, mismatched: t.members.length !== teamSize });
+      }
+    }
+    return out;
   }
 
   async function createGame() {
@@ -2200,7 +2248,7 @@ export default function App() {
 
     if (isTeamFormat && teamGroups.length === 0) {
       alert(
-        "No team groupings found. Add a \"team\" column to your tee sheet (players sharing a value become a team) and re-import, then try again."
+        "No teams to build from yet. Set up your players and groups first (Admin → Start a Tournament or Players & Groups), then try again."
       );
       return;
     }
@@ -4595,16 +4643,32 @@ const ps = {
                     newGameFormat === "scramble_4" ||
                     newGameFormat === "composite") && (
                     <div style={styles.helpText}>
-                      Teams come from your tee sheet's "team" column.
                       {(() => {
                         const teamSize =
                           newGameFormat === "composite" ? clampInt(newGameTeamSize, 2) : GAME_FORMAT_TEAM_SIZE[newGameFormat];
+                        const pool = baseTeamPool();
                         const groups = teamPreviewGroups(teamSize);
                         if (groups.length === 0) {
-                          return ' No team groupings found yet — add a "team" column to the tee sheet and re-import.';
+                          return "No teams to build from yet. Set up your players and groups first.";
                         }
+                        const canSplit = teamSize === 2 && pool.teams.some((t) => t.members.length > 2);
                         return (
-                          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                          <div style={{ display: "grid", gap: 6 }}>
+                            <div>
+                              {pool.source === "column"
+                                ? "Teams come from the \"team\" value on your players (the tee sheet's team column)."
+                                : "Teams come from your playing groups."}
+                            </div>
+                            {canSplit && (
+                              <label style={styles.label}>
+                                Your groups have more than 2 players. For 2-man teams:
+                                <select style={styles.input} value={newGameSplit} onChange={(e) => setNewGameSplit(e.target.value)}>
+                                  <option value="balanced">Split each group into pairs: lowest + highest handicap together</option>
+                                  <option value="order">Split each group into pairs: in the order listed</option>
+                                  <option value="keep">Keep each whole group as one team</option>
+                                </select>
+                              </label>
+                            )}
                             {groups.map((g) => (
                               <div key={g.label} style={{ color: g.mismatched ? THEME.bad : THEME.textMuted }}>
                                 Team "{g.label}": {g.members.map((m) => m.name).join(", ")}
