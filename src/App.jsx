@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
+import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds, strokesOnHoleForGame } from "./lib/gameCalc";
 import { computeBroadcastEvents, planPosts, safeDedupeKey, shortName, SWING_WINDOW_MS } from "./lib/broadcastEngine";
 
 /** ✅ Supabase via env vars */
@@ -852,23 +852,29 @@ const expandRowCellStyle = {
  * Hole-by-hole scorecard, shown inline under a Leaderboard row when that
  * player is expanded (replaces the old full-screen modal).
  */
-function ScorecardDetail({ player }) {
+function ScorecardDetail({ player, game }) {
+  // The +/- row follows the game being viewed: Individual Gross counts every
+  // stroke, Individual Net takes the game's handicap % off by Stroke Index.
+  // With no game given (Simple Mode) it is plain net at 100%, as before.
+  const isGross = game?.format === "individual_gross";
+  const pct = clampInt(game?.handicap_pct, 100);
+
   // One entry per hole — computed once, then laid out as COLUMNS below
   // (holes running left-to-right, like a real scorecard) instead of rows.
   const holes = (() => {
-    let cum = 0; // running cumulative NET-to-par across holes
+    let cum = 0; // running cumulative to-par across holes (net or gross, per the game)
 
     return Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
       const par = PARS[h - 1];
       const sc = player.scoresByHole[h];
       const si = STROKE_INDEX[h - 1];
-      const strokes = strokesOnHole(player.playingHandicap, h);
+      const strokes = isGross ? 0 : strokesOnHoleForGame(player.playingHandicap, pct, h, STROKE_INDEX);
 
-      const netSc = sc != null ? netScoreForHole(sc, player.playingHandicap, h) : null;
-      const netDiff = netSc != null ? netSc - par : null;
+      const countedSc = sc != null ? sc - strokes : null;
+      const netDiff = countedSc != null ? countedSc - par : null;
       if (netDiff != null) cum += netDiff;
 
-      // The "Net +/-" row shows the running cumulative-to-par through this
+      // The "+/-" row shows the running cumulative-to-par through this
       // hole (what used to be a separate "Total" row), so it's colored by
       // the cumulative's sign, not the single hole's.
       const cumStyle =
@@ -1015,7 +1021,7 @@ function ScorecardDetail({ player }) {
               ))}
             </tr>
             <tr>
-              <td style={labelCellStyle}>Net +/-</td>
+              <td style={labelCellStyle}>+/-</td>
               {columns.map((c) =>
                 c.hd ? (
                   <td key={c.key} style={{ ...cellStyle, ...c.hd.cumStyle }}>
@@ -1033,8 +1039,10 @@ function ScorecardDetail({ player }) {
       </div>
 
       <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, color: THEME.textMuted }}>
-        Net +/- uses real handicap allocation by Stroke Index.
-        {player.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
+        {isGross
+          ? "+/- is gross score vs par (no handicap strokes)."
+          : `+/- is net score vs par, using ${pct === 100 ? "" : `${pct}% of the `}handicap by Stroke Index.`}
+        {!isGross && pct !== 0 && player.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
       </div>
     </div>
   );
@@ -3508,7 +3516,7 @@ const ps = {
                           expanded && (
                             <tr key={`${r.id}-detail`}>
                               <td colSpan={4} style={expandRowCellStyle}>
-                                <ScorecardDetail player={scorecardPlayer} />
+                                <ScorecardDetail player={scorecardPlayer} game={null} />
                               </td>
                             </tr>
                           ),
@@ -3616,7 +3624,7 @@ const ps = {
                               expanded && (
                                 <tr key={`${r.id}-detail`}>
                                   <td colSpan={4} style={expandRowCellStyle}>
-                                    <ScorecardDetail player={scorecardPlayer} />
+                                    <ScorecardDetail player={scorecardPlayer} game={game} />
                                   </td>
                                 </tr>
                               ),
