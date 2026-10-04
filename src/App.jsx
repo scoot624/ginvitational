@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AdminSection } from "./components/AdminSection";
 import { rankCellContent } from "./components/LeaderIcons";
 import { DangerZoneSection } from "./features/admin/DangerZoneSection";
 import { EventNameSection } from "./features/admin/EventNameSection";
 import { GamesSection } from "./features/admin/GamesSection";
 import { HandicapBasisSection } from "./features/admin/HandicapBasisSection";
+import { ImportSection } from "./features/admin/ImportSection";
 import { LogoSection } from "./features/admin/LogoSection";
 import { PlayersGroupsSection } from "./features/admin/PlayersGroupsSection";
 import { RoundsSection } from "./features/admin/RoundsSection";
@@ -13,6 +13,7 @@ import { TaglineSection } from "./features/admin/TaglineSection";
 import { AcePopup } from "./features/broadcast/AcePopup";
 import { ACE_POPUP_MS, readSeenAces, rememberSeenAce } from "./features/broadcast/aceSeen";
 import { BroadcastFeed } from "./features/broadcast/BroadcastFeed";
+import { runTeeSheetImport } from "./features/import/runTeeSheetImport";
 import { LockedBoardPanel } from "./features/leaderboard/LockedBoardPanel";
 import { expandChevronStyle, expandRowCellStyle } from "./features/leaderboard/rankStyles";
 import { ScorecardDetail } from "./features/leaderboard/ScorecardDetail";
@@ -36,8 +37,7 @@ import { computeMatchResult } from "./lib/matchPlay";
 import { lastPlaceRank } from "./lib/ranking";
 import { formStreak } from "./lib/streaks";
 import { supabase } from "./lib/supabase";
-import { excelTimeToDbTime, fullNameFromRow } from "./lib/teeSheet";
-import { errToText, makeCode } from "./lib/util";
+import { errToText } from "./lib/util";
 import { THEME, netColorStyle, styles } from "./theme";
 
 /* ---------- Phone setup ("Build on my phone") helpers: pure, no React ---------- */
@@ -120,9 +120,6 @@ export default function App() {
   // starting hole after entering their 18th hole (shotgun starts).
   const [roundComplete, setRoundComplete] = useState(false);
 
-  // Admin: Excel import (tee sheet)
-  const [teeSheetFile, setTeeSheetFile] = useState(null);
-  const [teeSheetRows, setTeeSheetRows] = useState([]);
   // Foursomes sanity-check list is collapsed by default — after an import,
   // most visits to Admin don't need every player re-scanned every time.
 
@@ -132,9 +129,6 @@ export default function App() {
   const [openAdminSection, setOpenAdminSection] = useState(null);
   // "Build on my phone" setup flow replaces the Admin accordion while open.
   const [phoneSetupOn, setPhoneSetupOn] = useState(false);
-  const [importReplaceFoursomes, setImportReplaceFoursomes] = useState(true);
-  const [importMsg, setImportMsg] = useState("");
-  const [importRoundId, setImportRoundId] = useState(null);
 
   // Admin: Rounds
   const [newRoundLabel, setNewRoundLabel] = useState("");
@@ -792,346 +786,6 @@ export default function App() {
     setHole(nextHole);
     return true;
   }
-
-  // ---------------------------
-  // EXCEL IMPORT
-  // ---------------------------
-  function normKey(k) {
-    return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
-  }
-
-async function parseTeeSheetFile(file) {
-  setImportMsg("");
-  setTeeSheetFile(file);
-
-  if (!file) {
-    setTeeSheetRows([]);
-    return;
-  }
-
-  try {
-    // Loaded on demand — the Excel library is only needed here, during an
-    // Admin import, so nobody else has to download it just to open the app.
-    const XLSX = await import("xlsx");
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
-    const sheetName = wb.SheetNames[0];
-    const ws = wb.Sheets[sheetName];
-
-    const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
-    if (!raw || raw.length === 0) {
-      setTeeSheetRows([]);
-      setImportMsg("No rows found in the spreadsheet.");
-      return;
-    }
-
-    const rows = raw.map((r) => {
-      const out = {};
-      for (const [k, v] of Object.entries(r)) out[normKey(k)] = v;
-      return out;
-    });
-
-    // Require these columns (matches your sheet)
-    const required = ["team", "tee_time", "starting_hole", "first_name", "last_name"];
-    const missing = required.filter((k) => !Object.prototype.hasOwnProperty.call(rows[0] || {}, k));
-    if (missing.length) {
-      setTeeSheetRows([]);
-      setImportMsg(`Missing required columns: ${missing.join(", ")}`);
-      return;
-    }
-
-    setTeeSheetRows(rows);
-    setImportMsg(`Loaded ${rows.length} rows from "${sheetName}".`);
-  } catch (e) {
-    console.error(e);
-    setTeeSheetRows([]);
-    setImportMsg("Could not read that Excel file.");
-  }
-}
-
-async function importFromTeeSheet() {
-  if (!adminOn) return alert("Admin only.");
-  if (!teeSheetRows.length) return alert("Upload a tee sheet first.");
-
-  const targetRoundId = appSettings.multi_round_enabled ? importRoundId || activeRound?.id : activeRound?.id;
-  if (!targetRoundId) {
-    setImportMsg("No round to import into yet — reload the page and try again.");
-    return;
-  }
-
-  setImportMsg("Importing…");
-  await runTeeSheetImport(teeSheetRows, { replace: importReplaceFoursomes, targetRoundId, say: setImportMsg });
-}
-
-async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
-  try {
-    // Optional wipe (you have this checkbox already) — scoped to this round only,
-    // so re-importing for one round never touches another round's foursomes.
-    if (replace) {
-      const roundFoursomeIds = foursomes.filter((f) => f.round_id === targetRoundId).map((f) => f.id);
-
-      if (roundFoursomeIds.length) {
-        const delFP = await supabase.from("foursome_players").delete().in("foursome_id", roundFoursomeIds);
-        if (delFP.error) {
-          console.error(delFP.error);
-          say(`Error clearing assignments: ${errToText(delFP.error)}`);
-          return false;
-        }
-      }
-
-      const delF = await supabase.from("foursomes").delete().eq("round_id", targetRoundId);
-
-      if (delF.error) {
-        console.error(delF.error);
-        say(`Error clearing foursomes: ${errToText(delF.error)}`);
-        return false;
-      }
-    }
-
-    // ---------- Build desired players list from sheet ----------
-    const desiredPlayers = [];
-    for (const r of rows) {
-      const name = fullNameFromRow(r);
-      if (!name) continue;
-
-      desiredPlayers.push({
-        name,
-        handicap: clampInt(r.handicap, 0),
-        charity: String(r.charity || "").trim() || null,
-        // The "team" column drives both the physical foursome (below) and
-        // this — players sharing a value here are also the pool a
-        // 2-man/4-man game's teams are built from. One column, one group.
-        team_label: String(r.team || "").trim() || null,
-      });
-    }
-
-    // ---------- Read fresh players from DB ----------
-    const playersBefore = await supabase
-      .from("players")
-      .select("id,name,handicap,charity,team_label")
-      .order("created_at", { ascending: true });
-
-    if (playersBefore.error) {
-      console.error(playersBefore.error);
-      say(`Error reading players: ${errToText(playersBefore.error)}`);
-      return false;
-    }
-
-    const existingByName = new Map(
-      (playersBefore.data || []).map((p) => [String(p.name || "").trim().toLowerCase(), p])
-    );
-
-    // New players get inserted. Players already in the system get their
-    // handicap/charity/team synced to match the sheet, so re-uploading a
-    // corrected sheet actually fixes a typo instead of only adding new people.
-    const missingPlayers = [];
-    const updatedPlayers = [];
-    for (const p of desiredPlayers) {
-      const key = p.name.toLowerCase();
-      const existing = existingByName.get(key);
-
-      if (!existing) {
-        existingByName.set(key, p);
-        missingPlayers.push(p);
-        continue;
-      }
-
-      const changed =
-        clampInt(existing.handicap, 0) !== p.handicap ||
-        (existing.charity || null) !== p.charity ||
-        (existing.team_label || null) !== p.team_label;
-
-      if (changed) {
-        updatedPlayers.push({
-          id: existing.id,
-          name: p.name, // upsert still validates NOT NULL columns even on the update path
-          handicap: p.handicap,
-          charity: p.charity,
-          team_label: p.team_label,
-        });
-      }
-    }
-
-    if (missingPlayers.length) {
-      const insPlayers = await supabase.from("players").insert(missingPlayers);
-      if (insPlayers.error) {
-        console.error(insPlayers.error);
-        say(`Error inserting players: ${errToText(insPlayers.error)}`);
-        return false;
-      }
-    }
-
-    if (updatedPlayers.length) {
-      const updPlayers = await supabase.from("players").upsert(updatedPlayers, { onConflict: "id" });
-      if (updPlayers.error) {
-        console.error(updPlayers.error);
-        say(`Error updating players: ${errToText(updPlayers.error)}`);
-        return false;
-      }
-    }
-
-    // Re-read players (fresh IDs)
-    const playersAfter = await supabase
-      .from("players")
-      .select("id,name")
-      .order("created_at", { ascending: true });
-
-    if (playersAfter.error) {
-      console.error(playersAfter.error);
-      say(`Error reloading players: ${errToText(playersAfter.error)}`);
-      return false;
-    }
-
-    const playerIdByName = new Map(
-      (playersAfter.data || []).map((p) => [String(p.name || "").trim().toLowerCase(), p.id])
-    );
-
-    // ---------- Build group list + metadata from sheet ----------
-    // "team" is the one column that drives grouping — the foursome (this
-    // round's physical playing group + tee time/code) and the game-team
-    // pool (players.team_label, above) are the same value on purpose.
-    const groupsNeeded = Array.from(
-      new Set(rows.map((r) => String(r.team || "").trim()).filter(Boolean))
-    );
-
-    const groupMeta = new Map();
-    for (const r of rows) {
-      const group_name = String(r.team || "").trim();
-      if (!group_name) continue;
-
-      if (!groupMeta.has(group_name.toLowerCase())) {
-        const rawStart = Number(r.starting_hole);
-        const safeStart = rawStart >= 1 && rawStart <= 18 ? Math.trunc(rawStart) : 1;
-
-        groupMeta.set(group_name.toLowerCase(), {
-          tee_time: excelTimeToDbTime(r.tee_time),
-          starting_hole: safeStart,
-        });
-      }
-    }
-
-    // Read existing foursomes (fresh), scoped to this round
-    const existingF = await supabase
-      .from("foursomes")
-      .select("id,group_name,code,tee_time,starting_hole,created_at")
-      .eq("round_id", targetRoundId);
-
-    if (existingF.error) {
-      console.error(existingF.error);
-      say(`Error reading foursomes: ${errToText(existingF.error)}`);
-      return false;
-    }
-
-    const foursomeByGroup = new Map(
-      (existingF.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f])
-    );
-
-    // ---------- Create missing foursomes using metadata ----------
-    let newFoursomes = 0;
-
-    for (const group_name of groupsNeeded) {
-      const key = group_name.toLowerCase();
-      if (foursomeByGroup.has(key)) continue;
-
-      let created = null;
-      const meta = groupMeta.get(key) || {};
-
-      for (let tries = 0; tries < 10 && !created; tries++) {
-        const code = makeCode(6);
-        const res = await supabase
-          .from("foursomes")
-          .insert({
-            group_name,
-            code,
-            tee_time: meta.tee_time ?? null,
-            starting_hole: meta.starting_hole ?? 1,
-            round_id: targetRoundId,
-          })
-          .select("id,group_name,code")
-          .single();
-
-        if (!res.error) created = res.data;
-      }
-
-      if (!created) {
-        say(`Could not create foursome "${group_name}". (RLS / code unique / schema issue)`);
-        return false;
-      }
-
-      newFoursomes += 1;
-    }
-
-    // Re-read foursomes (fresh IDs), scoped to this round
-    const foursomesAfter = await supabase
-      .from("foursomes")
-      .select("id,group_name")
-      .eq("round_id", targetRoundId)
-      .order("created_at", { ascending: true });
-
-    if (foursomesAfter.error) {
-      console.error(foursomesAfter.error);
-      say(`Error reloading foursomes: ${errToText(foursomesAfter.error)}`);
-      return false;
-    }
-
-    const foursomeIdByGroup = new Map(
-      (foursomesAfter.data || []).map((f) => [String(f.group_name || "").trim().toLowerCase(), f.id])
-    );
-
-    // ---------- Assign players to foursomes ----------
-    const existingAssign = await supabase
-      .from("foursome_players")
-      .select("foursome_id,player_id");
-
-    if (existingAssign.error) {
-      console.error(existingAssign.error);
-      say(`Error reading existing assignments: ${errToText(existingAssign.error)}`);
-      return false;
-    }
-
-    const existingSet = new Set(
-      (existingAssign.data || []).map((fp) => `${fp.foursome_id}::${fp.player_id}`)
-    );
-
-    const assignmentInserts = [];
-    for (const r of rows) {
-      const group = String(r.team || "").trim();
-      const name = fullNameFromRow(r);
-      if (!group || !name) continue;
-
-      const fid = foursomeIdByGroup.get(group.toLowerCase());
-      const pid = playerIdByName.get(name.toLowerCase());
-      if (!fid || !pid) continue;
-
-      const k = `${fid}::${pid}`;
-      if (existingSet.has(k)) continue;
-
-      existingSet.add(k);
-      assignmentInserts.push({ foursome_id: fid, player_id: pid });
-    }
-
-    if (assignmentInserts.length) {
-      const insFP = await supabase.from("foursome_players").insert(assignmentInserts);
-      if (insFP.error) {
-        console.error(insFP.error);
-        say(`Error inserting assignments: ${errToText(insFP.error)}`);
-        return false;
-      }
-    }
-
-    // Refresh UI state after import
-    await initialLoad();
-
-    say(
-      `Import complete ✅ New players: ${missingPlayers.length} • Updated players: ${updatedPlayers.length} • New foursomes: ${newFoursomes} • New assignments: ${assignmentInserts.length}`
-    );
-    return true;
-  } catch (e) {
-    console.error(e);
-    say(`Import crashed: ${errToText(e)}`);
-    return false;
-  }
-}
 
   return (
   <EventDataContext.Provider value={data}>
@@ -1965,7 +1619,7 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
             multiRound={!!appSettings.multi_round_enabled}
             activeRound={activeRound}
             foursomes={foursomes}
-            onStart={(rows, opts) => runTeeSheetImport(rows, opts)}
+            onStart={(rows, opts) => runTeeSheetImport({ foursomes, initialLoad }, rows, opts)}
             onExit={() => setPhoneSetupOn(false)}
             onGoto={(t) => {
               setPhoneSetupOn(false);
@@ -1990,96 +1644,7 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
           <HandicapBasisSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Import Tee Sheet */}
-          <AdminSection
-            title="Import Tee Sheet"
-            subtitle={players.length > 0 ? `${players.length} players imported` : "No import yet"}
-            open={openAdminSection === "import"}
-            onToggle={() => setOpenAdminSection((k) => (k === "import" ? null : "import"))}
-          >
-
-            {/* gridTemplateColumns: minmax(0,1fr) instead of the implicit
-                default column — a grid track otherwise sizes to the widest
-                child's min-content (e.g. the preview table below), which
-                stretches every other field in this grid along with it. */}
-            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
-              {appSettings.multi_round_enabled && (
-                <label style={styles.label}>
-                  Round
-                  <select
-                    style={styles.input}
-                    value={importRoundId || activeRound?.id || ""}
-                    onChange={(e) => setImportRoundId(e.target.value)}
-                  >
-                    {rounds.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.label}
-                        {r.is_active ? " (active)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              <input
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={(e) => parseTeeSheetFile(e.target.files?.[0] || null)}
-              />
-
-              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}>
-                <input
-                  type="checkbox"
-                  checked={importReplaceFoursomes}
-                  onChange={(e) => setImportReplaceFoursomes(e.target.checked)}
-                />
-                Replace existing foursomes + assignments first (recommended)
-              </label>
-
-              <button style={styles.bigBtn} onClick={importFromTeeSheet}>
-                Import Tee Sheet
-              </button>
-
-              {importMsg ? <div style={styles.helpText}>{importMsg}</div> : null}
-
-              {teeSheetRows.length > 0 && (
-                <div style={{ fontSize: 12, color: THEME.textMuted, minWidth: 0 }}>
-                  Preview (first 5 of {teeSheetRows.length} rows):
-                  <div style={{ marginTop: 8, overflowX: "auto" }}>
-                    <table style={styles.table}>
-                      <thead>
-                        <tr>
-                          <th style={styles.th}>Team</th>
-                          <th style={styles.th}>Tee</th>
-                          <th style={styles.th}>Hole</th>
-                          <th style={styles.th}>Name</th>
-                          <th style={styles.th}>HCP</th>
-                          <th style={styles.th}>Charity</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {teeSheetRows.slice(0, 5).map((r, i) => (
-                          <tr key={i}>
-                            <td style={styles.td}>{r.team || "—"}</td>
-                            <td style={styles.td}>{r.tee_time || "—"}</td>
-                            <td style={styles.td}>{r.starting_hole || "—"}</td>
-                            <td style={styles.td}>{fullNameFromRow(r) || "—"}</td>
-                            <td style={styles.td}>{r.handicap ?? "—"}</td>
-                            <td style={styles.td}>{r.charity || "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {teeSheetFile ? (
-                <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                  File: <b>{teeSheetFile.name}</b>
-                </div>
-              ) : null}
-            </div>
-          </AdminSection>
+          <ImportSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Players & Groups — edit after the tournament is set up */}
           <PlayersGroupsSection openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />

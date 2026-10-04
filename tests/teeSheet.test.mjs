@@ -10,6 +10,7 @@ import {
   phoneSlot,
   excelTimeToDbTime,
   fullNameFromRow,
+  normKey,
 } from '../src/lib/teeSheet.js';
 
 test('formatTeeTime: database time -> "1:12 PM"', () => {
@@ -102,4 +103,11 @@ test('fullNameFromRow joins and tidies first + last name', () => {
   assert.equal(fullNameFromRow({ first_name: 'Cher', last_name: '' }), 'Cher');
   assert.equal(fullNameFromRow({}), '');
   assert.equal(fullNameFromRow({ first_name: 'Mary  Jo', last_name: 'Van  Dyke' }), 'Mary Jo Van Dyke');
+});
+
+test('normKey makes Excel headings comparable', () => {
+  assert.equal(normKey('First Name'), 'first_name');
+  assert.equal(normKey('  Tee  Time '), 'tee_time');
+  assert.equal(normKey('HANDICAP'), 'handicap');
+  assert.equal(normKey(null), '');
 });
