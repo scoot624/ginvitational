@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds, strokesOnHoleForGame } from "./lib/gameCalc";
+import { computeMatchResult, computeRyderCup, MATCH_TYPES, HANDICAP_MODES, sideLabel } from "./lib/matchPlay";
 import { computeBroadcastEvents, planPosts, safeDedupeKey, shortName, SWING_WINDOW_MS } from "./lib/broadcastEngine";
 
 /** ✅ Supabase via env vars */
@@ -37,6 +38,8 @@ const GAME_FORMAT_LABELS = {
   scramble_2: "2-Man Scramble",
   scramble_4: "4-Man Scramble",
   composite: "Multi-Format Round",
+  match_play: "Match Play",
+  ryder_cup: "Ryder Cup",
 };
 
 const GAME_FORMAT_TEAM_SIZE = {
@@ -1182,6 +1185,20 @@ export default function App() {
   const [newGameSplit, setNewGameSplit] = useState("balanced");
   const [newGameSegments, setNewGameSegments] = useState([]);
 
+  // Match Play / Ryder Cup
+  const [matches, setMatches] = useState([]);
+  const [matchPlayers, setMatchPlayers] = useState([]);
+  const [matchTablesReady, setMatchTablesReady] = useState(true);
+  const [gamesConfigReady, setGamesConfigReady] = useState(true);
+  const matchReady = matchTablesReady && gamesConfigReady; // false until migration 0012 has been run
+  const [openMatchGameId, setOpenMatchGameId] = useState(null);
+  const [newGameMatchMode, setNewGameMatchMode] = useState("off_lowest");
+  const [newGameSideA, setNewGameSideA] = useState("USA");
+  const [newGameSideB, setNewGameSideB] = useState("Europe");
+  const [newGamePointsWin, setNewGamePointsWin] = useState(1);
+  const [newGamePointsHalf, setNewGamePointsHalf] = useState(0.5);
+  const [newGameRoster, setNewGameRoster] = useState({});
+
   // Admin: Scramble ranked handicap-% builder (lowest handicap on the
   // team through highest — length matches the format's team size)
   const [newGameScramblePcts, setNewGameScramblePcts] = useState(SCRAMBLE_DEFAULT_PCTS.scramble_2);
@@ -1261,12 +1278,14 @@ export default function App() {
   }
 
   async function loadGames() {
-    const { data, error } = await supabase
-      .from("games")
-      .select(
-        "id,name,format,handicap_pct,counting_rule,segments,handicap_allowance,is_default,active,locked,sort_order,created_at"
-      )
-      .order("sort_order", { ascending: true });
+    const baseCols =
+      "id,name,format,handicap_pct,counting_rule,segments,handicap_allowance,is_default,active,locked,sort_order,created_at";
+    // "config" holds Match Play / Ryder Cup settings and only exists once migration 0012 has been run.
+    let { data, error } = await supabase.from("games").select(`${baseCols},config`).order("sort_order", { ascending: true });
+    setGamesConfigReady(!error);
+    if (error) {
+      ({ data, error } = await supabase.from("games").select(baseCols).order("sort_order", { ascending: true }));
+    }
 
     if (error) {
       console.error("loadGames error:", error);
@@ -1274,6 +1293,25 @@ export default function App() {
     }
     setGames(data || []);
     return { ok: true, where: "games" };
+  }
+
+  // Not an error if the tables aren't there yet — the feature just isn't set up (see MatchSetupNotice).
+  async function loadMatches() {
+    const m = await supabase
+      .from("matches")
+      .select("id,game_id,round_id,match_type,label,sort_order,created_at")
+      .order("sort_order", { ascending: true });
+    const p = m.error ? null : await supabase.from("match_players").select("match_id,player_id,side,position");
+    if (m.error || p?.error) {
+      setMatches([]);
+      setMatchPlayers([]);
+      setMatchTablesReady(false);
+      return { ok: true, where: "matches" };
+    }
+    setMatches(m.data || []);
+    setMatchPlayers(p.data || []);
+    setMatchTablesReady(true);
+    return { ok: true, where: "matches" };
   }
 
   async function loadGameTeams() {
@@ -1366,6 +1404,7 @@ export default function App() {
     results.push(await loadGames());
     results.push(await loadGameTeams());
     results.push(await loadGameTeamMembers());
+    results.push(await loadMatches());
     results.push(await loadRounds());
     results.push(await loadAppSettings());
 
@@ -1518,6 +1557,51 @@ export default function App() {
     for (const r of rounds) map.set(r.id, buildScoresByPlayer(scores, r.id));
     return map;
   }, [scores, rounds]);
+
+  // Every Match Play / Ryder Cup game's matches, worked out from the scores entered.
+  const matchEntriesByGame = useMemo(() => {
+    const out = new Map();
+    const startHoleFor = (pid, roundId) => {
+      const fp = foursomePlayers.find(
+        (x) => x.player_id === pid && foursomes.some((f) => f.id === x.foursome_id && (!f.round_id || f.round_id === roundId))
+      );
+      return foursomes.find((f) => f.id === fp?.foursome_id)?.starting_hole ?? 1;
+    };
+    for (const g of games) {
+      if (!isMatchFormat(g.format)) continue;
+      const cfg = g.config || {};
+      const entries = matches
+        .filter((m) => m.game_id === g.id)
+        .sort((x, y) => x.sort_order - y.sort_order || String(x.created_at).localeCompare(String(y.created_at)))
+        .map((m) => {
+          const side = (s) =>
+            matchPlayers
+              .filter((mp) => mp.match_id === m.id && mp.side === s)
+              .sort((x, y) => x.position - y.position)
+              .map((mp) => playersById.get(mp.player_id))
+              .filter(Boolean);
+          const sideA = side("a");
+          const sideB = side("b");
+          const result = computeMatchResult(
+            { ...m, sideA, sideB },
+            {
+              scoresByPlayer: scoresByRoundThenPlayer.get(m.round_id) || new Map(),
+              PARS,
+              STROKE_INDEX,
+              handicapMode: cfg.handicapMode || "off_lowest",
+              handicapPct: g.handicap_pct,
+              fieldOffset,
+              startHole: sideA[0] ? startHoleFor(sideA[0].id, m.round_id) : 1,
+              pointsWin: cfg.pointsWin ?? 1,
+              pointsHalf: cfg.pointsHalf ?? 0.5,
+            }
+          );
+          return { match: m, result, roundId: m.round_id };
+        });
+      out.set(g.id, entries);
+    }
+    return out;
+  }, [games, matches, matchPlayers, playersById, scoresByRoundThenPlayer, foursomes, foursomePlayers, fieldOffset]);
 
   const gameResults = useMemo(() => {
     const activeGames = games.filter((g) => g.active);
@@ -2048,6 +2132,17 @@ export default function App() {
     setNewGameFormat(format);
     setNewGameName(GAME_FORMAT_LABELS[format]);
 
+    if (isMatchFormat(format)) {
+      setNewGameHandicapPct(100);
+      setNewGameMatchMode("off_lowest");
+      setNewGameSideA("USA");
+      setNewGameSideB("Europe");
+      setNewGamePointsWin(1);
+      setNewGamePointsHalf(0.5);
+      setNewGameRoster({});
+      return;
+    }
+
     if (format === "composite") {
       setNewGameTeamSize(2);
       setNewGameSegments([
@@ -2184,8 +2279,103 @@ export default function App() {
     return out;
   }
 
+  async function createMatchGame() {
+    if (!adminOn) return alert("Admin only.");
+    if (!matchReady) {
+      setGamesMsg("Run the one-time database setup first (shown above), then tap Reload Data.");
+      return;
+    }
+    const isRyder = newGameFormat === "ryder_cup";
+    const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
+    const pointsWin = Number(newGamePointsWin);
+    const pointsHalf = Number(newGamePointsHalf);
+    if (!(pointsWin > 0) || !(pointsHalf >= 0)) {
+      setGamesMsg("Points for a win must be above 0, and for a half must be 0 or more.");
+      return;
+    }
+    const config = { handicapMode: newGameMatchMode, pointsWin, pointsHalf };
+    const rosterA = [];
+    const rosterB = [];
+    if (isRyder) {
+      const a = newGameSideA.trim() || "Team A";
+      const b = newGameSideB.trim() || "Team B";
+      if (a.toLowerCase() === b.toLowerCase()) {
+        setGamesMsg("The two sides need different names.");
+        return;
+      }
+      for (const [pid, side] of Object.entries(newGameRoster)) {
+        if (side === "a") rosterA.push(pid);
+        if (side === "b") rosterB.push(pid);
+      }
+      if (rosterA.length === 0 || rosterB.length === 0) {
+        setGamesMsg("Put at least one player on each side first.");
+        return;
+      }
+      config.sideA = { name: a };
+      config.sideB = { name: b };
+    }
+
+    setGamesMsg("Creating game…");
+    const { data: gameRow, error: gameError } = await supabase
+      .from("games")
+      .insert({
+        name,
+        format: newGameFormat,
+        handicap_pct: clampInt(newGameHandicapPct, 100),
+        is_default: false,
+        active: true,
+        sort_order: games.length,
+        config,
+      })
+      .select("id")
+      .single();
+    if (gameError) {
+      console.error(gameError);
+      setGamesMsg(`Error creating game: ${errToText(gameError)}`);
+      return;
+    }
+
+    if (isRyder) {
+      const made = [];
+      for (const [label, ids] of [[config.sideA.name, rosterA], [config.sideB.name, rosterB]]) {
+        const { data: teamRow, error: teamError } = await supabase
+          .from("game_teams")
+          .insert({ game_id: gameRow.id, name: label })
+          .select("id")
+          .single();
+        if (teamError) {
+          console.error(teamError);
+          setGamesMsg(`Game created, but error building side "${label}": ${errToText(teamError)}`);
+          return;
+        }
+        made.push(teamRow.id);
+        const { error: memberError } = await supabase
+          .from("game_team_members")
+          .insert(ids.map((player_id) => ({ game_id: gameRow.id, team_id: teamRow.id, player_id })));
+        if (memberError) {
+          console.error(memberError);
+          setGamesMsg(`Game created, but error assigning "${label}": ${errToText(memberError)}`);
+          return;
+        }
+      }
+      await supabase
+        .from("games")
+        .update({ config: { ...config, sideA: { ...config.sideA, teamId: made[0] }, sideB: { ...config.sideB, teamId: made[1] } } })
+        .eq("id", gameRow.id);
+    }
+
+    setGamesMsg(`"${name}" created ✅ — now add its matches under "Manage matches" on its card.`);
+    setNewGameName("");
+    setNewGameRoster({});
+    await loadGames();
+    await loadGameTeams();
+    await loadGameTeamMembers();
+    await loadMatches();
+  }
+
   async function createGame() {
     if (!adminOn) return alert("Admin only.");
+    if (isMatchFormat(newGameFormat)) return createMatchGame();
     const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
     const isComposite = newGameFormat === "composite";
     const isScramble = newGameFormat === "scramble_2" || newGameFormat === "scramble_4";
@@ -2429,9 +2619,25 @@ export default function App() {
    * each player).
    */
   function holeEntryGroups(holeNum, playersInGroup) {
+    // Each entry is a set of players who share ONE score on this hole.
+    const sharedSets = [];
+    let sharedGameFound = false;
+
     for (const g of games) {
       if (!g.active) continue;
 
+      // Foursomes (alternate shot) matches: each pair plays one ball, on every hole.
+      if (isMatchFormat(g.format)) {
+        for (const m of matches) {
+          if (m.game_id !== g.id || m.match_type !== "foursomes" || m.round_id !== activeFoursome?.round_id) continue;
+          for (const side of ["a", "b"]) {
+            sharedSets.push(matchPlayers.filter((mp) => mp.match_id === m.id && mp.side === side).map((mp) => mp.player_id));
+          }
+        }
+        continue;
+      }
+
+      if (sharedGameFound) continue; // only the first scramble/composite game with a shared hole counts
       const isScramble = g.format === "scramble_2" || g.format === "scramble_4";
       let isSharedHole = isScramble; // every hole is shared in a standalone Scramble game
 
@@ -2442,6 +2648,7 @@ export default function App() {
       }
       if (!isSharedHole) continue;
 
+      sharedGameFound = true;
       const teamIdsForGame = new Set(gameTeams.filter((t) => t.game_id === g.id).map((t) => t.id));
       const membersByTeam = new Map();
       for (const row of gameTeamMembers) {
@@ -2449,29 +2656,30 @@ export default function App() {
         if (!membersByTeam.has(row.team_id)) membersByTeam.set(row.team_id, []);
         membersByTeam.get(row.team_id).push(row.player_id);
       }
-
-      const idsInGroup = new Set(playersInGroup.map((p) => p.id));
-      const consumed = new Set();
-      const groups = [];
-
-      for (const memberIds of membersByTeam.values()) {
-        const presentIds = memberIds.filter((pid) => idsInGroup.has(pid));
-        if (presentIds.length >= 2) {
-          const groupPlayers = presentIds.map((pid) => playersInGroup.find((p) => p.id === pid)).filter(Boolean);
-          groups.push({ key: presentIds.join("-"), players: groupPlayers, shared: true });
-          for (const pid of presentIds) consumed.add(pid);
-        }
-      }
-
-      for (const p of playersInGroup) {
-        if (!consumed.has(p.id)) groups.push({ key: p.id, players: [p], shared: false });
-      }
-
-      groups.sort((a, b) => playersInGroup.indexOf(a.players[0]) - playersInGroup.indexOf(b.players[0]));
-      return groups;
+      for (const memberIds of membersByTeam.values()) sharedSets.push(memberIds);
     }
 
-    return playersInGroup.map((p) => ({ key: p.id, players: [p], shared: false }));
+    if (sharedSets.length === 0) return playersInGroup.map((p) => ({ key: p.id, players: [p], shared: false }));
+
+    const idsInGroup = new Set(playersInGroup.map((p) => p.id));
+    const consumed = new Set();
+    const groups = [];
+
+    for (const memberIds of sharedSets) {
+      const presentIds = memberIds.filter((pid) => idsInGroup.has(pid) && !consumed.has(pid));
+      if (presentIds.length >= 2) {
+        const groupPlayers = presentIds.map((pid) => playersInGroup.find((p) => p.id === pid)).filter(Boolean);
+        groups.push({ key: presentIds.join("-"), players: groupPlayers, shared: true });
+        for (const pid of presentIds) consumed.add(pid);
+      }
+    }
+
+    for (const p of playersInGroup) {
+      if (!consumed.has(p.id)) groups.push({ key: p.id, players: [p], shared: false });
+    }
+
+    groups.sort((a, b) => playersInGroup.indexOf(a.players[0]) - playersInGroup.indexOf(b.players[0]));
+    return groups;
   }
 
   useEffect(() => {
@@ -3501,6 +3709,26 @@ const ps = {
                 return <div style={styles.helpText}>No games configured yet.</div>;
               }
 
+              if (isMatchFormat(lockCheckEntry.game.format)) {
+                const mg = lockCheckEntry.game;
+                const mcfg = mg.config || {};
+                return (
+                  <>
+                    <div style={styles.helpText}>
+                      {mg.format === "ryder_cup" ? "Ryder Cup" : "Match play"} — {mg.name}. Auto-refreshes every minute.
+                    </div>
+                    <MatchBoard
+                      game={mg}
+                      entries={matchEntriesByGame.get(mg.id) || []}
+                      rounds={rounds}
+                      selection={selectedRoundId || activeRound?.id}
+                      showSessions={showRoundTabs}
+                      sideNames={[mcfg.sideA?.name || "Side A", mcfg.sideB?.name || "Side B"]}
+                    />
+                  </>
+                );
+              }
+
               if (gameResults.length <= 1 && !showRoundTabs) {
                 const lastRank = lastPlaceRank(leaderboardRows);
                 return (
@@ -4329,7 +4557,14 @@ const ps = {
                               <span style={{ ...styles.strokePill, marginLeft: 6 }}>🔒 Locked</span>
                             )}
                           </div>
-                          {g.format === "composite" ? (
+                          {isMatchFormat(g.format) ? (
+                            <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
+                              {GAME_FORMAT_LABELS[g.format]} • {HANDICAP_MODES[g.config?.handicapMode] || "Strokes off the lowest"}
+                              {g.config?.handicapMode !== "gross" ? ` (${g.handicap_pct}%)` : ""} •{" "}
+                              {matches.filter((m) => m.game_id === g.id).length} matches
+                              {g.format === "ryder_cup" ? ` • ${g.config?.sideA?.name || "A"} vs ${g.config?.sideB?.name || "B"}` : ""}
+                            </div>
+                          ) : g.format === "composite" ? (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               {GAME_FORMAT_LABELS[g.format]} —{" "}
                               {(g.segments || [])
@@ -4367,6 +4602,35 @@ const ps = {
                           </button>
                         </div>
                       </div>
+                      {isMatchFormat(g.format) && (
+                        <div style={{ marginTop: 10 }}>
+                          <button
+                            style={{ ...styles.smallBtn, minHeight: 44 }}
+                            onClick={() => setOpenMatchGameId((id) => (id === g.id ? null : g.id))}
+                          >
+                            {openMatchGameId === g.id ? "Hide matches" : "Manage matches"}
+                          </button>
+                          {openMatchGameId === g.id &&
+                            (matchReady ? (
+                              <MatchEditor
+                                game={g}
+                                players={players}
+                                rounds={rounds}
+                                multiRound={!!appSettings.multi_round_enabled}
+                                activeRoundId={activeRound?.id}
+                                matches={matches}
+                                matchPlayers={matchPlayers}
+                                gameTeams={gameTeams}
+                                gameTeamMembers={gameTeamMembers}
+                                foursomes={foursomes}
+                                foursomePlayers={foursomePlayers}
+                                onChanged={loadMatches}
+                              />
+                            ) : (
+                              <MatchSetupNotice />
+                            ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                   {games.length === 0 && <div style={styles.helpText}>No games yet.</div>}
@@ -4386,7 +4650,9 @@ const ps = {
                       value={newGameFormat}
                       onChange={(e) => selectNewGameFormat(e.target.value)}
                     >
-                      {Object.entries(GAME_FORMAT_LABELS).map(([key, label]) => (
+                      {Object.entries(GAME_FORMAT_LABELS)
+                        .filter(([key]) => key !== "ryder_cup") // parked for now
+                        .map(([key, label]) => (
                         <option key={key} value={key}>
                           {label}
                         </option>
@@ -4451,7 +4717,7 @@ const ps = {
                       </div>
                     </div>
                   ) : (
-                    newGameFormat !== "composite" && (
+                    newGameFormat !== "composite" && !isMatchFormat(newGameFormat) && (
                       <label style={styles.label}>
                         Handicap %
                         <input
@@ -4467,7 +4733,7 @@ const ps = {
                     )
                   )}
 
-                  {newGameFormat !== "composite" && newGameFormat !== "scramble_2" && newGameFormat !== "scramble_4" && (
+                  {newGameFormat !== "composite" && newGameFormat !== "scramble_2" && newGameFormat !== "scramble_4" && !isMatchFormat(newGameFormat) && (
                     <label
                       style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
                     >
@@ -4483,6 +4749,7 @@ const ps = {
                   {newGameFormat !== "composite" &&
                     newGameFormat !== "scramble_2" &&
                     newGameFormat !== "scramble_4" &&
+                    !isMatchFormat(newGameFormat) &&
                     newGameAdvancedOn && (
                     <div
                       style={{
@@ -4517,6 +4784,92 @@ const ps = {
                       </div>
                     </div>
                   )}
+
+                  {isMatchFormat(newGameFormat) &&
+                    (!matchReady ? (
+                      <MatchSetupNotice />
+                    ) : (
+                      <div style={{ display: "grid", gap: 10 }}>
+                        <label style={styles.label}>
+                          Handicaps
+                          <select style={styles.input} value={newGameMatchMode} onChange={(e) => setNewGameMatchMode(e.target.value)}>
+                            {Object.entries(HANDICAP_MODES).map(([k, label]) => (
+                              <option key={k} value={k}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {newGameMatchMode !== "gross" && (
+                          <label style={styles.label}>
+                            Handicap %
+                            <input
+                              style={styles.input}
+                              type="number"
+                              min={0}
+                              max={150}
+                              value={newGameHandicapPct}
+                              onChange={(e) => setNewGameHandicapPct(e.target.value)}
+                            />
+                          </label>
+                        )}
+                        <div style={styles.helpText}>
+                          {newGameMatchMode === "off_lowest"
+                            ? "The lowest handicap in each match plays to scratch; everyone else gets the difference on the hardest holes. Foursomes uses half of each pair's combined handicap."
+                            : newGameMatchMode === "full"
+                            ? "Everyone gets their full handicap strokes."
+                            : "No handicap strokes — straight scratch match play."}
+                        </div>
+
+                        {newGameFormat === "ryder_cup" && (
+                          <>
+                            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
+                              <label style={styles.label}>
+                                Side A name
+                                <input style={styles.input} value={newGameSideA} onChange={(e) => setNewGameSideA(e.target.value)} />
+                              </label>
+                              <label style={styles.label}>
+                                Side B name
+                                <input style={styles.input} value={newGameSideB} onChange={(e) => setNewGameSideB(e.target.value)} />
+                              </label>
+                              <label style={styles.label}>
+                                Points for a win
+                                <input
+                                  style={styles.input}
+                                  type="number"
+                                  min={0}
+                                  step="0.5"
+                                  value={newGamePointsWin}
+                                  onChange={(e) => setNewGamePointsWin(e.target.value)}
+                                />
+                              </label>
+                              <label style={styles.label}>
+                                Points for a half
+                                <input
+                                  style={styles.input}
+                                  type="number"
+                                  min={0}
+                                  step="0.5"
+                                  value={newGamePointsHalf}
+                                  onChange={(e) => setNewGamePointsHalf(e.target.value)}
+                                />
+                              </label>
+                            </div>
+                            <div style={styles.sectionLabel}>Who is on each side?</div>
+                            <RosterPicker
+                              players={players}
+                              roster={newGameRoster}
+                              setRoster={setNewGameRoster}
+                              nameA={newGameSideA}
+                              nameB={newGameSideB}
+                            />
+                          </>
+                        )}
+                        <div style={styles.helpText}>
+                          After you create it, add the matches with "Manage matches" on the game's card.
+                        </div>
+                      </div>
+                    ))}
 
                   {newGameFormat === "composite" && (
                     <div style={{ display: "grid", gap: 10 }}>
@@ -6742,6 +7095,656 @@ function DeletePlayersPanel({ players, groupNameByPlayer, onDelete }) {
         </div>
       ) : null}
       {msg ? <div style={styles.helpText}>{msg}</div> : null}
+    </div>
+  );
+}
+
+const isMatchFormat = (f) => f === "match_play" || f === "ryder_cup";
+
+/** One-time database setup for Match Play / Ryder Cup (same as migrations/0012). */
+const MATCH_PLAY_SQL = `alter table games drop constraint if exists games_format_check;
+alter table games add constraint games_format_check check (
+  format in (
+    'individual_net', 'individual_gross', 'better_ball_2', 'better_ball_4',
+    'composite', 'scramble_2', 'scramble_4',
+    'match_play', 'ryder_cup'
+  )
+);
+alter table games add column if not exists config jsonb;
+
+create table if not exists matches (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references games(id) on delete cascade,
+  round_id uuid not null references rounds(id) on delete cascade,
+  match_type text not null check (match_type in ('singles', 'fourball', 'foursomes')),
+  label text,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists match_players (
+  match_id uuid not null references matches(id) on delete cascade,
+  player_id uuid not null references players(id) on delete cascade,
+  side text not null check (side in ('a', 'b')),
+  position integer not null default 0,
+  created_at timestamptz not null default now(),
+  primary key (match_id, player_id)
+);
+
+create index if not exists matches_game_idx on matches (game_id);
+create index if not exists match_players_player_idx on match_players (player_id);
+
+alter table matches enable row level security;
+alter table match_players enable row level security;
+
+drop policy if exists matches_select on matches;
+drop policy if exists matches_insert on matches;
+drop policy if exists matches_update on matches;
+drop policy if exists matches_delete on matches;
+create policy matches_select on matches for select to anon using (true);
+create policy matches_insert on matches for insert to anon with check (true);
+create policy matches_update on matches for update to anon using (true) with check (true);
+create policy matches_delete on matches for delete to anon using (true);
+
+drop policy if exists match_players_select on match_players;
+drop policy if exists match_players_insert on match_players;
+drop policy if exists match_players_update on match_players;
+drop policy if exists match_players_delete on match_players;
+create policy match_players_select on match_players for select to anon using (true);
+create policy match_players_insert on match_players for insert to anon with check (true);
+create policy match_players_update on match_players for update to anon using (true) with check (true);
+create policy match_players_delete on match_players for delete to anon using (true);`;
+
+function MatchSetupNotice() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800 }}>One-time setup needed</div>
+      <div style={styles.helpText}>
+        Match Play and Ryder Cup need a few new tables in the database. In Supabase, open <b>SQL Editor</b>, paste
+        the text below and click <b>Run</b>, then come back here and tap <b>Reload Data</b>.
+      </div>
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          marginTop: 8,
+          padding: 10,
+          borderRadius: 12,
+          border: `1px solid ${THEME.border}`,
+          background: "rgba(22,35,29,0.05)",
+          fontSize: 12,
+          color: THEME.text,
+          maxHeight: 220,
+          overflowY: "auto",
+        }}
+      >
+        {MATCH_PLAY_SQL}
+      </pre>
+      <button
+        style={{ ...styles.smallBtn, marginTop: 8, minHeight: 44 }}
+        onClick={() => {
+          Promise.resolve(navigator.clipboard?.writeText(MATCH_PLAY_SQL)).then(
+            () => setCopied(true),
+            () => setCopied(false)
+          );
+        }}
+      >
+        {copied ? "Copied ✅" : "Copy SQL"}
+      </button>
+    </div>
+  );
+}
+
+// Side colors for match boards (A / B).
+const SIDE_COLOR = { a: "#2F5D8C", b: "#A24A3E" };
+const fmtPts = (x) => {
+  const whole = Math.floor(x + 1e-9);
+  const half = Math.abs(x - whole - 0.5) < 1e-9;
+  if (half) return whole === 0 ? "½" : `${whole}½`;
+  return String(Math.round(x * 100) / 100);
+};
+
+/** Hole-by-hole strip: coloured by who won each hole, in the order the group plays. */
+function MatchStrip({ result }) {
+  const cells = Array.from({ length: 18 }, (_, i) => result.holes[i] || null);
+  return (
+    <div style={{ display: "flex", gap: 2, marginTop: 8 }} aria-hidden="true">
+      {cells.map((c, i) => (
+        <div
+          key={i}
+          title={c ? `Hole ${c.hole}` : ""}
+          style={{
+            flex: "1 1 0",
+            maxWidth: 16,
+            height: 8,
+            borderRadius: 2,
+            background: !c ? "transparent" : c.result === "a" ? SIDE_COLOR.a : c.result === "b" ? SIDE_COLOR.b : THEME.textFaint,
+            border: c ? "none" : `1px solid ${THEME.border}`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Leaderboard view for a Match Play / Ryder Cup game: the team score header
+ * (Ryder Cup) and one card per match, grouped by session (round).
+ * `entries` = [{ match, result, roundId }] already worked out from the scores.
+ */
+function MatchBoard({ game, entries, rounds, selection, showSessions, sideNames }) {
+  const isRyder = game.format === "ryder_cup";
+  const shown = showSessions && selection && selection !== ROUND_OVERALL ? entries.filter((e) => e.roundId === selection) : entries;
+  const roundIds = rounds.map((r) => r.id);
+  const { overall } = computeRyderCup(shown, roundIds);
+  const [nameA, nameB] = sideNames;
+  const live = Math.abs(overall.projA - overall.a) > 1e-9 || Math.abs(overall.projB - overall.b) > 1e-9;
+
+  const sessions = (showSessions ? rounds : [{ id: null, label: "" }])
+    .map((r) => ({ round: r, items: shown.filter((e) => (r.id ? e.roundId === r.id : true)) }))
+    .filter((s) => s.items.length > 0);
+
+  return (
+    <div style={{ display: "grid", gap: 12, marginTop: 4 }}>
+      {isRyder && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+            alignItems: "center",
+            gap: 10,
+            padding: "14px 12px",
+            borderRadius: 16,
+            border: `1px solid ${THEME.border}`,
+            background: "rgba(159, 119, 80, 0.10)",
+          }}
+        >
+          {[
+            { name: nameA, pts: overall.a, proj: overall.projA, color: SIDE_COLOR.a, align: "left" },
+            null,
+            { name: nameB, pts: overall.b, proj: overall.projB, color: SIDE_COLOR.b, align: "right" },
+          ].map((s, i) =>
+            s ? (
+              <div key={i} style={{ textAlign: s.align, minWidth: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: s.color, overflowWrap: "anywhere" }}>{s.name}</div>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 40, lineHeight: 1.05, color: THEME.text }}>
+                  {fmtPts(s.pts)}
+                </div>
+                {live && <div style={{ fontSize: 11, color: THEME.textMuted }}>live {fmtPts(s.proj)}</div>}
+              </div>
+            ) : (
+              <div key={i} style={{ fontSize: 12, color: THEME.textMuted, textAlign: "center" }}>
+                {overall.finished}/{overall.matches}
+                <br />
+                final
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {sessions.length === 0 && (
+        <div style={styles.helpText}>
+          No matches yet. Add them in Admin → Games → this game → Manage matches.
+        </div>
+      )}
+
+      {sessions.map(({ round, items }) => (
+        <div key={round.id || "all"} style={{ display: "grid", gap: 8 }}>
+          {showSessions && round.label ? (
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.6, textTransform: "uppercase", color: THEME.textMuted }}>
+              {round.label}
+            </div>
+          ) : null}
+          {items.map(({ match, result }) => {
+            const type = MATCH_TYPES[match.match_type]?.label || match.match_type;
+            const leaderColor = result.leader ? SIDE_COLOR[result.leader] : THEME.textMuted;
+            return (
+              <div key={match.id} style={{ ...styles.foursomeCard }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, letterSpacing: 1.1, textTransform: "uppercase", fontWeight: 700, color: THEME.textMuted }}>
+                  <span>{match.label || "Match"} · {type}</span>
+                  {result.status === "final" ? <span>Final</span> : result.status === "in_progress" ? <span>Live</span> : null}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", gap: 8, alignItems: "center", marginTop: 8 }}>
+                  <div style={{ fontWeight: result.winner === "a" || result.leader === "a" ? 900 : 700, color: SIDE_COLOR.a, overflowWrap: "anywhere", fontSize: 14 }}>
+                    {result.nameA}
+                  </div>
+                  <div style={{ fontSize: 11, color: THEME.textFaint }}>vs</div>
+                  <div style={{ textAlign: "right", fontWeight: result.winner === "b" || result.leader === "b" ? 900 : 700, color: SIDE_COLOR.b, overflowWrap: "anywhere", fontSize: 14 }}>
+                    {result.nameB}
+                  </div>
+                </div>
+                <div style={{ marginTop: 8, fontWeight: 900, fontSize: 15, color: result.status === "not_started" ? THEME.textMuted : leaderColor }}>
+                  {result.text}
+                </div>
+                <MatchStrip result={result} />
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Add Game → Ryder Cup: put each player on a side. */
+function RosterPicker({ players, roster, setRoster, nameA, nameB }) {
+  const sorted = [...players].sort((a, b) => a.name.localeCompare(b.name));
+  const pick = (id, side) => setRoster({ ...roster, [id]: roster[id] === side ? undefined : side });
+  const counts = { a: 0, b: 0 };
+  for (const v of Object.values(roster)) if (v) counts[v] += 1;
+
+  // Snake by handicap (1-2-2-1...) so both sides are about even.
+  const split = () => {
+    const byHcp = [...players].sort((x, y) => clampInt(x.handicap, 0) - clampInt(y.handicap, 0));
+    const next = {};
+    byHcp.forEach((p, i) => {
+      const round = Math.floor(i / 2);
+      next[p.id] = (i + (round % 2)) % 2 === 0 ? "a" : "b";
+    });
+    setRoster(next);
+  };
+
+  const btn = (on, side) => ({
+    minWidth: 44,
+    minHeight: 44,
+    borderRadius: 12,
+    border: `2px solid ${on ? SIDE_COLOR[side] : THEME.border}`,
+    background: on ? SIDE_COLOR[side] : "transparent",
+    color: on ? "#fff" : THEME.text,
+    fontWeight: 800,
+    cursor: "pointer",
+  });
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={split}>
+          Split evenly by handicap
+        </button>
+        <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setRoster({})}>
+          Clear
+        </button>
+        <span style={{ fontSize: 12, color: THEME.textMuted }}>
+          {nameA || "A"}: {counts.a} • {nameB || "B"}: {counts.b}
+        </span>
+      </div>
+      <div style={{ display: "grid", gap: 6, maxHeight: 340, overflowY: "auto" }}>
+        {sorted.map((p) => (
+          <div key={p.id} style={{ ...styles.playerRow, padding: "6px 8px 6px 12px" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 800, overflowWrap: "anywhere" }}>{p.name}</div>
+              <div style={styles.playerMeta}>HCP {hcpLabel(p.handicap)}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6, flex: "none" }}>
+              <button type="button" style={btn(roster[p.id] === "a", "a")} onClick={() => pick(p.id, "a")} aria-label={`${p.name} on ${nameA || "side A"}`}>
+                A
+              </button>
+              <button type="button" style={btn(roster[p.id] === "b", "b")} onClick={() => pick(p.id, "b")} aria-label={`${p.name} on ${nameB || "side B"}`}>
+                B
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const emptyMatchForm = { type: "singles", label: "", a: [""], b: [""] };
+
+/**
+ * Admin → Games → (a match game) → Manage matches. Matches belong to a
+ * session (round). Each side picks 1 player (singles) or 2 (four-ball,
+ * foursomes); a Ryder Cup picks from that side's roster.
+ */
+function MatchEditor({ game, players, rounds, multiRound, activeRoundId, matches, matchPlayers, gameTeams, gameTeamMembers, foursomes, foursomePlayers, onChanged }) {
+  const [roundId, setRoundId] = useState("");
+  const [editingId, setEditingId] = useState(null); // null | "new" | match id
+  const [form, setForm] = useState(emptyMatchForm);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
+
+  const isRyder = game.format === "ryder_cup";
+  const cfg = game.config || {};
+  const session = multiRound ? roundId || activeRoundId || "" : activeRoundId || "";
+  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+
+  const teams = gameTeams.filter((t) => t.game_id === game.id);
+  const teamA = teams.find((t) => t.id === cfg.sideA?.teamId) || teams[0];
+  const teamB = teams.find((t) => t.id === cfg.sideB?.teamId) || teams[1];
+  const rosterOf = (team) =>
+    team
+      ? gameTeamMembers
+          .filter((m) => m.team_id === team.id)
+          .map((m) => playerById.get(m.player_id))
+          .filter(Boolean)
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : [];
+  const eligible = { a: isRyder ? rosterOf(teamA) : players, b: isRyder ? rosterOf(teamB) : players };
+  const sideName = { a: cfg.sideA?.name || "Side A", b: cfg.sideB?.name || "Side B" };
+
+  const gameMatches = matches
+    .filter((m) => m.game_id === game.id && m.round_id === session)
+    .sort((x, y) => x.sort_order - y.sort_order || String(x.created_at).localeCompare(String(y.created_at)));
+  const playersIn = (matchId, side) =>
+    matchPlayers
+      .filter((mp) => mp.match_id === matchId && mp.side === side)
+      .sort((x, y) => x.position - y.position)
+      .map((mp) => playerById.get(mp.player_id))
+      .filter(Boolean);
+  const busyPlayers = new Map(); // player id -> the match label they are already in this session
+  for (const m of gameMatches) {
+    if (m.id === editingId) continue;
+    for (const mp of matchPlayers.filter((x) => x.match_id === m.id)) busyPlayers.set(mp.player_id, m.label || "another match");
+  }
+
+  const perSide = MATCH_TYPES[form.type].perSide;
+  const resize = (arr, n) => Array.from({ length: n }, (_, i) => arr[i] || "");
+  const setType = (type) => {
+    const n = MATCH_TYPES[type].perSide;
+    setForm({ ...form, type, a: resize(form.a, n), b: resize(form.b, n) });
+  };
+  const setPick = (side, i, id) => setForm({ ...form, [side]: form[side].map((v, j) => (j === i ? id : v)) });
+
+  function openNew() {
+    setForm({ ...emptyMatchForm, label: `Match ${gameMatches.length + 1}` });
+    setEditingId("new");
+    setMsg("");
+  }
+  function openEdit(m) {
+    setForm({
+      type: m.match_type,
+      label: m.label || "",
+      a: playersIn(m.id, "a").map((p) => p.id),
+      b: playersIn(m.id, "b").map((p) => p.id),
+    });
+    setEditingId(m.id);
+    setMsg("");
+  }
+
+  async function save() {
+    const ids = [...form.a, ...form.b];
+    if (ids.some((x) => !x)) return setMsg(`Pick ${perSide === 1 ? "a player" : "both players"} for each side.`);
+    if (new Set(ids).size !== ids.length) return setMsg("A player can only be in a match once.");
+    const clash = ids.find((id) => busyPlayers.has(id));
+    if (clash) return setMsg(`${playerById.get(clash)?.name} is already in ${busyPlayers.get(clash)} this session.`);
+    if (!session) return setMsg("No session (round) to put the match in yet.");
+    setBusy(true);
+    setMsg("Saving…");
+    try {
+      let matchId = editingId;
+      const label = form.label.trim() || `Match ${gameMatches.length + 1}`;
+      if (editingId === "new") {
+        const { data, error } = await supabase
+          .from("matches")
+          .insert({
+            game_id: game.id,
+            round_id: session,
+            match_type: form.type,
+            label,
+            sort_order: gameMatches.length ? Math.max(...gameMatches.map((m) => m.sort_order)) + 1 : 0,
+          })
+          .select("id")
+          .single();
+        if (error) return setMsg(errToText(error));
+        matchId = data.id;
+      } else {
+        const { error } = await supabase.from("matches").update({ match_type: form.type, label }).eq("id", matchId);
+        if (error) return setMsg(errToText(error));
+        const del = await supabase.from("match_players").delete().eq("match_id", matchId);
+        if (del.error) return setMsg(errToText(del.error));
+      }
+      const rows = [
+        ...form.a.map((player_id, position) => ({ match_id: matchId, player_id, side: "a", position })),
+        ...form.b.map((player_id, position) => ({ match_id: matchId, player_id, side: "b", position })),
+      ];
+      const ins = await supabase.from("match_players").insert(rows);
+      if (ins.error) return setMsg(errToText(ins.error));
+      await onChanged();
+      setEditingId(null);
+      setMsg("Saved ✅");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(m) {
+    if (!confirm(`Delete ${m.label || "this match"}?`)) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.from("matches").delete().eq("id", m.id);
+      if (error) return setMsg(errToText(error));
+      await onChanged();
+      setMsg("Deleted ✅");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Saves a batch of matches: defs = [{ label, a: [players], b: [players] }].
+  async function createMatches(type, defs) {
+    if (defs.length === 0) return setMsg("There's nothing to fill in yet.");
+    if (!confirm(`Create ${defs.length} ${MATCH_TYPES[type].label} match${defs.length === 1 ? "" : "es"} for this session?`)) return;
+    setBusy(true);
+    setMsg("Creating matches…");
+    try {
+      let order = gameMatches.length ? Math.max(...gameMatches.map((m) => m.sort_order)) + 1 : 0;
+      for (const def of defs) {
+        const { data, error } = await supabase
+          .from("matches")
+          .insert({ game_id: game.id, round_id: session, match_type: type, label: def.label, sort_order: order++ })
+          .select("id")
+          .single();
+        if (error) return setMsg(errToText(error));
+        const rows = [
+          ...def.a.map((p, position) => ({ match_id: data.id, player_id: p.id, side: "a", position })),
+          ...def.b.map((p, position) => ({ match_id: data.id, player_id: p.id, side: "b", position })),
+        ];
+        const ins = await supabase.from("match_players").insert(rows);
+        if (ins.error) return setMsg(errToText(ins.error));
+      }
+      await onChanged();
+      setMsg(`Created ${defs.length} match${defs.length === 1 ? "" : "es"} ✅`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const byHcp = (list) => [...list].sort((x, y) => clampInt(x.handicap, 0) - clampInt(y.handicap, 0));
+
+  // Ryder Cup shortcut (parked for now): pair the two rosters up for a whole session at once.
+  function autoFill() {
+    const type = form.type;
+    const makeUnits = (list) => {
+      const sorted = byHcp(list);
+      if (MATCH_TYPES[type].perSide === 1) return sorted.map((p) => [p]);
+      const units = [];
+      let lo = 0;
+      let hi = sorted.length - 1;
+      while (lo < hi) units.push([sorted[lo++], sorted[hi--]]);
+      return units;
+    };
+    const unitsA = makeUnits(eligible.a);
+    const unitsB = makeUnits(eligible.b);
+    const count = Math.min(unitsA.length, unitsB.length);
+    if (count === 0) return setMsg("Each side needs players on its roster first.");
+    const start = gameMatches.length;
+    return createMatches(
+      type,
+      Array.from({ length: count }, (_, i) => ({ label: `Match ${start + i + 1}`, a: unitsA[i], b: unitsB[i] }))
+    );
+  }
+
+  // Match Play shortcut: one match per playing group. 2v2 puts the lowest and highest
+  // handicap together against the middle two; singles pairs neighbours by handicap.
+  function autoFillFromGroups() {
+    const type = form.type;
+    const inSession = foursomes
+      .filter((f) => !f.round_id || f.round_id === session)
+      .sort(
+        (x, y) =>
+          String(x.tee_time || "99").localeCompare(String(y.tee_time || "99")) ||
+          String(x.group_name).localeCompare(String(y.group_name), undefined, { numeric: true })
+      );
+    const defs = [];
+    for (const f of inSession) {
+      const members = byHcp(
+        foursomePlayers
+          .filter((fp) => fp.foursome_id === f.id)
+          .map((fp) => playerById.get(fp.player_id))
+          .filter((p) => p && !busyPlayers.has(p.id))
+      );
+      if (MATCH_TYPES[type].perSide === 1) {
+        for (let i = 0; i + 1 < members.length; i += 2) {
+          defs.push({ label: `${f.group_name}${members.length > 2 ? ` ${i / 2 + 1}` : ""}`, a: [members[i]], b: [members[i + 1]] });
+        }
+      } else if (members.length >= 4) {
+        defs.push({ label: f.group_name, a: [members[0], members[3]], b: [members[1], members[2]] });
+      }
+    }
+    if (defs.length === 0) {
+      return setMsg(
+        MATCH_TYPES[type].perSide === 1
+          ? "No groups with at least 2 free players in this session."
+          : "No groups with 4 free players in this session (2v2 needs four to a group)."
+      );
+    }
+    return createMatches(type, defs);
+  }
+
+  const optionsFor = (side) =>
+    eligible[side].map((p) => ({ id: p.id, label: `${p.name} (HCP ${hcpLabel(p.handicap)})`, taken: busyPlayers.has(p.id) }));
+
+  return (
+    <div style={{ display: "grid", gap: 10, marginTop: 10, minWidth: 0 }}>
+      {multiRound ? (
+        <label style={styles.label}>
+          Session (round)
+          <select style={field} value={session} onChange={(e) => setRoundId(e.target.value)}>
+            {rounds.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.label}
+                {r.is_active ? " (active)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      {msg ? <div style={{ fontSize: 13, fontWeight: 700, color: /✅/.test(msg) ? THEME.text : THEME.danger }}>{msg}</div> : null}
+
+      {gameMatches.length === 0 && editingId !== "new" ? <div style={styles.helpText}>No matches in this session yet.</div> : null}
+      {gameMatches.map((m) => (
+        <div key={m.id} style={{ ...styles.playerRow, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0, flex: "1 1 180px" }}>
+            <div style={{ fontWeight: 900 }}>
+              {m.label || "Match"} · {MATCH_TYPES[m.match_type]?.label}
+            </div>
+            <div style={{ fontSize: 13, color: THEME.textMuted, overflowWrap: "anywhere" }}>
+              <span style={{ color: SIDE_COLOR.a, fontWeight: 700 }}>{sideLabel(playersIn(m.id, "a"))}</span> vs{" "}
+              <span style={{ color: SIDE_COLOR.b, fontWeight: 700 }}>{sideLabel(playersIn(m.id, "b"))}</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...styles.smallBtn, minHeight: 44 }} disabled={busy} onClick={() => openEdit(m)}>
+              Edit
+            </button>
+            <button style={{ ...styles.dangerBtn, minHeight: 44 }} disabled={busy} onClick={() => remove(m)}>
+              Delete
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {editingId ? (
+        <div style={{ ...styles.foursomeCard, display: "grid", gap: 10 }}>
+          <div style={styles.sectionLabel}>{editingId === "new" ? "New match" : "Edit match"}</div>
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
+            <label style={styles.label}>
+              Type
+              <select style={field} value={form.type} onChange={(e) => setType(e.target.value)}>
+                {Object.entries(MATCH_TYPES).map(([k, t]) => (
+                  <option key={k} value={k}>
+                    {t.label} ({t.perSide === 2 ? "2v2" : "1v1"})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={styles.label}>
+              Name
+              <input style={field} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+            </label>
+          </div>
+          {["a", "b"].map((side) => (
+            <div key={side} style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 800, color: SIDE_COLOR[side] }}>{isRyder ? sideName[side] : `Side ${side.toUpperCase()}`}</div>
+              {form[side].map((val, i) => (
+                <select key={i} style={field} value={val} onChange={(e) => setPick(side, i, e.target.value)}>
+                  <option value="">{perSide === 1 ? "Choose a player…" : `Player ${i + 1}…`}</option>
+                  {optionsFor(side).map((o) => (
+                    <option key={o.id} value={o.id} disabled={o.taken || (form.a.concat(form.b).includes(o.id) && o.id !== val)}>
+                      {o.label}
+                      {o.taken ? " — in another match" : ""}
+                    </option>
+                  ))}
+                </select>
+              ))}
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button style={{ ...styles.bigBtn, flex: 1, minHeight: 48, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={save}>
+              Save match
+            </button>
+            <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={() => setEditingId(null)}>
+              Cancel
+            </button>
+          </div>
+          {form.type === "foursomes" && (
+            <div style={styles.helpText}>
+              Foursomes is alternate shot: each pair plays one ball, so Enter Scores asks for one score per pair.
+            </div>
+          )}
+          {form.type === "fourball" && (
+            <div style={styles.helpText}>
+              Four-ball: everyone plays their own ball and each pair's better score on a hole counts.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={openNew}>
+            + Add match
+          </button>
+          {gameMatches.length === 0 ? (
+            <>
+              <select
+                aria-label="Match type for auto-fill"
+                style={{ ...field, width: "auto", minHeight: 44, fontSize: 14 }}
+                value={form.type}
+                onChange={(e) => setType(e.target.value)}
+              >
+                {Object.entries(MATCH_TYPES).map(([k, t]) => (
+                  <option key={k} value={k}>
+                    {t.label} ({t.perSide === 2 ? "2v2" : "1v1"})
+                  </option>
+                ))}
+              </select>
+              <button style={{ ...styles.smallBtn, minHeight: 44 }} disabled={busy} onClick={isRyder ? autoFill : autoFillFromGroups}>
+                {isRyder ? "Auto-fill this session" : "Auto-fill from my groups"}
+              </button>
+            </>
+          ) : null}
+        </div>
+      )}
+      {!editingId && gameMatches.length === 0 ? (
+        <div style={styles.helpText}>
+          {isRyder
+            ? "Auto-fill pairs the two rosters by handicap (lowest with highest for pairs) using the match type next to it."
+            : "Auto-fill makes one match per playing group: 2v2 pairs the lowest and highest handicap against the middle two (a group needs four players); singles pairs neighbours by handicap. Or tap + Add match to pick every player yourself."}
+        </div>
+      ) : null}
     </div>
   );
 }
