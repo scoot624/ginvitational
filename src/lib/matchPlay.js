@@ -9,6 +9,7 @@
 
 import { strokesOnHoleForGame } from "./gameCalc.js";
 import { shortName } from "./broadcastEngine.js";
+import { clampInt } from "./golf.js";
 
 export const MATCH_TYPES = {
   singles: { label: "Singles", perSide: 1 },
@@ -20,11 +21,6 @@ export const HANDICAP_MODES = {
   off_lowest: "Strokes off the lowest",
   full: "Full handicap (net)",
   gross: "Gross (no handicap)",
-};
-
-const clampInt = (v, fallback = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 };
 
 /** "Scott J." / "Scott J. / Dan R." */

@@ -9,6 +9,8 @@
 //   * big swing compares against standings recomputed "as of a few minutes
 //     ago" from score timestamps (App.jsx passes those in as `prevRanks`)
 
+import { formatToPar } from "./golf.js";
+
 export const LIVE_MS = 45 * 60 * 1000; // live moments only post while scores are coming in (newest score under 45 min old)
 export const RARE_MS = 3 * 60 * 60 * 1000; // aces/eagles/recaps only announce while the scores are fresh (so an old round never pops up a hole-in-one)
 export const COOLDOWN_MS = 20 * 60 * 1000; // same player + same kind of card
@@ -29,10 +31,6 @@ export function shortName(full) {
   return `${parts[0]} ${last[0].toUpperCase()}.`;
 }
 
-export function formatToPar(n) {
-  if (n === 0) return "E";
-  return n > 0 ? `+${n}` : `${n}`;
-}
 
 function fnv1a(str) {
   let h = 0x811c9dc5;

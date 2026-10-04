@@ -1,13 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { supabase, fetchAllRows } from "./lib/supabase";
+import { formatTeeTime, buildPhoneGroups, phoneDraftToSheetRows, phoneSlot, excelTimeToDbTime, fullNameFromRow } from "./lib/teeSheet";
+import { clampInt, lastName, formatToPar, strokesForHandicap } from "./lib/golf";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds, strokesOnHoleForGame } from "./lib/gameCalc";
 import { computeMatchResult, computeRyderCup, MATCH_TYPES, HANDICAP_MODES, sideLabel } from "./lib/matchPlay";
 import { computeBroadcastEvents, planPosts, safeDedupeKey, shortName, SWING_WINDOW_MS } from "./lib/broadcastEngine";
-
-/** ✅ Supabase via env vars */
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 /** ⛳ PARS (Blue tees, Par 72; hole 18 is par 5) */
 const PARS = [
@@ -94,12 +91,6 @@ const GAME_PRESETS = {
   ],
 };
 
-function clampInt(v, fallback = 0) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.trunc(n);
-}
-
 const DEFAULT_TAGLINE = "Drink Good. Play Good. Do Good.";
 
 /** What an admin runs once in Supabase before the tagline/logo settings can be saved (same as migrations/0010). */
@@ -150,90 +141,10 @@ async function fileToLogoDataUrl(file) {
 
 /* ---------- Phone setup ("Build on my phone") helpers: pure, no React ---------- */
 
-/** Splits `n` players into the fewest groups of at most `size`, as evenly as possible (9 -> 3/3/3, not 4/4/1). */
-function groupSizes(n, size) {
-  if (n <= 0) return [];
-  const groups = Math.ceil(n / size);
-  const base = Math.floor(n / groups);
-  const extra = n % groups;
-  return Array.from({ length: groups }, (_, i) => base + (i < extra ? 1 : 0));
-}
 
-/** "09:50" + 15 -> "10:05". Wraps past midnight; returns "" for anything that isn't HH:MM. */
-function addMinutesToTime(hhmm, minutes) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || "").trim());
-  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return "";
-  const total = (((Number(m[1]) * 60 + Number(m[2]) + Math.round(minutes)) % 1440) + 1440) % 1440;
-  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
-}
 
-/** Shotgun start: spread `groupCount` groups across the 18 holes (11 groups -> 1,2,4,5,7,9,10,12,14,15,17). */
-function shotgunHole(index, groupCount) {
-  return (Math.floor((index * 18) / Math.max(1, groupCount)) % 18) + 1;
-}
 
-/**
- * Builds the starting groups for the phone flow: players in the order entered,
- * split evenly, with tee times (first + gap per group) or shotgun holes.
- * `players` need only an `id`; returns [{ name, teeTime, startingHole, playerIds }].
- */
-function buildPhoneGroups(players, { size, firstTee, gapMin, shotgun }) {
-  const sizes = groupSizes(players.length, size);
-  let at = 0;
-  return sizes.map((count, i) => {
-    const playerIds = players.slice(at, at + count).map((p) => p.id);
-    at += count;
-    return {
-      name: `Group ${i + 1}`,
-      teeTime: shotgun ? firstTee : addMinutesToTime(firstTee, i * gapMin) || firstTee,
-      startingHole: shotgun ? shotgunHole(i, sizes.length) : 1,
-      playerIds,
-    };
-  });
-}
 
-/**
- * Turns the phone draft into the SAME row shape the Excel parser produces, so
- * the one import writer (runTeeSheetImport) handles both. A group's name is its
- * "team" value, exactly like a spreadsheet's Team column. Empty groups are skipped.
- */
-function phoneDraftToSheetRows(players, groups) {
-  const byId = new Map(players.map((p) => [p.id, p]));
-  const rows = [];
-  for (const g of groups) {
-    for (const id of g.playerIds) {
-      const p = byId.get(id);
-      if (!p) continue;
-      rows.push({
-        team: g.name.trim(),
-        tee_time: g.teeTime,
-        starting_hole: g.startingHole,
-        first_name: p.name.trim(),
-        last_name: "",
-        handicap: p.handicap,
-        charity: p.charity || "",
-      });
-    }
-  }
-  return rows;
-}
-
-/** "13:12:00" -> "1:12 PM". The database keeps 24-hour time with seconds; this is how people read a tee time. */
-function formatTeeTime(t) {
-  const raw = String(t ?? "").trim();
-  const m = /^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(raw);
-  if (!m) return raw;
-  const hour24 = Number(m[1]);
-  if (hour24 > 23) return raw;
-  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
-  return `${hour12}:${m[2]} ${hour24 < 12 ? "AM" : "PM"}`;
-}
-
-function formatToPar(n) {
-  if (n === 0) return "E";
-  if (n > 0) return `+${n}`;
-  return `${n}`;
-}
 
 /**
  * Real handicap allocation by stroke index.
@@ -243,16 +154,7 @@ function formatToPar(n) {
  * those holes — `net = gross - strokesOnHole(...)` keeps working either way.
  */
 function strokesOnHole(courseHcp, holeNum) {
-  const h = clampInt(courseHcp, 0);
-  if (h === 0) return 0;
-
-  const magnitude = Math.abs(h);
-  const full = Math.floor(magnitude / 18);
-  const rem = magnitude % 18;
-  const si = STROKE_INDEX[holeNum - 1];
-  const strokes = full + (rem > 0 && si <= rem ? 1 : 0);
-
-  return h > 0 ? strokes : -strokes;
+  return strokesForHandicap(courseHcp, holeNum, STROKE_INDEX);
 }
 
 function netScoreForHole(grossScore, courseHcp, holeNum) {
@@ -268,18 +170,6 @@ function errToText(err) {
   } catch {
     return String(err);
   }
-}
-
-/**
- * Full last name — everything after the first word, not just the final
- * word, so a multi-word surname (e.g. "Van Der Berg") shows in full
- * instead of being truncated to just "Berg".
- */
-function lastName(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "";
-  if (parts.length === 1) return parts[0];
-  return parts.slice(1).join(" ");
 }
 
 /** --- Brand palette --- */
@@ -1147,6 +1037,11 @@ export default function App() {
   // Enter Scores: hole-by-hole typing UI
   const [hole, setHole] = useState(1);
   const [holeInputs, setHoleInputs] = useState({});
+  // Scores saved on this phone that have not reached the database yet.
+  const [pendingScores, setPendingScores] = useState(() => readPendingScores());
+  const [pendingErr, setPendingErr] = useState("");
+  const uploadingRef = useRef(false);
+  const uploadAgainRef = useRef(false);
   // True once this foursome has wrapped all the way back around to their
   // starting hole after entering their 18th hole (shotgun starts).
   const [roundComplete, setRoundComplete] = useState(false);
@@ -1208,10 +1103,13 @@ export default function App() {
   const [roundsMsg, setRoundsMsg] = useState("");
 
   async function loadPlayers() {
-    const { data, error } = await supabase
-      .from("players")
-      .select("id,name,handicap,charity,team_label,created_at")
-      .order("created_at", { ascending: true });
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("players")
+        .select("id,name,handicap,charity,team_label,created_at")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+    );
 
     if (error) {
       console.error("loadPlayers error:", error);
@@ -1222,10 +1120,14 @@ export default function App() {
   }
 
   async function loadScores() {
-    const { data, error } = await supabase
-      .from("scores")
-      .select("id,player_id,hole,score,round_id,created_at")
-      .order("created_at", { ascending: false });
+    // Paged: the table passes 1,000 rows once there is a second round or a bigger field.
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("scores")
+        .select("id,player_id,hole,score,round_id,created_at")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: true })
+    );
 
     if (error) {
       console.error("loadScores error:", error);
@@ -1236,10 +1138,13 @@ export default function App() {
   }
 
   async function loadFoursomes() {
-    const { data, error } = await supabase
-      .from("foursomes")
-      .select("id,group_name,code,tee_time,starting_hole,round_id,created_at")
-      .order("created_at", { ascending: true });
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("foursomes")
+        .select("id,group_name,code,tee_time,starting_hole,round_id,created_at")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+    );
 
     if (error) {
       console.error("loadFoursomes error:", error);
@@ -1264,10 +1169,14 @@ export default function App() {
   }
 
   async function loadFoursomePlayers() {
-    const { data, error } = await supabase
-      .from("foursome_players")
-      .select("foursome_id,player_id,seat,created_at")
-      .order("created_at", { ascending: true });
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("foursome_players")
+        .select("foursome_id,player_id,seat,created_at")
+        .order("created_at", { ascending: true })
+        .order("foursome_id", { ascending: true })
+        .order("player_id", { ascending: true })
+    );
 
     if (error) {
       console.error("loadFoursomePlayers error:", error);
@@ -1297,11 +1206,22 @@ export default function App() {
 
   // Not an error if the tables aren't there yet — the feature just isn't set up (see MatchSetupNotice).
   async function loadMatches() {
-    const m = await supabase
-      .from("matches")
-      .select("id,game_id,round_id,match_type,label,sort_order,created_at")
-      .order("sort_order", { ascending: true });
-    const p = m.error ? null : await supabase.from("match_players").select("match_id,player_id,side,position");
+    const m = await fetchAllRows(() =>
+      supabase
+        .from("matches")
+        .select("id,game_id,round_id,match_type,label,sort_order,created_at")
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true })
+    );
+    const p = m.error
+      ? null
+      : await fetchAllRows(() =>
+          supabase
+            .from("match_players")
+            .select("match_id,player_id,side,position")
+            .order("match_id", { ascending: true })
+            .order("player_id", { ascending: true })
+        );
     if (m.error || p?.error) {
       setMatches([]);
       setMatchPlayers([]);
@@ -1329,10 +1249,14 @@ export default function App() {
   }
 
   async function loadGameTeamMembers() {
-    const { data, error } = await supabase
-      .from("game_team_members")
-      .select("game_id,team_id,player_id,created_at")
-      .order("created_at", { ascending: true });
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("game_team_members")
+        .select("game_id,team_id,player_id,created_at")
+        .order("created_at", { ascending: true })
+        .order("team_id", { ascending: true })
+        .order("player_id", { ascending: true })
+    );
 
     if (error) {
       console.error("loadGameTeamMembers error:", error);
@@ -1648,16 +1572,6 @@ export default function App() {
     fieldOffset,
   ]);
 
-  // Temporary Stage 2 verification hook: lets us confirm gameResults
-  // matches the live leaderboard before anything is wired to the UI.
-  // Safe to remove once Stage 4 renders gameResults directly.
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.__gameResults = gameResults;
-      window.__appSettings = appSettings;
-    }
-  }, [gameResults, appSettings]);
-
   const scorecardPlayer = useMemo(() => {
     if (!scorecardPlayerId) return null;
     return leaderboardRows.find((r) => r.id === scorecardPlayerId) || null;
@@ -1802,6 +1716,20 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Unsent scores: retry every 10 seconds, the moment the phone comes back online, and on load.
+  const hasPendingScores = pendingScores.length > 0;
+  useEffect(() => {
+    if (!hasPendingScores) return;
+    const id = setInterval(uploadPendingScores, 10_000);
+    window.addEventListener("online", uploadPendingScores);
+    uploadPendingScores();
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("online", uploadPendingScores);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPendingScores]);
+
   // Hole-in-one popup: the newest ace from the last 10 minutes this phone hasn't dismissed yet.
   useEffect(() => {
     if (acePopup) return;
@@ -1912,15 +1840,26 @@ export default function App() {
     if (!adminOn) return alert("Admin only.");
     if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
 
-    await supabase
+    const delFP = await supabase
       .from("foursome_players")
       .delete()
       .neq("foursome_id", "00000000-0000-0000-0000-000000000000");
+    if (delFP.error) {
+      console.error(delFP.error);
+      alert(`Could not clear the assignments: ${errToText(delFP.error)}`);
+      return;
+    }
 
-    await supabase
+    const delF = await supabase
       .from("foursomes")
       .delete()
       .neq("id", "00000000-0000-0000-0000-000000000000");
+    if (delF.error) {
+      console.error(delF.error);
+      alert(`Could not clear the foursomes: ${errToText(delF.error)}`);
+      await initialLoad();
+      return;
+    }
 
     await initialLoad();
   }
@@ -2098,12 +2037,22 @@ export default function App() {
     )
       return;
 
-    await supabase.from("foursome_players").delete().in(
-      "foursome_id",
-      foursomes.filter((f) => f.round_id === round.id).map((f) => f.id)
-    );
-    await supabase.from("foursomes").delete().eq("round_id", round.id);
-    await supabase.from("scores").delete().eq("round_id", round.id);
+    // Each step must succeed before the next one runs, so a refused delete never leaves the round half-removed without saying so.
+    const roundFoursomeIds = foursomes.filter((f) => f.round_id === round.id).map((f) => f.id);
+    const steps = [
+      ["assignments", () => (roundFoursomeIds.length ? supabase.from("foursome_players").delete().in("foursome_id", roundFoursomeIds) : { error: null })],
+      ["foursomes", () => supabase.from("foursomes").delete().eq("round_id", round.id)],
+      ["scores", () => supabase.from("scores").delete().eq("round_id", round.id)],
+    ];
+    for (const [label, run] of steps) {
+      const res = await run();
+      if (res.error) {
+        console.error(res.error);
+        setRoundsMsg(`Error deleting the round's ${label}: ${errToText(res.error)}`);
+        await initialLoad();
+        return;
+      }
+    }
 
     const { error } = await supabase.from("rounds").delete().eq("id", round.id);
     if (error) {
@@ -2358,10 +2307,15 @@ export default function App() {
           return;
         }
       }
-      await supabase
+      const cfgUpdate = await supabase
         .from("games")
         .update({ config: { ...config, sideA: { ...config.sideA, teamId: made[0] }, sideB: { ...config.sideB, teamId: made[1] } } })
         .eq("id", gameRow.id);
+      if (cfgUpdate.error) {
+        console.error(cfgUpdate.error);
+        setGamesMsg(`Game created, but could not link its sides: ${errToText(cfgUpdate.error)}`);
+        return;
+      }
     }
 
     setGamesMsg(`"${name}" created ✅ — now add its matches under "Manage matches" on its card.`);
@@ -2602,6 +2556,10 @@ export default function App() {
   }
 
   function getExistingScore(pid, holeNum, roundId) {
+    const queued = pendingScores.find(
+      (q) => q.player_id === pid && q.hole === holeNum && (roundId == null || q.round_id === roundId)
+    );
+    if (queued) return queued.score;
     const row = scores.find(
       (s) => s.player_id === pid && clampInt(s.hole, 0) === holeNum && (roundId == null || s.round_id === roundId)
     );
@@ -2693,34 +2651,74 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFoursome?.id, hole]);
 
-  async function saveHoleThenNavigate(nextHole) {
-    if (!activeFoursome) return;
+  // Sends every waiting score. Anything the database refuses (offline, error) stays queued
+  // and is shown in the banner; the rest is removed once it is safely uploaded.
+  async function uploadPendingScores() {
+    if (uploadingRef.current) {
+      uploadAgainRef.current = true; // something new was queued mid-upload: go round again
+      return;
+    }
+    uploadingRef.current = true;
+    try {
+      do {
+        uploadAgainRef.current = false;
+        const queue = readPendingScores();
+        if (queue.length === 0) break;
+        const failed = new Set();
+        let lastError = "";
+        for (const item of queue) {
+          const { error } = await supabase
+            .from("scores")
+            .upsert(
+              { player_id: item.player_id, hole: item.hole, score: item.score, round_id: item.round_id },
+              { onConflict: "player_id,hole,round_id" }
+            );
+          if (error) {
+            failed.add(pendingKey(item));
+            lastError = errToText(error);
+          }
+        }
+        // Keep what failed, plus anything queued while this upload was running.
+        const sent = new Map(queue.filter((q) => !failed.has(pendingKey(q))).map((q) => [pendingKey(q), q.score]));
+        const remaining = readPendingScores().filter((c) => !(sent.has(pendingKey(c)) && sent.get(pendingKey(c)) === c.score));
+        writePendingScores(remaining);
+        setPendingScores(remaining);
+        setPendingErr(remaining.length ? lastError : "");
+        if (sent.size > 0) await loadScores();
+      } while (uploadAgainRef.current);
+    } finally {
+      uploadingRef.current = false;
+    }
+  }
 
+  // Returns false only when a typed score is invalid (nothing is saved or moved).
+  async function saveHoleThenNavigate(nextHole) {
+    if (!activeFoursome) return false;
+
+    const entries = [];
     for (const p of activePlayers) {
       const raw = (holeInputs[p.id] ?? "").trim();
       if (!raw) continue;
       const sc = clampInt(raw, 0);
       if (sc < 1 || sc > 20) {
         alert(`Score for ${p.name} looks wrong (1–20).`);
-        return;
+        return false;
       }
-
-      const { error } = await supabase
-        .from("scores")
-        .upsert(
-          { player_id: p.id, hole, score: sc, round_id: activeFoursome.round_id },
-          { onConflict: "player_id,hole,round_id" }
-        );
-
-      if (error) {
-        console.error(error);
-        alert(`Error saving scores: ${errToText(error)}`);
-        return;
-      }
+      entries.push({ player_id: p.id, hole, score: sc, round_id: activeFoursome.round_id });
     }
 
-    await loadScores();
+    if (entries.length > 0) {
+      // Write to the phone first, so nothing can be lost; then try to send.
+      const next = [...readPendingScores().filter((q) => !entries.some((e) => pendingKey(e) === pendingKey(q))), ...entries];
+      writePendingScores(next);
+      setPendingScores(next);
+      await uploadPendingScores();
+    } else {
+      await loadScores();
+    }
+
     setHole(nextHole);
+    return true;
   }
 
   // ---------------------------
@@ -2730,50 +2728,6 @@ export default function App() {
     return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
 
-  function fullNameFromRow(row) {
-    const first = String(row.first_name || "").trim();
-    const last = String(row.last_name || "").trim();
-    return `${first} ${last}`.trim().replace(/\s+/g, " ");
-  }
-
-function excelTimeToDbTime(v) {
-  // Return "HH:MM:SS" or null
-  if (v == null || v === "") return null;
-
-  // If sheet_to_json gives a Date
-  if (v instanceof Date && Number.isFinite(v.getTime())) {
-    const hh = String(v.getHours()).padStart(2, "0");
-    const mm = String(v.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If Excel time fraction (e.g., 0.375)
-  const n = Number(v);
-  if (Number.isFinite(n)) {
-    const totalSeconds = Math.round(n * 24 * 60 * 60);
-    const hh = String(Math.floor(totalSeconds / 3600) % 24).padStart(2, "0");
-    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  // If string like "9:00 AM" or "09:00"
-  const s = String(v).trim();
-  if (!s) return null;
-
-  if (/^\d{1,2}:\d{2}$/.test(s)) {
-    const [h, m] = s.split(":");
-    return `${String(h).padStart(2, "0")}:${m}:00`;
-  }
-
-  const d = new Date(`1970-01-01 ${s}`);
-  if (Number.isFinite(d.getTime())) {
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}:00`;
-  }
-
-  return null;
-}
 
 async function parseTeeSheetFile(file) {
   setImportMsg("");
@@ -3108,7 +3062,7 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
   }
 }
 
-function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, logoSrc, game, fieldOffset }) {
+function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, eventName, logoSrc, game, fieldOffset }) {
   // members per foursome (up to 4)
   const membersByFid = new Map();
   for (const f of foursomes) {
@@ -3138,10 +3092,6 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   f={pair[0]}
                   members={membersByFid.get(pair[0].id) || []}
                   showTeeTime={showTeeTime}
-                  strokesOnHole={strokesOnHole}
-                  clampInt={clampInt}
-                  lastName={lastName}
-                  STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
                   logoSrc={logoSrc}
                   game={game}
@@ -3156,10 +3106,6 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
                   f={pair[1]}
                   members={membersByFid.get(pair[1].id) || []}
                   showTeeTime={showTeeTime}
-                  strokesOnHole={strokesOnHole}
-                  clampInt={clampInt}
-                  lastName={lastName}
-                  STROKE_INDEX={STROKE_INDEX}
                   eventName={eventName}
                   logoSrc={logoSrc}
                   game={game}
@@ -3174,7 +3120,7 @@ function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, strokesOnHo
   );
 }
 
-function PrintOneGroupCard({ f, members, showTeeTime, strokesOnHole, clampInt, lastName, STROKE_INDEX, eventName, logoSrc, game, fieldOffset }) {
+function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc, game, fieldOffset }) {
   const cols = [0, 1, 2, 3].map((i) => members[i] || null);
   const offset = clampInt(fieldOffset, 0);
 
@@ -3591,6 +3537,33 @@ const ps = {
           </header>
         )}
 
+        {pendingScores.length > 0 && (
+          <div
+            role="status"
+            style={{
+              ...styles.card,
+              marginBottom: 12,
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              border: `2px solid ${THEME.accent}`,
+            }}
+          >
+            <div style={{ minWidth: 0, fontSize: 14 }}>
+              <b>
+                {pendingScores.length} score{pendingScores.length === 1 ? "" : "s"} saved on this phone
+              </b>{" "}
+              — waiting to upload. Keep this page open; it keeps trying.
+              {pendingErr ? <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 4 }}>{pendingErr}</div> : null}
+            </div>
+            <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={uploadPendingScores}>
+              Retry now
+            </button>
+          </div>
+        )}
+
         {/* BROADCAST */}
         {tab === "broadcast" && (
           <div style={styles.card}>
@@ -3999,7 +3972,7 @@ const ps = {
                             </div>
                             <div style={{ fontSize: 12, color: THEME.textMuted }}>
                               {grp.shared
-                                ? "Scramble — team score"
+                                ? "Team score — one shared ball"
                                 : `HCP ${clampInt(grp.players[0].handicap, 0)}`}
                             </div>
                           </div>
@@ -4034,8 +4007,8 @@ const ps = {
                       <button
                         style={styles.bigBtn}
                         onClick={async () => {
-                          await saveHoleThenNavigate(nextHole);
-                          if (nextHole === startingHole) setRoundComplete(true);
+                          const saved = await saveHoleThenNavigate(nextHole);
+                          if (saved && nextHole === startingHole) setRoundComplete(true);
                         }}
                       >
                         {nextHole === startingHole ? "Save & Finish" : "Save & Next"}
@@ -4181,11 +4154,16 @@ const ps = {
           <PhoneSetup
             eventName={eventName}
             onSaveEventName={async (name) => {
-              await supabase
+              const { error } = await supabase
                 .from("app_settings")
                 .update({ event_name: name, updated_at: new Date().toISOString() })
                 .eq("id", 1);
+              if (error) {
+                console.error(error);
+                return errToText(error);
+              }
               await loadAppSettings();
+              return null;
             }}
             rounds={rounds}
             multiRound={!!appSettings.multi_round_enabled}
@@ -5283,10 +5261,6 @@ const ps = {
     foursomes={foursomes}
     players={players}
     foursomePlayers={foursomePlayers}
-    strokesOnHole={strokesOnHole}
-    clampInt={clampInt}
-    lastName={lastName}
-    STROKE_INDEX={STROKE_INDEX}
     eventName={eventName}
     logoSrc={logoSrc}
     game={printGame}
@@ -5319,15 +5293,6 @@ function savePhoneDraft(draft) {
   }
 }
 
-/** A group's tee time + starting hole from the tee-time settings (position `i` of `count`). */
-function phoneSlot(settings, i, count) {
-  return {
-    teeTime: settings.shotgun
-      ? settings.firstTee
-      : addMinutesToTime(settings.firstTee, i * settings.gapMin) || settings.firstTee,
-    startingHole: settings.shotgun ? shotgunHole(i, count) : 1,
-  };
-}
 
 /**
  * "Build on my phone" — the second way to start a tournament. Three short
@@ -5522,7 +5487,13 @@ function PhoneSetup({
     setStartMsg("Starting…");
     try {
       const name = nameDraft.trim();
-      if (name && name !== eventName) await onSaveEventName(name);
+      if (name && name !== eventName) {
+        const nameErr = await onSaveEventName(name);
+        if (nameErr) {
+          setStartMsg(`Could not save the tournament name, so nothing was started: ${nameErr}`);
+          return;
+        }
+      }
       const rows = phoneDraftToSheetRows(people, filledGroups);
       const ok = await onStart(rows, { replace: doReplace, targetRoundId, say: setStartMsg });
       if (ok) {
@@ -6065,6 +6036,34 @@ function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset, cutof
   }
 
   return rows;
+}
+
+/**
+ * Scores waiting to upload. Entered scores are written here FIRST, then sent,
+ * so a dropped signal (or a reload) mid-round never loses them: they stay on
+ * the phone and go up the moment the connection is back.
+ */
+const PENDING_SCORES_KEY = "ginv_pending_scores_v1";
+let pendingScoresFallback = [];
+const pendingKey = (s) => `${s.player_id}|${s.hole}|${s.round_id}`;
+
+function readPendingScores() {
+  try {
+    const v = JSON.parse(localStorage.getItem(PENDING_SCORES_KEY) || "[]");
+    return Array.isArray(v) ? v : pendingScoresFallback;
+  } catch {
+    return pendingScoresFallback;
+  }
+}
+
+function writePendingScores(list) {
+  pendingScoresFallback = list; // blocked storage: still held until the page reloads
+  try {
+    if (list.length) localStorage.setItem(PENDING_SCORES_KEY, JSON.stringify(list));
+    else localStorage.removeItem(PENDING_SCORES_KEY);
+  } catch {
+    /* private window / blocked storage */
+  }
 }
 
 /** Hole-in-one popup: shown for 10 minutes after the card is posted, once per phone. */

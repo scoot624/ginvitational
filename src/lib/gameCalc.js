@@ -10,17 +10,7 @@
  * is wired into rendering yet — see gameResults in App.jsx.
  */
 
-function clampInt(v, fallback = 0) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.trunc(n);
-}
-
-function lastName(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "";
-  return parts[parts.length - 1];
-}
+import { clampInt, lastName, strokesForHandicap } from "./golf.js";
 
 /** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */
 function playingHandicap(handicap, handicapPct) {
@@ -38,14 +28,7 @@ function playingHandicap(handicap, handicapPct) {
  * keeps working unchanged either way.
  */
 export function strokesOnHoleForGame(handicap, handicapPct, holeNum, strokeIndex) {
-  const h = playingHandicap(handicap, handicapPct);
-  if (h === 0) return 0;
-  const magnitude = Math.abs(h);
-  const full = Math.floor(magnitude / 18);
-  const rem = magnitude % 18;
-  const si = strokeIndex[holeNum - 1];
-  const strokes = full + (rem > 0 && si <= rem ? 1 : 0);
-  return h > 0 ? strokes : -strokes;
+  return strokesForHandicap(playingHandicap(handicap, handicapPct), holeNum, strokeIndex);
 }
 
 function netScoreForHoleGame(grossScore, handicap, handicapPct, holeNum, strokeIndex) {
