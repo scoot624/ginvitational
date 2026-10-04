@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminSection } from "./components/AdminSection";
 import { rankCellContent } from "./components/LeaderIcons";
-import { BrandingSetupNotice, ClearMessagesSetupNotice, MatchSetupNotice } from "./components/SetupNotices";
+import { ClearMessagesSetupNotice, MatchSetupNotice } from "./components/SetupNotices";
+import { EventNameSection } from "./features/admin/EventNameSection";
+import { HandicapBasisSection } from "./features/admin/HandicapBasisSection";
+import { LogoSection } from "./features/admin/LogoSection";
+import { TaglineSection } from "./features/admin/TaglineSection";
 import { AcePopup } from "./features/broadcast/AcePopup";
 import { ACE_POPUP_MS, readSeenAces, rememberSeenAce } from "./features/broadcast/aceSeen";
 import { BroadcastFeed } from "./features/broadcast/BroadcastFeed";
@@ -20,7 +24,7 @@ import { TvMode } from "./features/tv/TvMode";
 import { EventDataContext } from "./hooks/eventDataContext";
 import { useEventData } from "./hooks/useEventData";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { DEFAULT_TAGLINE, fileToLogoDataUrl } from "./lib/branding";
+import { DEFAULT_TAGLINE } from "./lib/branding";
 import { SWING_WINDOW_MS, computeBroadcastEvents, planPosts, safeDedupeKey } from "./lib/broadcastEngine";
 import { ADMIN_PIN, ROUND_OVERALL } from "./lib/config";
 import { PARS, STROKE_INDEX, netScoreForHole } from "./lib/course";
@@ -55,7 +59,6 @@ export default function App() {
     rounds,
     broadcastMsgs,
     broadcastLoaded,
-    brandingReady,
     foursomes,
     foursomePlayers,
     matches,
@@ -107,17 +110,6 @@ export default function App() {
   // Defaults to the same game the Leaderboard defaults to (the first active
   // game, by sort order) — see `printGame` below.
   const [printGameId, setPrintGameId] = useState(null);
-
-  // Admin: editable event name
-  const [eventNameDraft, setEventNameDraft] = useState("");
-  const [eventNameMsg, setEventNameMsg] = useState("");
-
-  // Admin: editable tagline + uploadable main logo. `brandingReady` is false
-  // until the one-time database change (migration 0010) has been made.
-  const [taglineDraft, setTaglineDraft] = useState("");
-  const [taglineMsg, setTaglineMsg] = useState("");
-  const [logoDraft, setLogoDraft] = useState(null); // data URL awaiting "Save logo"
-  const [logoMsg, setLogoMsg] = useState("");
 
   // Enter Scores: foursome code gate
   const [entryCode, setEntryCode] = useState("");
@@ -205,17 +197,8 @@ export default function App() {
     if (typeof document !== "undefined") document.title = eventName;
   }, [eventName]);
 
-  // Keep the Admin draft in sync with the saved value (e.g. after a save,
-  // or on initial load), without clobbering what's being typed elsewhere.
-  useEffect(() => {
-    setEventNameDraft(eventName);
-  }, [eventName]);
-
   // Tagline: not set yet (null) means the default; saved blank means none.
   const tagline = appSettings.tagline == null ? DEFAULT_TAGLINE : appSettings.tagline.trim();
-  useEffect(() => {
-    setTaglineDraft(tagline);
-  }, [tagline]);
 
   // Main logo: the uploaded one if there is one, else the built-in spool.
   const customLogo = !!appSettings.logo_data;
@@ -630,96 +613,6 @@ export default function App() {
       return;
     }
     await loadAppSettings();
-  }
-
-  // 'course': everyone's own handicap, as entered.
-  // 'field_relative': everyone's handicap minus the lowest handicap among
-  // every player imported for the event, so the best player in the field
-  // plays to scratch. Affects the Leaderboard, print scorecards, and the
-  // scorecard popup — see `fieldOffset` below.
-  async function setHandicapBasis(next) {
-    if (!adminOn) return alert("Admin only.");
-    const { error } = await supabase
-      .from("app_settings")
-      .update({ handicap_basis: next, updated_at: new Date().toISOString() })
-      .eq("id", 1);
-
-    if (error) {
-      console.error(error);
-      alert(`Error updating setting: ${errToText(error)}`);
-      return;
-    }
-    await loadAppSettings();
-  }
-
-  async function saveEventName() {
-    if (!adminOn) return alert("Admin only.");
-    const name = eventNameDraft.trim() || "The Ginvitational";
-    setEventNameMsg("Saving…");
-
-    const { error } = await supabase
-      .from("app_settings")
-      .update({ event_name: name, updated_at: new Date().toISOString() })
-      .eq("id", 1);
-
-    if (error) {
-      console.error(error);
-      setEventNameMsg(`Error saving: ${errToText(error)}`);
-      return;
-    }
-    await loadAppSettings();
-    setEventNameMsg("Saved ✅");
-  }
-
-  async function saveTagline() {
-    if (!adminOn) return alert("Admin only.");
-    setTaglineMsg("Saving…");
-
-    // Blank is allowed and means "no tagline" (stored as "", not null — null
-    // is reserved for "never set", which shows the default).
-    const { error } = await supabase
-      .from("app_settings")
-      .update({ tagline: taglineDraft.trim(), updated_at: new Date().toISOString() })
-      .eq("id", 1);
-
-    if (error) {
-      console.error(error);
-      setTaglineMsg(`Error saving: ${errToText(error)}`);
-      return;
-    }
-    await loadAppSettings();
-    setTaglineMsg("Saved ✅");
-  }
-
-  async function onLogoPicked(file) {
-    if (!file) return;
-    setLogoMsg("Processing…");
-    try {
-      setLogoDraft(await fileToLogoDataUrl(file));
-      setLogoMsg("Preview above — click Save logo to use it everywhere.");
-    } catch (e) {
-      setLogoDraft(null);
-      setLogoMsg(e.message || "Couldn't use that image.");
-    }
-  }
-
-  async function saveLogo(nextLogoData) {
-    if (!adminOn) return alert("Admin only.");
-    setLogoMsg("Saving…");
-
-    const { error } = await supabase
-      .from("app_settings")
-      .update({ logo_data: nextLogoData, updated_at: new Date().toISOString() })
-      .eq("id", 1);
-
-    if (error) {
-      console.error(error);
-      setLogoMsg(`Error saving: ${errToText(error)}`);
-      return;
-    }
-    setLogoDraft(null);
-    await loadAppSettings();
-    setLogoMsg(nextLogoData ? "Saved ✅ — the new logo is live." : "Back to the default logo ✅");
   }
 
   async function setMultiRoundEnabled(next) {
@@ -2670,180 +2563,16 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
           </AdminSection>
 
           {/* Event Name */}
-          <AdminSection
-            title="Event Name"
-            subtitle={eventName || "Not set"}
-            open={openAdminSection === "eventName"}
-            onToggle={() => setOpenAdminSection((k) => (k === "eventName" ? null : "eventName"))}
-          >
-            <div style={styles.helpText}>Shown on Home, the top nav, print scorecards, and the browser tab.</div>
-
-            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <input
-                style={{ ...styles.input, flex: 1, minWidth: 200 }}
-                value={eventNameDraft}
-                onChange={(e) => {
-                  setEventNameDraft(e.target.value);
-                  setEventNameMsg("");
-                }}
-                placeholder="The Ginvitational"
-              />
-              <button style={styles.bigBtn} onClick={saveEventName}>
-                Save
-              </button>
-            </div>
-
-            {eventNameMsg ? <div style={styles.helpText}>{eventNameMsg}</div> : null}
-          </AdminSection>
+          <EventNameSection adminOn={adminOn} eventName={eventName} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Tagline */}
-          <AdminSection
-            title="Tagline"
-            subtitle={tagline || "None"}
-            open={openAdminSection === "tagline"}
-            onToggle={() => setOpenAdminSection((k) => (k === "tagline" ? null : "tagline"))}
-          >
-            <div style={styles.helpText}>
-              Shown on the Home screen under the event name. Leave it blank to show no tagline.
-            </div>
-
-            {!brandingReady ? (
-              <BrandingSetupNotice />
-            ) : (
-              <>
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <input
-                    style={{ ...styles.input, flex: 1, minWidth: 200 }}
-                    value={taglineDraft}
-                    onChange={(e) => {
-                      setTaglineDraft(e.target.value);
-                      setTaglineMsg("");
-                    }}
-                    placeholder={DEFAULT_TAGLINE}
-                  />
-                  <button style={styles.bigBtn} onClick={saveTagline}>
-                    Save
-                  </button>
-                </div>
-                {taglineMsg ? <div style={styles.helpText}>{taglineMsg}</div> : null}
-              </>
-            )}
-          </AdminSection>
+          <TaglineSection adminOn={adminOn} tagline={tagline} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Main logo */}
-          <AdminSection
-            title="Logo"
-            subtitle={customLogo ? "Custom logo" : "Default logo"}
-            open={openAdminSection === "logo"}
-            onToggle={() => setOpenAdminSection((k) => (k === "logo" ? null : "logo"))}
-          >
-            <div style={styles.helpText}>
-              Your main logo — shown on the Home screen, the printed scorecards, and as the browser tab icon. Any
-              image works; it's resized automatically. A PNG with a transparent background looks best.
-            </div>
-
-            {!brandingReady ? (
-              <BrandingSetupNotice />
-            ) : (
-              <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-                <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ ...styles.label, marginBottom: 6 }}>{logoDraft ? "Current" : "Current logo"}</div>
-                    <img
-                      src={logoSrc}
-                      alt="Current logo"
-                      style={{ display: "block", maxWidth: 140, maxHeight: 110, objectFit: "contain" }}
-                    />
-                  </div>
-                  {logoDraft ? (
-                    <div>
-                      <div style={{ ...styles.label, marginBottom: 6 }}>New logo (not saved yet)</div>
-                      <img
-                        src={logoDraft}
-                        alt="New logo preview"
-                        style={{ display: "block", maxWidth: 140, maxHeight: 110, objectFit: "contain" }}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                  onChange={(e) => {
-                    onLogoPicked(e.target.files?.[0] || null);
-                    e.target.value = ""; // picking the same file again should still fire
-                  }}
-                />
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {logoDraft ? (
-                    <>
-                      <button style={styles.bigBtn} onClick={() => saveLogo(logoDraft)}>
-                        Save logo
-                      </button>
-                      <button
-                        style={styles.smallBtn}
-                        onClick={() => {
-                          setLogoDraft(null);
-                          setLogoMsg("");
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : null}
-                  {customLogo && !logoDraft ? (
-                    <button
-                      style={styles.smallBtn}
-                      onClick={() => {
-                        if (confirm("Go back to the default logo?")) saveLogo(null);
-                      }}
-                    >
-                      Use default logo
-                    </button>
-                  ) : null}
-                </div>
-
-                {logoMsg ? <div style={styles.helpText}>{logoMsg}</div> : null}
-              </div>
-            )}
-          </AdminSection>
+          <LogoSection adminOn={adminOn} customLogo={customLogo} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} logoSrc={logoSrc} />
 
           {/* Handicap Basis */}
-          <AdminSection
-            title="Handicap Basis"
-            subtitle={appSettings.handicap_basis === "field_relative" ? "Field-Relative" : "Course Handicap"}
-            open={openAdminSection === "handicapBasis"}
-            onToggle={() => setOpenAdminSection((k) => (k === "handicapBasis" ? null : "handicapBasis"))}
-          >
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
-                <input
-                  type="radio"
-                  name="handicapBasis"
-                  checked={(appSettings.handicap_basis || "course") === "course"}
-                  onChange={() => setHandicapBasis("course")}
-                />
-                Course Handicap — everyone plays off their own handicap.
-              </label>
-
-              <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: THEME.textMuted }}>
-                <input
-                  type="radio"
-                  name="handicapBasis"
-                  checked={appSettings.handicap_basis === "field_relative"}
-                  onChange={() => setHandicapBasis("field_relative")}
-                />
-                Field-Relative — everyone plays off the lowest handicap among all imported players.
-              </label>
-            </div>
-
-            <div style={styles.helpText}>
-              Applies to the Leaderboard, print scorecards, and the scorecard popup. A plus handicap now correctly
-              gives strokes back (marked with a "+") instead of being treated as scratch.
-            </div>
-          </AdminSection>
+          <HandicapBasisSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Import Tee Sheet */}
           <AdminSection
