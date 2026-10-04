@@ -135,3 +135,8 @@ export function fullNameFromRow(row) {
   const last = String(row.last_name || "").trim();
   return `${first} ${last}`.trim().replace(/\s+/g, " ");
 }
+
+/** Tidies an Excel column heading so "First Name", "first name " and "FIRST NAME" all read as first_name. */
+export function normKey(k) {
+  return String(k || "").trim().toLowerCase().replace(/\s+/g, "_");
+}

@@ -47,3 +47,5 @@ export function strokesForHandicap(handicap, holeNum, strokeIndex) {
 
   return h > 0 ? strokes : 0 - strokes; // 0 - n keeps a plain 0 (not -0) when no stroke falls here
 }
+
+export const hcpLabel = (h) => (clampInt(h, 0) < 0 ? `+${Math.abs(clampInt(h, 0))}` : String(clampInt(h, 0)));
