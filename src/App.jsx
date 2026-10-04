@@ -17,6 +17,7 @@ import { DeletePlayersPanel } from "./features/roster/DeletePlayersPanel";
 import { RosterEditor } from "./features/roster/RosterEditor";
 import { pendingKey, readPendingScores, writePendingScores } from "./features/scoring/pendingScores";
 import { TvMode } from "./features/tv/TvMode";
+import { EventDataContext } from "./hooks/eventDataContext";
 import { useEventData } from "./hooks/useEventData";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { DEFAULT_TAGLINE, fileToLogoDataUrl } from "./lib/branding";
@@ -40,6 +41,7 @@ import { THEME, netColorStyle, styles } from "./theme";
 export default function App() {
   const isWide = useMediaQuery("(min-width: 820px)"); // 2-column Admin on tablets/desktops
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
+  const data = useEventData({ tab }); // shared with every screen through EventDataContext
   const {
     status,
     lastLoadErrors,
@@ -77,7 +79,7 @@ export default function App() {
     teamMembersByTeamMap,
     activeRound,
     scoresByRoundThenPlayer,
-  } = useEventData({ tab });
+  } = data;
 
   // Broadcast
   const [acePopup, setAcePopup] = useState(null);
@@ -1809,6 +1811,7 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
 }
 
   return (
+  <EventDataContext.Provider value={data}>
   <div className="appPage" style={styles.page}>
 
     {/* Scorecard printing: only while a print is in progress (printAllOn),
@@ -3738,5 +3741,6 @@ async function runTeeSheetImport(rows, { replace, targetRoundId, say }) {
   />
 )}
 </div>
+  </EventDataContext.Provider>
   );
 }
