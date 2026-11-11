@@ -114,3 +114,65 @@ export function drinkProgress(count, holesPlayed, settings) {
   else if (count < Math.floor((target * played) / 18)) status = "behind";
   return { count, target, status };
 }
+
+// ---------- logging: counts, the "can I log another?" rule, and the unsent-drinks queue ----------
+
+/** Drinks a player has logged on one hole of a round. */
+export function drinksOnHole(drinks, playerId, roundId, hole) {
+  return (drinks || []).filter((d) => d.player_id === playerId && d.round_id === roundId && d.hole === hole).length;
+}
+
+/** Drinks a player has logged in a whole round. */
+export function drinksInRound(drinks, playerId, roundId) {
+  return (drinks || []).filter((d) => d.player_id === playerId && d.round_id === roundId).length;
+}
+
+/** Stroke Credit stops at the maximum (the button shows "Max reached"); Minimum Drinks never blocks. */
+export function canLogDrink(countInRound, settings) {
+  if (!settings?.enabled) return { ok: false, reason: "off" };
+  if (settings.variant === "credit" && countInRound >= settings.maxDrinks) return { ok: false, reason: "max" };
+  return { ok: true, reason: null };
+}
+
+/** A fresh id the phone can choose itself, so a retry after a dropped signal can't log a drink twice. */
+export function newDrinkId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const hex = (n) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-${"89ab"[Math.floor(Math.random() * 4)]}${hex(3)}-${hex(12)}`;
+}
+
+/**
+ * Drinks as this phone sees them: what the database has, plus drinks logged here that have not uploaded yet,
+ * minus drinks undone here that have not been deleted yet.
+ * `ops` = [{ op: "add", id, player_id, round_id, hole, created_at } | { op: "remove", id }], oldest first.
+ */
+export function mergeDrinks(serverDrinks, ops) {
+  const removed = new Set((ops || []).filter((o) => o.op === "remove").map((o) => o.id));
+  const out = (serverDrinks || []).filter((d) => !removed.has(d.id));
+  const have = new Set(out.map((d) => d.id));
+  for (const o of ops || []) {
+    if (o.op !== "add" || removed.has(o.id) || have.has(o.id)) continue;
+    out.push({ id: o.id, player_id: o.player_id, round_id: o.round_id, hole: o.hole, note: o.note ?? null, created_at: o.created_at });
+    have.add(o.id);
+  }
+  return out;
+}
+
+/** Queue a new drink. */
+export function queueDrinkAdd(ops, drink) {
+  return [...(ops || []), { op: "add", ...drink }];
+}
+
+/**
+ * Undo the most recent drink a player logged on a hole. A drink that has not uploaded yet is simply taken back
+ * out of the queue; one that has is queued for deletion. Returns { ops, undoneId } (undoneId null if there was none).
+ */
+export function queueDrinkUndo(ops, view, { player_id, round_id, hole }) {
+  const latest = sortDrinks((view || []).filter((d) => d.player_id === player_id && d.round_id === round_id && d.hole === hole)).pop();
+  if (!latest) return { ops: ops || [], undoneId: null };
+  const pendingAdd = (ops || []).some((o) => o.op === "add" && o.id === latest.id);
+  return {
+    ops: pendingAdd ? (ops || []).filter((o) => !(o.op === "add" && o.id === latest.id)) : [...(ops || []), { op: "remove", id: latest.id }],
+    undoneId: latest.id,
+  };
+}

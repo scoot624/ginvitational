@@ -1,3 +1,4 @@
+import { DrinkControls } from "../drinks/DrinkControls";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { PARS } from "../../lib/course";
 import { clampInt } from "../../lib/golf";
@@ -9,6 +10,7 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
   const {
     appSettings,
     rounds,
+    drinking,
   } = useEventDataContext();
 
   return (
@@ -79,7 +81,7 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
 
                     <div style={{ display: "grid", gap: 10 }}>
                       {holeEntryGroups(hole, activePlayers).map((grp) => (
-                        <div key={grp.key} style={styles.scoreRow}>
+                        <div key={grp.key} style={drinking.enabled ? { ...styles.scoreRow, flexWrap: "wrap" } : styles.scoreRow}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
                               {grp.players.map((p) => p.name).join(" / ")}
@@ -105,6 +107,20 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
                               });
                             }}
                           />
+
+                          {/* Drinking Mode: + Drink / undo on their own full-width line (nothing shows when the mode is off).
+                              A shared ball still logs drinks per person. */}
+                          {drinking.enabled ? (
+                            <div style={{ flexBasis: "100%" }}>
+                              {grp.shared ? (
+                                grp.players.map((p) => (
+                                  <DrinkControls key={p.id} player={p} hole={hole} roundId={activeFoursome.round_id} showName />
+                                ))
+                              ) : (
+                                <DrinkControls player={grp.players[0]} hole={hole} roundId={activeFoursome.round_id} />
+                              )}
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>

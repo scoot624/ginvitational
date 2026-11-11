@@ -121,3 +121,74 @@ test('Minimum Drinks progress: met / on pace / behind / short', () => {
   // a minimum of zero is always met
   assert.equal(drinkProgress(0, 0, normalizeDrinking({ enabled: true, variant: 'min', minDrinks: 0 })).status, 'met');
 });
+
+// ---------- logging ----------
+import {
+  drinksOnHole,
+  drinksInRound,
+  canLogDrink,
+  newDrinkId,
+  mergeDrinks,
+  queueDrinkAdd,
+  queueDrinkUndo,
+} from '../src/lib/drinks.js';
+
+test('per-hole and per-round drink counts', () => {
+  const drinks = [d('1', 'a', 3, 'T1'), d('2', 'a', 3, 'T2'), d('3', 'a', 5, 'T3'), d('4', 'a', 3, 'T4', 'r2'), d('5', 'b', 3, 'T5')];
+  assert.equal(drinksOnHole(drinks, 'a', 'r1', 3), 2);
+  assert.equal(drinksOnHole(drinks, 'a', 'r1', 4), 0);
+  assert.equal(drinksInRound(drinks, 'a', 'r1'), 3);
+  assert.equal(drinksInRound(drinks, 'a', 'r2'), 1);
+});
+
+test('canLogDrink: Stroke Credit stops at the maximum, Minimum Drinks never blocks, off never logs', () => {
+  const cr = normalizeDrinking({ enabled: true, variant: 'credit', maxDrinks: 3 });
+  assert.deepEqual(canLogDrink(2, cr), { ok: true, reason: null });
+  assert.deepEqual(canLogDrink(3, cr), { ok: false, reason: 'max' });
+  assert.deepEqual(canLogDrink(9, cr), { ok: false, reason: 'max' });
+  const min = normalizeDrinking({ enabled: true, variant: 'min', minDrinks: 4 });
+  assert.equal(canLogDrink(0, min).ok, true);
+  assert.equal(canLogDrink(50, min).ok, true);
+  assert.deepEqual(canLogDrink(0, normalizeDrinking({ enabled: false })), { ok: false, reason: 'off' });
+});
+
+test('newDrinkId makes distinct uuid-shaped ids', () => {
+  const ids = new Set(Array.from({ length: 50 }, () => newDrinkId()));
+  assert.equal(ids.size, 50);
+  for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+test('mergeDrinks shows unsent drinks and hides undone ones', () => {
+  const server = [d('s1', 'a', 2, '2026-06-01T10:00:00Z'), d('s2', 'a', 4, '2026-06-01T10:10:00Z')];
+  const ops = [
+    { op: 'add', id: 'p1', player_id: 'a', round_id: 'r1', hole: 5, created_at: '2026-06-01T10:20:00Z' },
+    { op: 'remove', id: 's2' },
+  ];
+  const view = mergeDrinks(server, ops);
+  assert.deepEqual(view.map((x) => x.id).sort(), ['p1', 's1']);
+  // an add that has since reached the server is not counted twice
+  const both = mergeDrinks([...server, d('p1', 'a', 5, '2026-06-01T10:20:00Z')], ops);
+  assert.equal(both.filter((x) => x.id === 'p1').length, 1);
+  // an add that was also removed never shows
+  assert.equal(mergeDrinks([], [{ op: 'add', id: 'x', player_id: 'a', round_id: 'r1', hole: 1, created_at: 'T' }, { op: 'remove', id: 'x' }]).length, 0);
+});
+
+test('undo takes a not-yet-uploaded drink back out of the queue, and queues a delete for an uploaded one', () => {
+  const server = [d('s1', 'a', 7, '2026-06-01T10:00:00Z')];
+  let ops = queueDrinkAdd([], { id: 'p1', player_id: 'a', round_id: 'r1', hole: 7, created_at: '2026-06-01T10:30:00Z' });
+  let view = mergeDrinks(server, ops);
+  assert.equal(drinksOnHole(view, 'a', 'r1', 7), 2);
+  // newest first: the unsent one is undone and simply leaves the queue
+  let r = queueDrinkUndo(ops, view, { player_id: 'a', round_id: 'r1', hole: 7 });
+  assert.equal(r.undoneId, 'p1');
+  assert.deepEqual(r.ops, []);
+  // now only the uploaded one is left: undoing it queues a delete
+  ops = r.ops;
+  view = mergeDrinks(server, ops);
+  r = queueDrinkUndo(ops, view, { player_id: 'a', round_id: 'r1', hole: 7 });
+  assert.equal(r.undoneId, 's1');
+  assert.deepEqual(r.ops, [{ op: 'remove', id: 's1' }]);
+  assert.equal(drinksOnHole(mergeDrinks(server, r.ops), 'a', 'r1', 7), 0);
+  // nothing to undo
+  assert.equal(queueDrinkUndo([], [], { player_id: 'a', round_id: 'r1', hole: 9 }).undoneId, null);
+});

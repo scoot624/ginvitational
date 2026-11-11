@@ -11,6 +11,7 @@ import { EnterScoresScreen } from "./features/scoring/EnterScoresScreen";
 import { pendingKey, readPendingScores, writePendingScores } from "./features/scoring/pendingScores";
 import { TvMode } from "./features/tv/TvMode";
 import { EventDataContext } from "./hooks/eventDataContext";
+import { useDrinkLogging } from "./hooks/useDrinkLogging";
 import { useEventData } from "./hooks/useEventData";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { DEFAULT_TAGLINE } from "./lib/branding";
@@ -34,6 +35,9 @@ export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const data = useEventData({ tab }); // shared with every screen through EventDataContext
   const {
+    drinks,
+    loadDrinks,
+    drinking,
     status,
     players,
     scores,
@@ -63,6 +67,9 @@ export default function App() {
     activeRound,
     scoresByRoundThenPlayer,
   } = data;
+
+  // Drinking Mode: logging drinks (saved on the phone first, then uploaded) and the drinks as this phone sees them
+  const drinkLog = useDrinkLogging({ drinks, loadDrinks, drinking });
 
   // Broadcast
   const [acePopup, setAcePopup] = useState(null);
@@ -770,7 +777,7 @@ export default function App() {
   }
 
   return (
-  <EventDataContext.Provider value={data}>
+  <EventDataContext.Provider value={{ ...data, drinksView: drinkLog.drinksView, drinkLog }}>
   <div className="appPage" style={styles.page}>
 
     {/* Scorecard printing: only while a print is in progress (printAllOn),
@@ -862,7 +869,7 @@ export default function App() {
           </header>
         )}
 
-        {pendingScores.length > 0 && (
+        {pendingScores.length + drinkLog.pendingCount > 0 && (
           <div
             role="status"
             style={{
@@ -878,12 +885,26 @@ export default function App() {
           >
             <div style={{ minWidth: 0, fontSize: 14 }}>
               <b>
-                {pendingScores.length} score{pendingScores.length === 1 ? "" : "s"} saved on this phone
+                {[
+                  pendingScores.length ? `${pendingScores.length} score${pendingScores.length === 1 ? "" : "s"}` : null,
+                  drinkLog.pendingCount ? `${drinkLog.pendingCount} drink change${drinkLog.pendingCount === 1 ? "" : "s"}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" and ")}{" "}
+                saved on this phone
               </b>{" "}
               — waiting to upload. Keep this page open; it keeps trying.
-              {pendingErr ? <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 4 }}>{pendingErr}</div> : null}
+              {pendingErr || drinkLog.error ? (
+                <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 4 }}>{pendingErr || drinkLog.error}</div>
+              ) : null}
             </div>
-            <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={uploadPendingScores}>
+            <button
+              style={{ ...styles.smallBtn, minHeight: 44 }}
+              onClick={() => {
+                uploadPendingScores();
+                drinkLog.uploadPendingDrinks();
+              }}
+            >
               Retry now
             </button>
           </div>
