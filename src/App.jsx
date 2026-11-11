@@ -11,7 +11,6 @@ import { EnterScoresScreen } from "./features/scoring/EnterScoresScreen";
 import { pendingKey, readPendingScores, writePendingScores } from "./features/scoring/pendingScores";
 import { TvMode } from "./features/tv/TvMode";
 import { EventDataContext } from "./hooks/eventDataContext";
-import { useDrinkLogging } from "./hooks/useDrinkLogging";
 import { useEventData } from "./hooks/useEventData";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { DEFAULT_TAGLINE } from "./lib/branding";
@@ -21,6 +20,7 @@ import { PARS, STROKE_INDEX, netScoreForHole } from "./lib/course";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
 import { isMatchFormat } from "./lib/gameConfig";
 import { clampInt } from "./lib/golf";
+import { creditMap, drinksForRound } from "./lib/drinks";
 import { buildLeaderboardRows } from "./lib/leaderboard";
 import { computeMatchResult } from "./lib/matchPlay";
 import { formStreak } from "./lib/streaks";
@@ -35,9 +35,10 @@ export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const data = useEventData({ tab }); // shared with every screen through EventDataContext
   const {
-    drinks,
-    loadDrinks,
+    drinkLog,
+    drinksView,
     drinking,
+    creditByRound,
     status,
     players,
     scores,
@@ -67,9 +68,6 @@ export default function App() {
     activeRound,
     scoresByRoundThenPlayer,
   } = data;
-
-  // Drinking Mode: logging drinks (saved on the phone first, then uploaded) and the drinks as this phone sees them
-  const drinkLog = useDrinkLogging({ drinks, loadDrinks, drinking });
 
   // Broadcast
   const [acePopup, setAcePopup] = useState(null);
@@ -201,6 +199,7 @@ export default function App() {
             { ...m, sideA, sideB },
             {
               scoresByPlayer: scoresByRoundThenPlayer.get(m.round_id) || new Map(),
+              credit: creditByRound.get(m.round_id),
               PARS,
               STROKE_INDEX,
               handicapMode: cfg.handicapMode || "off_lowest",
@@ -216,7 +215,7 @@ export default function App() {
       out.set(g.id, entries);
     }
     return out;
-  }, [games, matches, matchPlayers, playersById, scoresByRoundThenPlayer, foursomes, foursomePlayers, fieldOffset]);
+  }, [games, matches, matchPlayers, playersById, scoresByRoundThenPlayer, creditByRound, foursomes, foursomePlayers, fieldOffset]);
 
   const gameResults = useMemo(() => {
     const activeGames = games.filter((g) => g.active);
@@ -235,7 +234,7 @@ export default function App() {
     if (roundSelection === ROUND_OVERALL) {
       return activeGames.map((game) => {
         const perRoundRows = rounds.map((r) =>
-          computeGameRows(game, { ...ctxBase, scoresByPlayer: scoresByRoundThenPlayer.get(r.id) || new Map() })
+          computeGameRows(game, { ...ctxBase, scoresByPlayer: scoresByRoundThenPlayer.get(r.id) || new Map(), credit: creditByRound.get(r.id) })
         );
         return { game, rows: mergeGameRowsAcrossRounds(perRoundRows) };
       });
@@ -247,7 +246,7 @@ export default function App() {
 
     return activeGames.map((game) => ({
       game,
-      rows: computeGameRows(game, { ...ctxBase, scoresByPlayer }),
+      rows: computeGameRows(game, { ...ctxBase, scoresByPlayer, credit: roundSelection ? creditByRound.get(roundSelection) : undefined }),
     }));
   }, [
     games,
@@ -257,6 +256,7 @@ export default function App() {
     playersById,
     rounds,
     scoresByRoundThenPlayer,
+    creditByRound,
     selectedRoundId,
     activeRound,
     scores,
@@ -301,7 +301,7 @@ export default function App() {
   const liveRef = useRef(null);
   const tickBusyRef = useRef(false);
   useEffect(() => {
-    liveRef.current = { leaderboardRows, scores, players, rounds, foursomes, foursomePlayers, broadcastMsgs, eventName, fieldOffset };
+    liveRef.current = { leaderboardRows, scores, players, rounds, foursomes, foursomePlayers, broadcastMsgs, eventName, fieldOffset, drinksView, drinking };
   });
 
   async function insertBroadcastRows(rows) {
@@ -346,7 +346,7 @@ export default function App() {
       const rows = s.leaderboardRows.map((r) => {
         const vsPar = {};
         for (const [h, g] of Object.entries(r.scoresByHole)) {
-          vsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h)) - PARS[Number(h) - 1];
+          vsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h), r.creditByHole?.[h] || 0) - PARS[Number(h) - 1];
         }
         return {
           id: r.id,
@@ -362,7 +362,12 @@ export default function App() {
       });
 
       // "Standings a few minutes ago": the same leaderboard math, ignoring scores saved since.
-      const prevRows = buildLeaderboardRows(s.players, s.scores, roundId, s.fieldOffset, now - SWING_WINDOW_MS);
+      // Drinking Mode's Stroke Credit counts as it stood then too, so a drink logged just now doesn't read as a place gained.
+      const prevCredit = creditMap(
+        drinksForRound(s.drinksView, roundId).filter((d) => new Date(d.created_at).getTime() <= now - SWING_WINDOW_MS),
+        s.drinking
+      );
+      const prevRows = buildLeaderboardRows(s.players, s.scores, roundId, s.fieldOffset, now - SWING_WINDOW_MS, prevCredit);
       const prevRanks = new Map(prevRows.filter((r) => r.holesPlayed > 0).map((r) => [r.id, r.displayRank]));
       const fieldIds = new Set(startByPlayer.keys());
 
@@ -777,7 +782,7 @@ export default function App() {
   }
 
   return (
-  <EventDataContext.Provider value={{ ...data, drinksView: drinkLog.drinksView, drinkLog }}>
+  <EventDataContext.Provider value={data}>
   <div className="appPage" style={styles.page}>
 
     {/* Scorecard printing: only while a print is in progress (printAllOn),

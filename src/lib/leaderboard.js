@@ -1,14 +1,17 @@
 // The leaderboard rows: every player's score, net-to-par and rank for the active round.
 
 import { PARS, netScoreForHole } from "./course.js";
+import { creditFor } from "./drinks.js";
 import { clampInt, lastName } from "./golf.js";
 
 /**
  * The leaderboard rows (everything the Leaderboard, TV Mode and the Broadcast
  * rank from). `cutoffMs`, when given, ignores scores saved after that moment —
  * that's how the Broadcast asks "what were the standings a few minutes ago?".
+ * `credit` is Drinking Mode's Stroke Credit for this round (Map playerId -> {hole: strokes});
+ * left out, nothing changes.
  */
-export function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset, cutoffMs = null) {
+export function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset, cutoffMs = null, credit = null) {
   // last-write-wins scores by player/hole
   const scoresByPlayer = new Map();
   for (const s of scores) {
@@ -47,7 +50,7 @@ export function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset
     // Real net (stroke index allocation)
     const netGross = playedHoles.reduce((acc, h) => {
       const grossHole = scoresByHole[h];
-      const netHole = netScoreForHole(grossHole, playingHandicap, h);
+      const netHole = netScoreForHole(grossHole, playingHandicap, h, creditFor(credit, p.id, h));
       return acc + netHole;
     }, 0);
 
@@ -63,6 +66,7 @@ export function buildLeaderboardRows(players, scores, activeRoundId, fieldOffset
       holesPlayed,
       netToPar,
       scoresByHole,
+      creditByHole: (credit && credit.get(p.id)) || {},
       gross,
     };
   });

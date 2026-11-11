@@ -27,7 +27,9 @@ export function ScorecardDetail({ player, game }) {
       const si = STROKE_INDEX[h - 1];
       const strokes = isGross ? 0 : strokesOnHoleForGame(player.playingHandicap, pct, h, STROKE_INDEX);
 
-      const countedSc = sc != null ? sc - strokes : null;
+      // Drinking Mode's Stroke Credit comes off the net on the hole where the drink was logged (gross is never touched).
+      const credit = isGross ? 0 : player.creditByHole?.[h] || 0;
+      const countedSc = sc != null ? sc - strokes - credit : null;
       const netDiff = countedSc != null ? countedSc - par : null;
       if (netDiff != null) cum += netDiff;
 

@@ -7,6 +7,7 @@
 // shot): two a side, ONE score per side per hole (Enter Scores saves the same
 // value under both partners, the same way it does for a scramble).
 
+import { creditFor, sharedCredit } from "./drinks.js";
 import { strokesOnHoleForGame } from "./gameCalc.js";
 import { shortName } from "./broadcastEngine.js";
 import { clampInt } from "./golf.js";
@@ -69,11 +70,12 @@ function matchHandicaps(match, { handicapMode, handicapPct, fieldOffset }) {
 /**
  * match: { id, match_type, sideA: [{id,name,handicap}], sideB: [...] }
  * ctx:   { scoresByPlayer: Map(pid -> {hole: gross}), PARS, STROKE_INDEX,
- *          handicapMode, handicapPct, fieldOffset, startHole, pointsWin, pointsHalf }
+ *          handicapMode, handicapPct, fieldOffset, startHole, pointsWin, pointsHalf,
+ *          credit (optional: Drinking Mode's Stroke Credit, Map pid -> {hole: strokes}) }
  * Returns the match's state; see the fields below.
  */
 export function computeMatchResult(match, ctx) {
-  const { scoresByPlayer, STROKE_INDEX } = ctx;
+  const { scoresByPlayer, STROKE_INDEX, credit } = ctx;
   const pointsWin = ctx.pointsWin ?? 1;
   const pointsHalf = ctx.pointsHalf ?? 0.5;
   const hcp = matchHandicaps(match, ctx);
@@ -87,12 +89,12 @@ export function computeMatchResult(match, ctx) {
   const sideNet = (side, key, h) => {
     if (shared) {
       const g = side.map((p) => grossOf(p, h)).find((v) => v != null);
-      return g == null ? null : g - strokes(hcp.team[key], h);
+      return g == null ? null : g - strokes(hcp.team[key], h) - sharedCredit(credit, side.map((p) => p.id), h);
     }
     const nets = [];
     side.forEach((p, i) => {
       const g = grossOf(p, h);
-      if (g != null) nets.push(g - strokes(hcp[key][i], h));
+      if (g != null) nets.push(g - strokes(hcp[key][i], h) - creditFor(credit, p.id, h));
     });
     if (nets.length === 0) return null;
     // Singles needs the one player; four-ball takes the better of whoever has scored.

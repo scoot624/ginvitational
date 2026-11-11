@@ -27,6 +27,7 @@ export function strokesOnHole(courseHcp, holeNum) {
   return strokesForHandicap(courseHcp, holeNum, STROKE_INDEX);
 }
 
-export function netScoreForHole(grossScore, courseHcp, holeNum) {
-  return grossScore - strokesOnHole(courseHcp, holeNum);
+/** `credit` is Drinking Mode's Stroke Credit on that hole (0 when the mode is off): it lowers net, never gross. */
+export function netScoreForHole(grossScore, courseHcp, holeNum, credit = 0) {
+  return grossScore - strokesOnHole(courseHcp, holeNum) - credit;
 }

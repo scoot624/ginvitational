@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildScoresByPlayer } from "../lib/gameCalc";
-import { normalizeDrinking } from "../lib/drinks";
+import { creditMap, drinksForRound, normalizeDrinking } from "../lib/drinks";
 import { clampInt } from "../lib/golf";
 import { buildLeaderboardRows } from "../lib/leaderboard";
+import { useDrinkLogging } from "./useDrinkLogging";
 import { fetchAllRows, supabase } from "../lib/supabase";
 import { errToText } from "../lib/util";
 
@@ -384,11 +385,6 @@ export function useEventData({ tab }) {
     return Math.min(...players.map((p) => clampInt(p.handicap, 0)));
   }, [players, appSettings.handicap_basis]);
 
-  const leaderboardRows = useMemo(
-    () => buildLeaderboardRows(players, scores, rounds.find((r) => r.is_active)?.id ?? null, fieldOffset),
-    [players, scores, rounds, fieldOffset]
-  );
-
   // --- Multi-Game (Stage 2) ---
   // Computed alongside the original leaderboardRows above, which is left
   // untouched. Nothing renders from this yet (see Stage 4).
@@ -414,6 +410,24 @@ export function useEventData({ tab }) {
     drinkingEnabledRef.current = drinking.enabled;
   }, [drinking.enabled]);
 
+  // Logging drinks (saved on the phone first, then uploaded) and the drinks as this phone sees them
+  // (the database's plus unsent ones, minus undone ones). Every board below reads this one list.
+  const drinkLog = useDrinkLogging({ drinks, loadDrinks, drinking });
+  const drinksView = drinkLog.drinksView;
+
+  // Stroke Credit, one map per round: Map(roundId -> Map(playerId -> {hole: strokes})). Empty unless the mode is on
+  // and set to Stroke Credit, so with it off every number below is exactly what it always was.
+  const creditByRound = useMemo(() => {
+    const out = new Map();
+    for (const r of rounds) out.set(r.id, creditMap(drinksForRound(drinksView, r.id), drinking));
+    return out;
+  }, [rounds, drinksView, drinking]);
+
+  const leaderboardRows = useMemo(() => {
+    const activeId = rounds.find((r) => r.is_active)?.id ?? null;
+    return buildLeaderboardRows(players, scores, activeId, fieldOffset, null, creditByRound.get(activeId) || null);
+  }, [players, scores, rounds, fieldOffset, creditByRound]);
+
   const activeRound = useMemo(() => rounds.find((r) => r.is_active) || rounds[0] || null, [rounds]);
 
   // { [roundId]: Map(playerId -> {hole: grossScore}) } — one scoped map per round.
@@ -425,6 +439,9 @@ export function useEventData({ tab }) {
 
   return {
     drinks,
+    drinksView,
+    drinkLog,
+    creditByRound,
     setDrinks,
     drinksTableReady,
     drinkingColumnReady,

@@ -23,7 +23,7 @@ export function formStreak(p, startHole) {
   for (let i = 0; i < 18; i++) {
     const h = ((start - 1 + i) % 18) + 1;
     const gross = p.scoresByHole[h];
-    vsPar.push(gross == null ? null : netScoreForHole(gross, p.playingHandicap, h) - PARS[h - 1]);
+    vsPar.push(gross == null ? null : netScoreForHole(gross, p.playingHandicap, h, p.creditByHole?.[h] || 0) - PARS[h - 1]);
   }
 
   let last = -1;
