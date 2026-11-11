@@ -21,6 +21,7 @@ import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from 
 import { isMatchFormat } from "./lib/gameConfig";
 import { clampInt } from "./lib/golf";
 import { creditMap, drinksForRound } from "./lib/drinks";
+import { computeDrinkEvents } from "./lib/drinkEvents";
 import { buildLeaderboardRows } from "./lib/leaderboard";
 import { computeMatchResult } from "./lib/matchPlay";
 import { formStreak } from "./lib/streaks";
@@ -345,8 +346,10 @@ export default function App() {
 
       const rows = s.leaderboardRows.map((r) => {
         const vsPar = {};
+        const rawVsPar = {};
         for (const [h, g] of Object.entries(r.scoresByHole)) {
-          vsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h), r.creditByHole?.[h] || 0) - PARS[Number(h) - 1];
+          rawVsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h)) - PARS[Number(h) - 1];
+          vsPar[h] = rawVsPar[h] - (r.creditByHole?.[h] || 0);
         }
         return {
           id: r.id,
@@ -356,6 +359,7 @@ export default function App() {
           displayRank: r.displayRank,
           gross: r.scoresByHole,
           vsPar,
+          rawVsPar, // net-to-par WITHOUT Stroke Credit: the drink report is judged on this
           startHole: startByPlayer.get(r.id) ?? 1,
           group: groupByPlayer.get(r.id) || null,
         };
@@ -382,6 +386,20 @@ export default function App() {
         fieldIds,
         messages: s.broadcastMsgs,
       });
+      // Drinking Mode cards (nothing at all while the mode is off)
+      events.push(
+        ...computeDrinkEvents({
+          now,
+          roundId,
+          drinking: s.drinking,
+          drinks: s.drinksView,
+          pars: PARS,
+          rows,
+          scoreTimes,
+          fieldIds,
+          messages: s.broadcastMsgs,
+        })
+      );
       if (events.length === 0) return;
       await insertBroadcastRows(planPosts(events, { now, messages: s.broadcastMsgs }));
       await loadBroadcast();
@@ -390,12 +408,13 @@ export default function App() {
     }
   }
 
-  // Check for new cards whenever fresh scores/players arrive (and once the saved log has loaded).
+  // Check for new cards whenever fresh scores/players/drinks arrive (and once the saved log, the rounds and the
+  // Drinking Mode setting have loaded, so the first check already knows which round is active).
   useEffect(() => {
     if (!broadcastLoaded) return;
     runBroadcastTick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scores, players, broadcastLoaded]);
+  }, [scores, players, broadcastLoaded, drinksView, rounds, drinking.enabled]);
 
   // Unsent scores: retry every 10 seconds, the moment the phone comes back online, and on load.
   const hasPendingScores = pendingScores.length > 0;
