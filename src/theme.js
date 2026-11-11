@@ -71,6 +71,12 @@ export function netColorStyle(netToPar) {
 }
 
 /** Styles */
+/**
+ * Phone browsers (iPhone Safari especially) give a time box a built-in minimum width that ignores the column it
+ * sits in, so it runs over the box next to it. Spread this onto any <input type="time"> style to keep it in its column.
+ */
+export const timeInputFix = { minWidth: 0, maxWidth: "100%", display: "block", textAlign: "left", WebkitAppearance: "none", appearance: "none" };
+
 export const styles = {
   page: {
     minHeight: "100vh",

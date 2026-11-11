@@ -5,7 +5,7 @@ import { clampInt, hcpLabel } from "../../lib/golf";
 import { supabase } from "../../lib/supabase";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { errToText, makeCode } from "../../lib/util";
-import { THEME, styles } from "../../theme";
+import { THEME, styles, timeInputFix } from "../../theme";
 
 const toTimeInput = (t) => (t ? String(t).slice(0, 5) : "");
 
@@ -133,24 +133,26 @@ function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, o
 
       {editing ? (
         <div style={{ display: "grid", gap: 10, marginTop: 12, gridTemplateColumns: "minmax(0, 1fr)" }}>
-          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 64px" }}>
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
             <label style={styles.label}>
               Group name
               <input style={field} value={name} onChange={(e) => setName(e.target.value)} />
             </label>
-            <label style={styles.label}>
-              Tee time
-              <input type="time" style={field} value={time} onChange={(e) => setTime(e.target.value)} />
-            </label>
-            <label style={styles.label}>
-              Hole
-              <input
-                style={field}
-                inputMode="numeric"
-                value={hole}
-                onChange={(e) => setHole(e.target.value.replace(/[^\d]/g, "").slice(0, 2))}
-              />
-            </label>
+            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr) 88px" }}>
+              <label style={styles.label}>
+                Tee time
+                <input type="time" style={{ ...field, ...timeInputFix }} value={time} onChange={(e) => setTime(e.target.value)} />
+              </label>
+              <label style={styles.label}>
+                Hole
+                <input
+                  style={field}
+                  inputMode="numeric"
+                  value={hole}
+                  onChange={(e) => setHole(e.target.value.replace(/[^\d]/g, "").slice(0, 2))}
+                />
+              </label>
+            </div>
           </div>
           <button
             style={{ ...styles.bigBtn, minHeight: 48, opacity: busy ? 0.6 : 1 }}
@@ -563,24 +565,26 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
       {addingGroup ? (
         <div style={{ ...styles.foursomeCard, display: "grid", gap: 10 }}>
           <div style={styles.sectionLabel}>New group</div>
-          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 64px" }}>
+          <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
             <label style={styles.label}>
               Group name
               <input style={field} value={gDraft.name} onChange={(e) => setGDraft({ ...gDraft, name: e.target.value })} />
             </label>
-            <label style={styles.label}>
-              Tee time
-              <input type="time" style={field} value={gDraft.time} onChange={(e) => setGDraft({ ...gDraft, time: e.target.value })} />
-            </label>
-            <label style={styles.label}>
-              Hole
-              <input
-                style={field}
-                inputMode="numeric"
-                value={gDraft.hole}
-                onChange={(e) => setGDraft({ ...gDraft, hole: e.target.value.replace(/[^\d]/g, "").slice(0, 2) })}
-              />
-            </label>
+            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr) 88px" }}>
+              <label style={styles.label}>
+                Tee time
+                <input type="time" style={{ ...field, ...timeInputFix }} value={gDraft.time} onChange={(e) => setGDraft({ ...gDraft, time: e.target.value })} />
+              </label>
+              <label style={styles.label}>
+                Hole
+                <input
+                  style={field}
+                  inputMode="numeric"
+                  value={gDraft.hole}
+                  onChange={(e) => setGDraft({ ...gDraft, hole: e.target.value.replace(/[^\d]/g, "").slice(0, 2) })}
+                />
+              </label>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button style={{ ...styles.bigBtn, flex: 1, minHeight: 48 }} disabled={busy} onClick={createGroup}>

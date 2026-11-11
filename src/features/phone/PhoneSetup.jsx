@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPhoneGroups, formatTeeTime, phoneDraftToSheetRows, phoneSlot } from "../../lib/teeSheet";
-import { THEME, styles } from "../../theme";
+import { THEME, styles, timeInputFix } from "../../theme";
 
 const PHONE_DRAFT_KEY = "ginv_phone_setup_draft_v1";
 
@@ -449,7 +449,7 @@ export function PhoneSetup({
             <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
               <label style={styles.label}>
                 First tee time
-                <input type="time" style={bigField} value={settings.firstTee} onChange={(e) => applyTee({ ...settings, firstTee: e.target.value })} />
+                <input type="time" style={{ ...bigField, ...timeInputFix }} value={settings.firstTee} onChange={(e) => applyTee({ ...settings, firstTee: e.target.value })} />
               </label>
               <label style={styles.label}>
                 Minutes between groups
@@ -499,30 +499,32 @@ export function PhoneSetup({
             const full = g.playerIds.length >= 4;
             return (
               <div key={gi} style={styles.subCard}>
-                <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 64px" }}>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr)" }}>
                   <label style={styles.label}>
                     Group name
                     <input style={bigField} value={g.name} onChange={(e) => setGroup(gi, { name: e.target.value })} />
                   </label>
-                  <label style={styles.label}>
-                    Tee time
-                    <input type="time" style={bigField} value={g.teeTime} onChange={(e) => setGroup(gi, { teeTime: e.target.value })} />
-                  </label>
-                  <label style={styles.label}>
-                    Hole
-                    <input
-                      style={bigField}
-                      inputMode="numeric"
-                      value={g.startingHole}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/[^\d]/g, "").slice(0, 2);
-                        setGroup(gi, { startingHole: v === "" ? "" : Math.min(18, Number(v)) });
-                      }}
-                      onBlur={() => {
-                        if (!(Number(g.startingHole) >= 1)) setGroup(gi, { startingHole: 1 });
-                      }}
-                    />
-                  </label>
+                  <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr) 88px" }}>
+                    <label style={styles.label}>
+                      Tee time
+                      <input type="time" style={{ ...bigField, ...timeInputFix }} value={g.teeTime} onChange={(e) => setGroup(gi, { teeTime: e.target.value })} />
+                    </label>
+                    <label style={styles.label}>
+                      Hole
+                      <input
+                        style={bigField}
+                        inputMode="numeric"
+                        value={g.startingHole}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/[^\d]/g, "").slice(0, 2);
+                          setGroup(gi, { startingHole: v === "" ? "" : Math.min(18, Number(v)) });
+                        }}
+                        onBlur={() => {
+                          if (!(Number(g.startingHole) >= 1)) setGroup(gi, { startingHole: 1 });
+                        }}
+                      />
+                    </label>
+                  </div>
                 </div>
                 <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
                   {g.playerIds.map((pid) => {
