@@ -123,12 +123,15 @@ export const COPY = {
 };
 
 /** Variant for the Nth card of a kind: seeded by the card's key, then rotated by how many came before, so one kind never repeats back to back. */
-function pickVariant(templates, seedKey, sentBefore) {
+export function pickVariant(templates, seedKey, sentBefore) {
   return templates[(fnv1a(seedKey) + sentBefore) % templates.length];
 }
 
 // What a card of each kind is called when it is folded into a combined card.
 const baseKind = (kind) => String(kind || "").replace(/^hidden_/, "");
+
+/** Drinking Mode cards ("drink_logged", "drink_min", "drinkreport", ...). They have their own lane in planPosts. */
+export const isDrinkKind = (kind) => /^(hidden_)?drink/.test(String(kind || ""));
 
 /**
  * Final results, once the whole field has finished: a Champion card and a LEX
@@ -422,7 +425,12 @@ export function planPosts(events, { now, messages }) {
 
   const standalone = [];
   const playerCards = [];
+  const drinkCards = []; // Drinking Mode: never held back or merged with the score cards, but a flood becomes one card
   for (const e of events) {
+    if (isDrinkKind(e.kind)) {
+      (e.playerId == null ? standalone : drinkCards).push(e);
+      continue;
+    }
     const cooled = (e.kind === "fire" || e.kind === "ice" || e.kind === "swing") && recent(e.kind, e.playerId);
     if (cooled) {
       hide(e);
@@ -456,6 +464,18 @@ export function planPosts(events, { now, messages }) {
     for (const e of kept) hide(e);
   } else {
     for (const e of kept) out.push(e);
+  }
+  if (drinkCards.length > ROUNDUP_OVER) {
+    const keys = drinkCards.map((e) => safeDedupeKey(e.dedupe)).sort();
+    out.push({
+      kind: "drink_roundup",
+      text: `Around the course: ${drinkCards.map((e) => e.text).join("  •  ")}`,
+      dedupe: ["drink_roundup", fnv1a(keys.join(",")).toString(36)],
+      playerId: null,
+    });
+    for (const e of drinkCards) hide(e);
+  } else {
+    for (const e of drinkCards) out.push(e);
   }
   for (const e of standalone) out.push(e);
   return out;

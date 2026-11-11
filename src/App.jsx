@@ -20,6 +20,8 @@ import { PARS, STROKE_INDEX, netScoreForHole } from "./lib/course";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
 import { isMatchFormat } from "./lib/gameConfig";
 import { clampInt } from "./lib/golf";
+import { creditMap, drinksForRound } from "./lib/drinks";
+import { computeDrinkEvents } from "./lib/drinkEvents";
 import { buildLeaderboardRows } from "./lib/leaderboard";
 import { computeMatchResult } from "./lib/matchPlay";
 import { formStreak } from "./lib/streaks";
@@ -34,6 +36,10 @@ export default function App() {
   const [tab, setTab] = useState("home"); // home | leaderboard | code | enter | admin | broadcast
   const data = useEventData({ tab }); // shared with every screen through EventDataContext
   const {
+    drinkLog,
+    drinksView,
+    drinking,
+    creditByRound,
     status,
     players,
     scores,
@@ -194,6 +200,7 @@ export default function App() {
             { ...m, sideA, sideB },
             {
               scoresByPlayer: scoresByRoundThenPlayer.get(m.round_id) || new Map(),
+              credit: creditByRound.get(m.round_id),
               PARS,
               STROKE_INDEX,
               handicapMode: cfg.handicapMode || "off_lowest",
@@ -209,7 +216,7 @@ export default function App() {
       out.set(g.id, entries);
     }
     return out;
-  }, [games, matches, matchPlayers, playersById, scoresByRoundThenPlayer, foursomes, foursomePlayers, fieldOffset]);
+  }, [games, matches, matchPlayers, playersById, scoresByRoundThenPlayer, creditByRound, foursomes, foursomePlayers, fieldOffset]);
 
   const gameResults = useMemo(() => {
     const activeGames = games.filter((g) => g.active);
@@ -228,7 +235,7 @@ export default function App() {
     if (roundSelection === ROUND_OVERALL) {
       return activeGames.map((game) => {
         const perRoundRows = rounds.map((r) =>
-          computeGameRows(game, { ...ctxBase, scoresByPlayer: scoresByRoundThenPlayer.get(r.id) || new Map() })
+          computeGameRows(game, { ...ctxBase, scoresByPlayer: scoresByRoundThenPlayer.get(r.id) || new Map(), credit: creditByRound.get(r.id) })
         );
         return { game, rows: mergeGameRowsAcrossRounds(perRoundRows) };
       });
@@ -240,7 +247,7 @@ export default function App() {
 
     return activeGames.map((game) => ({
       game,
-      rows: computeGameRows(game, { ...ctxBase, scoresByPlayer }),
+      rows: computeGameRows(game, { ...ctxBase, scoresByPlayer, credit: roundSelection ? creditByRound.get(roundSelection) : undefined }),
     }));
   }, [
     games,
@@ -250,6 +257,7 @@ export default function App() {
     playersById,
     rounds,
     scoresByRoundThenPlayer,
+    creditByRound,
     selectedRoundId,
     activeRound,
     scores,
@@ -294,7 +302,7 @@ export default function App() {
   const liveRef = useRef(null);
   const tickBusyRef = useRef(false);
   useEffect(() => {
-    liveRef.current = { leaderboardRows, scores, players, rounds, foursomes, foursomePlayers, broadcastMsgs, eventName, fieldOffset };
+    liveRef.current = { leaderboardRows, scores, players, rounds, foursomes, foursomePlayers, broadcastMsgs, eventName, fieldOffset, drinksView, drinking };
   });
 
   async function insertBroadcastRows(rows) {
@@ -338,8 +346,10 @@ export default function App() {
 
       const rows = s.leaderboardRows.map((r) => {
         const vsPar = {};
+        const rawVsPar = {};
         for (const [h, g] of Object.entries(r.scoresByHole)) {
-          vsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h)) - PARS[Number(h) - 1];
+          rawVsPar[h] = netScoreForHole(g, r.playingHandicap, Number(h)) - PARS[Number(h) - 1];
+          vsPar[h] = rawVsPar[h] - (r.creditByHole?.[h] || 0);
         }
         return {
           id: r.id,
@@ -349,13 +359,19 @@ export default function App() {
           displayRank: r.displayRank,
           gross: r.scoresByHole,
           vsPar,
+          rawVsPar, // net-to-par WITHOUT Stroke Credit: the drink report is judged on this
           startHole: startByPlayer.get(r.id) ?? 1,
           group: groupByPlayer.get(r.id) || null,
         };
       });
 
       // "Standings a few minutes ago": the same leaderboard math, ignoring scores saved since.
-      const prevRows = buildLeaderboardRows(s.players, s.scores, roundId, s.fieldOffset, now - SWING_WINDOW_MS);
+      // Drinking Mode's Stroke Credit counts as it stood then too, so a drink logged just now doesn't read as a place gained.
+      const prevCredit = creditMap(
+        drinksForRound(s.drinksView, roundId).filter((d) => new Date(d.created_at).getTime() <= now - SWING_WINDOW_MS),
+        s.drinking
+      );
+      const prevRows = buildLeaderboardRows(s.players, s.scores, roundId, s.fieldOffset, now - SWING_WINDOW_MS, prevCredit);
       const prevRanks = new Map(prevRows.filter((r) => r.holesPlayed > 0).map((r) => [r.id, r.displayRank]));
       const fieldIds = new Set(startByPlayer.keys());
 
@@ -370,6 +386,20 @@ export default function App() {
         fieldIds,
         messages: s.broadcastMsgs,
       });
+      // Drinking Mode cards (nothing at all while the mode is off)
+      events.push(
+        ...computeDrinkEvents({
+          now,
+          roundId,
+          drinking: s.drinking,
+          drinks: s.drinksView,
+          pars: PARS,
+          rows,
+          scoreTimes,
+          fieldIds,
+          messages: s.broadcastMsgs,
+        })
+      );
       if (events.length === 0) return;
       await insertBroadcastRows(planPosts(events, { now, messages: s.broadcastMsgs }));
       await loadBroadcast();
@@ -378,12 +408,13 @@ export default function App() {
     }
   }
 
-  // Check for new cards whenever fresh scores/players arrive (and once the saved log has loaded).
+  // Check for new cards whenever fresh scores/players/drinks arrive (and once the saved log, the rounds and the
+  // Drinking Mode setting have loaded, so the first check already knows which round is active).
   useEffect(() => {
     if (!broadcastLoaded) return;
     runBroadcastTick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scores, players, broadcastLoaded]);
+  }, [scores, players, broadcastLoaded, drinksView, rounds, drinking.enabled]);
 
   // Unsent scores: retry every 10 seconds, the moment the phone comes back online, and on load.
   const hasPendingScores = pendingScores.length > 0;
@@ -862,7 +893,7 @@ export default function App() {
           </header>
         )}
 
-        {pendingScores.length > 0 && (
+        {pendingScores.length + drinkLog.pendingCount > 0 && (
           <div
             role="status"
             style={{
@@ -878,12 +909,26 @@ export default function App() {
           >
             <div style={{ minWidth: 0, fontSize: 14 }}>
               <b>
-                {pendingScores.length} score{pendingScores.length === 1 ? "" : "s"} saved on this phone
+                {[
+                  pendingScores.length ? `${pendingScores.length} score${pendingScores.length === 1 ? "" : "s"}` : null,
+                  drinkLog.pendingCount ? `${drinkLog.pendingCount} drink change${drinkLog.pendingCount === 1 ? "" : "s"}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" and ")}{" "}
+                saved on this phone
               </b>{" "}
               — waiting to upload. Keep this page open; it keeps trying.
-              {pendingErr ? <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 4 }}>{pendingErr}</div> : null}
+              {pendingErr || drinkLog.error ? (
+                <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 4 }}>{pendingErr || drinkLog.error}</div>
+              ) : null}
             </div>
-            <button style={{ ...styles.smallBtn, minHeight: 44 }} onClick={uploadPendingScores}>
+            <button
+              style={{ ...styles.smallBtn, minHeight: 44 }}
+              onClick={() => {
+                uploadPendingScores();
+                drinkLog.uploadPendingDrinks();
+              }}
+            >
               Retry now
             </button>
           </div>

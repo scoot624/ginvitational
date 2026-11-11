@@ -1,6 +1,8 @@
 // Hole-by-hole scorecard shown inline under an expanded Leaderboard row.
 
+import { useEventDataContext } from "../../hooks/eventDataContext";
 import { PARS, STROKE_INDEX } from "../../lib/course";
+import { drinksOnHole } from "../../lib/drinks";
 import { strokesOnHoleForGame } from "../../lib/gameCalc";
 import { clampInt, formatToPar } from "../../lib/golf";
 import { THEME, styles } from "../../theme";
@@ -10,6 +12,11 @@ import { THEME, styles } from "../../theme";
  * player is expanded (replaces the old full-screen modal).
  */
 export function ScorecardDetail({ player, game }) {
+  const { drinking, drinksView, activeRound } = useEventDataContext();
+  // Drinking Mode: a 🍺 row (drinks on each hole) and, for Stroke Credit, a note under the table.
+  const showDrinks = drinking.enabled && !!activeRound;
+  const drinksAt = (h) => (showDrinks ? drinksOnHole(drinksView, player.id, activeRound.id, h) : 0);
+
   // The +/- row follows the game being viewed: Individual Gross counts every
   // stroke, Individual Net takes the game's handicap % off by Stroke Index.
   // With no game given (Simple Mode) it is plain net at 100%, as before.
@@ -27,7 +34,9 @@ export function ScorecardDetail({ player, game }) {
       const si = STROKE_INDEX[h - 1];
       const strokes = isGross ? 0 : strokesOnHoleForGame(player.playingHandicap, pct, h, STROKE_INDEX);
 
-      const countedSc = sc != null ? sc - strokes : null;
+      // Drinking Mode's Stroke Credit comes off the net on the hole where the drink was logged (gross is never touched).
+      const credit = isGross ? 0 : player.creditByHole?.[h] || 0;
+      const countedSc = sc != null ? sc - strokes - credit : null;
       const netDiff = countedSc != null ? countedSc - par : null;
       if (netDiff != null) cum += netDiff;
 
@@ -43,7 +52,7 @@ export function ScorecardDetail({ player, game }) {
           ? { color: THEME.bad, fontWeight: 900 }
           : { opacity: 0.9, fontWeight: 900 };
 
-      return { h, par, sc, si, strokes, netDiff, cum, cumStyle };
+      return { h, par, sc, si, strokes, netDiff, cum, cumStyle, drinks: drinksAt(h), credit };
     });
   })();
 
@@ -57,6 +66,7 @@ export function ScorecardDetail({ player, game }) {
       par: hs.reduce((a, x) => a + x.par, 0),
       score: played.length ? played.reduce((a, x) => a + x.sc, 0) : null,
       net: played.length ? played.reduce((a, x) => a + x.netDiff, 0) : null,
+      drinks: hs.reduce((a, x) => a + x.drinks, 0),
     };
   };
   // Holes 1–9, OUT, holes 10–18, IN, TOT — the usual scorecard order.
@@ -177,6 +187,19 @@ export function ScorecardDetail({ player, game }) {
                 </td>
               ))}
             </tr>
+            {showDrinks && (
+              <tr>
+                <td style={labelCellStyle}>🍺</td>
+                {columns.map((c) => {
+                  const n = c.hd ? c.hd.drinks : c.sum.drinks;
+                  return (
+                    <td key={c.key} style={c.hd ? cellStyle : sumCellStyle}>
+                      {n > 0 ? (c.hd ? (n > 1 ? `🍺${n}` : "🍺") : n) : ""}
+                    </td>
+                  );
+                })}
+              </tr>
+            )}
             <tr>
               <td style={labelCellStyle}>+/-</td>
               {columns.map((c) =>
@@ -200,6 +223,9 @@ export function ScorecardDetail({ player, game }) {
           ? "+/- is gross score vs par (no handicap strokes)."
           : `+/- is net score vs par, using ${pct === 100 ? "" : `${pct}% of the `}handicap by Stroke Index.`}
         {!isGross && pct !== 0 && player.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
+        {showDrinks && drinking.variant === "credit" && !isGross
+          ? ` Stroke Credit: -${drinking.creditPerDrink} per drink on the hole it was logged, up to ${drinking.maxDrinks} drinks, is included in +/-.`
+          : ""}
       </div>
     </div>
   );

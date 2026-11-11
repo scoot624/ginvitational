@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { MatchSetupNotice } from "../components/SetupNotices";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { buildScoresByPlayer } from "../lib/gameCalc";
+import { creditMap, drinksForRound, normalizeDrinking } from "../lib/drinks";
 import { clampInt } from "../lib/golf";
 import { buildLeaderboardRows } from "../lib/leaderboard";
+import { useDrinkLogging } from "./useDrinkLogging";
 import { fetchAllRows, supabase } from "../lib/supabase";
 import { errToText } from "../lib/util";
 
@@ -42,6 +43,12 @@ export function useEventData({ tab }) {
   const [matchTablesReady, setMatchTablesReady] = useState(true);
   const [gamesConfigReady, setGamesConfigReady] = useState(true);
   const matchReady = matchTablesReady && gamesConfigReady; // false until migration 0012 has been run
+  // Drinking Mode: the drinks logged, and whether the one-time database change (migration 0014) has been made.
+  const [drinks, setDrinks] = useState([]);
+  const [drinksTableReady, setDrinksTableReady] = useState(true);
+  const [drinkingColumnReady, setDrinkingColumnReady] = useState(true);
+  const drinkingReady = drinksTableReady && drinkingColumnReady;
+  const drinkingEnabledRef = useRef(false); // lets the refresh timers skip the drinks request when the mode is off
 
   async function loadPlayers() {
     const { data, error } = await fetchAllRows(() =>
@@ -207,27 +214,54 @@ export function useEventData({ tab }) {
     return { ok: true, where: "game_team_members" };
   }
 
+  // Not an error if the table isn't there yet: Drinking Mode just isn't set up (see DrinkingSetupNotice).
+  async function loadDrinks() {
+    const { data, error } = await fetchAllRows(() =>
+      supabase
+        .from("drinks")
+        .select("id,player_id,round_id,hole,note,created_at")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+    );
+    if (error) {
+      setDrinks([]);
+      setDrinksTableReady(false);
+      return { ok: true, where: "drinks" };
+    }
+    setDrinks(data || []);
+    setDrinksTableReady(true);
+    return { ok: true, where: "drinks" };
+  }
+
   async function loadAppSettings() {
     const baseCols = "id,multi_game_enabled,multi_round_enabled,event_name,handicap_basis,updated_at";
 
-    // Ask for the tagline/logo columns too. Until migration 0010 has been run
-    // they don't exist and that query fails — so fall back to the original
-    // columns instead of taking the whole app down.
-    let { data, error } = await supabase
-      .from("app_settings")
-      .select(`${baseCols},tagline,logo_data`)
-      .eq("id", 1)
-      .maybeSingle();
-    const brandingColumnsExist = !error;
-    if (error) {
-      ({ data, error } = await supabase.from("app_settings").select(baseCols).eq("id", 1).maybeSingle());
+    // Newer columns only exist once their one-time database change has been run (tagline + logo: 0010,
+    // drinking: 0014). Ask for everything first and fall back step by step, so a missing column never
+    // takes the whole app down.
+    const attempts = [
+      { cols: `${baseCols},tagline,logo_data,drinking`, branding: true, drinking: true },
+      { cols: `${baseCols},tagline,logo_data`, branding: true, drinking: false },
+      { cols: `${baseCols},drinking`, branding: false, drinking: true },
+      { cols: baseCols, branding: false, drinking: false },
+    ];
+    let data = null;
+    let error = null;
+    let used = attempts[attempts.length - 1];
+    for (const attempt of attempts) {
+      ({ data, error } = await supabase.from("app_settings").select(attempt.cols).eq("id", 1).maybeSingle());
+      if (!error) {
+        used = attempt;
+        break;
+      }
     }
 
     if (error) {
       console.error("loadAppSettings error:", error);
       return { ok: false, where: "app_settings", error: errToText(error) };
     }
-    setBrandingReady(brandingColumnsExist);
+    setBrandingReady(used.branding);
+    setDrinkingColumnReady(used.drinking);
     setAppSettings(
       data || {
         multi_game_enabled: false,
@@ -270,6 +304,7 @@ export function useEventData({ tab }) {
     results.push(await loadGameTeams());
     results.push(await loadGameTeamMembers());
     results.push(await loadMatches());
+    results.push(await loadDrinks());
     results.push(await loadRounds());
     results.push(await loadAppSettings());
 
@@ -297,6 +332,7 @@ export function useEventData({ tab }) {
     const id = setInterval(async () => {
       await loadPlayers();
       await loadScores();
+      if (drinkingEnabledRef.current) await loadDrinks(); // only while Drinking Mode is on
     }, 60_000);
     return () => clearInterval(id);
   }, [tab]);
@@ -308,6 +344,7 @@ export function useEventData({ tab }) {
     const refreshStandings = async () => {
       await loadPlayers();
       await loadScores();
+      if (drinkingEnabledRef.current) await loadDrinks(); // only while Drinking Mode is on
       await loadGames(); // picks up a game being locked/unlocked
     };
     refreshStandings();
@@ -331,6 +368,7 @@ export function useEventData({ tab }) {
     const id = setInterval(async () => {
       await loadPlayers();
       await loadScores();
+      if (drinkingEnabledRef.current) await loadDrinks(); // only while Drinking Mode is on
     }, 180_000);
     return () => clearInterval(id);
   }, []);
@@ -346,11 +384,6 @@ export function useEventData({ tab }) {
     if (!players.length) return 0;
     return Math.min(...players.map((p) => clampInt(p.handicap, 0)));
   }, [players, appSettings.handicap_basis]);
-
-  const leaderboardRows = useMemo(
-    () => buildLeaderboardRows(players, scores, rounds.find((r) => r.is_active)?.id ?? null, fieldOffset),
-    [players, scores, rounds, fieldOffset]
-  );
 
   // --- Multi-Game (Stage 2) ---
   // Computed alongside the original leaderboardRows above, which is left
@@ -370,6 +403,31 @@ export function useEventData({ tab }) {
     return m;
   }, [gameTeamMembers]);
 
+  // Drinking Mode settings: what Admin saved, and what is actually in force (off until the database change is made).
+  const drinkingSaved = useMemo(() => normalizeDrinking(appSettings.drinking), [appSettings.drinking]);
+  const drinking = useMemo(() => ({ ...drinkingSaved, enabled: drinkingSaved.enabled && drinkingReady }), [drinkingSaved, drinkingReady]);
+  useEffect(() => {
+    drinkingEnabledRef.current = drinking.enabled;
+  }, [drinking.enabled]);
+
+  // Logging drinks (saved on the phone first, then uploaded) and the drinks as this phone sees them
+  // (the database's plus unsent ones, minus undone ones). Every board below reads this one list.
+  const drinkLog = useDrinkLogging({ drinks, loadDrinks, drinking });
+  const drinksView = drinkLog.drinksView;
+
+  // Stroke Credit, one map per round: Map(roundId -> Map(playerId -> {hole: strokes})). Empty unless the mode is on
+  // and set to Stroke Credit, so with it off every number below is exactly what it always was.
+  const creditByRound = useMemo(() => {
+    const out = new Map();
+    for (const r of rounds) out.set(r.id, creditMap(drinksForRound(drinksView, r.id), drinking));
+    return out;
+  }, [rounds, drinksView, drinking]);
+
+  const leaderboardRows = useMemo(() => {
+    const activeId = rounds.find((r) => r.is_active)?.id ?? null;
+    return buildLeaderboardRows(players, scores, activeId, fieldOffset, null, creditByRound.get(activeId) || null);
+  }, [players, scores, rounds, fieldOffset, creditByRound]);
+
   const activeRound = useMemo(() => rounds.find((r) => r.is_active) || rounds[0] || null, [rounds]);
 
   // { [roundId]: Map(playerId -> {hole: grossScore}) } — one scoped map per round.
@@ -380,6 +438,17 @@ export function useEventData({ tab }) {
   }, [scores, rounds]);
 
   return {
+    drinks,
+    drinksView,
+    drinkLog,
+    creditByRound,
+    setDrinks,
+    drinksTableReady,
+    drinkingColumnReady,
+    drinkingReady,
+    loadDrinks,
+    drinkingSaved,
+    drinking,
     status,
     setStatus,
     lastLoadErrors,

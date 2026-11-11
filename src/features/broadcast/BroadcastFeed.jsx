@@ -19,6 +19,17 @@ const BROADCAST_KIND = {
   hotgroup: { label: "Hot group", emoji: "🌶️", accent: "#E0732B" },
   recap: { label: "Recap", emoji: "⛳", accent: "#4E5C54" },
   roundup: { label: "Roundup", emoji: "📣", accent: "#4E5C54" },
+  // Drinking Mode
+  drink_logged: { label: "Drink logged", emoji: "🍺", accent: "#B8862B" },
+  drink_first: { label: "First drink", emoji: "🍺", accent: "#B8862B" },
+  drink_min: { label: "Minimum reached", emoji: "✅", accent: "#2F7D5B" },
+  drink_max: { label: "Max reached", emoji: "🍺", accent: "#B8862B" },
+  drink_behind: { label: "Pace check", emoji: "⏱️", accent: "#6B7F73" },
+  drink_leader: { label: "Drink leader", emoji: "🥇", accent: "#B08A2E" },
+  drink_hole: { label: "Busiest hole", emoji: "📍", accent: "#7A4E8C" },
+  drink_birdie: { label: "Drink-to-birdie", emoji: "🐦", accent: "#2F7D5B" },
+  drink_roundup: { label: "Drinks roundup", emoji: "🍻", accent: "#B8862B" },
+  drinkreport: { label: "Drink report", emoji: "📊", accent: "#4E5C54", big: true },
 };
 
 export function BroadcastIcon({ kind, height = "22px" }) {

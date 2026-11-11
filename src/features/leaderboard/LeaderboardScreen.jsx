@@ -1,4 +1,5 @@
 import { rankCellContent } from "../../components/LeaderIcons";
+import { DrinkBadge } from "../drinks/DrinkBadge";
 import { LockedBoardPanel } from "./LockedBoardPanel";
 import { expandChevronStyle, expandRowCellStyle } from "./rankStyles";
 import { ScorecardDetail } from "./ScorecardDetail";
@@ -181,6 +182,7 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                 HCP {r.handicap}
                                 {r.charity ? ` • ${r.charity}` : ""}
                               </div>
+                              <DrinkBadge playerId={r.id} roundId={activeRound?.id} holesPlayed={r.holesPlayed} />
                             </td>
 
                             <td style={{ ...lbTd, textAlign: "center" }}>
@@ -287,6 +289,11 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                         HCP {r.handicap}
                                         {r.charity ? ` • ${r.charity}` : ""}
                                       </div>
+                                      <DrinkBadge
+                                        playerId={r.id}
+                                        roundId={selectedRoundId === ROUND_OVERALL ? null : selectedRoundId || activeRound?.id}
+                                        holesPlayed={r.holesPlayed}
+                                      />
                                     </>
                                   )}
                                 </td>
