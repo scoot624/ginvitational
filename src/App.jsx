@@ -18,7 +18,7 @@ import { SWING_WINDOW_MS, computeBroadcastEvents, planPosts, safeDedupeKey } fro
 import { ADMIN_PIN, ROUND_OVERALL } from "./lib/config";
 import { PARS, STROKE_INDEX, netScoreForHole } from "./lib/course";
 import { buildScoresByPlayer, computeGameRows, mergeGameRowsAcrossRounds } from "./lib/gameCalc";
-import { isMatchFormat } from "./lib/gameConfig";
+import { isMatchFormat, isSharedBallFormat } from "./lib/gameConfig";
 import { clampInt } from "./lib/golf";
 import { creditMap, drinksForRound } from "./lib/drinks";
 import { computeDrinkEvents } from "./lib/drinkEvents";
@@ -675,7 +675,7 @@ export default function App() {
       }
 
       if (sharedGameFound) continue; // only the first scramble/composite game with a shared hole counts
-      const isScramble = g.format === "scramble_2" || g.format === "scramble_4";
+      const isScramble = isSharedBallFormat(g.format); // Scramble or Alternate Shot: one ball, one score per team
       let isSharedHole = isScramble; // every hole is shared in a standalone Scramble game
 
       if (!isScramble) {

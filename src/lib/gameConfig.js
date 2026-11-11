@@ -8,6 +8,7 @@ export const GAME_FORMAT_LABELS = {
   better_ball_4: "4-Man Better Ball",
   scramble_2: "2-Man Scramble",
   scramble_4: "4-Man Scramble",
+  alt_shot_2: "2-Man Alternate Shot",
   composite: "Multi-Format Round",
   match_play: "Match Play",
   ryder_cup: "Ryder Cup",
@@ -20,6 +21,7 @@ export const GAME_FORMAT_TEAM_SIZE = {
   better_ball_4: 4,
   scramble_2: 2,
   scramble_4: 4,
+  alt_shot_2: 2,
   // composite's team size is admin-chosen (newGameTeamSize), not fixed by format
 };
 
@@ -30,6 +32,7 @@ export const GAME_SCORE_LABELS = {
   better_ball_4: "Team vs Par",
   scramble_2: "Team vs Par",
   scramble_4: "Team vs Par",
+  alt_shot_2: "Team vs Par",
   composite: "Team vs Par",
 };
 
@@ -39,7 +42,14 @@ export const GAME_SCORE_LABELS = {
 export const SCRAMBLE_DEFAULT_PCTS = {
   scramble_2: [35, 15],
   scramble_4: [40, 30, 20, 10],
+  alt_shot_2: [35, 15], // Alternate Shot is scored and handicapped exactly like the 2-Man Scramble
 };
+
+/**
+ * One ball per team, one score per hole, and a blended team handicap: the 2-Man / 4-Man Scramble and 2-Man
+ * Alternate Shot. They share all of their scoring, score entry and handicap code; only the name differs.
+ */
+export const isSharedBallFormat = (f) => f === "scramble_2" || f === "scramble_4" || f === "alt_shot_2";
 
 // A composite game's per-segment format choices. "individual" segments
 // (Best Ball, Combined Score) reuse the counting-rule engine; "shared"

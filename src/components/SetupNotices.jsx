@@ -135,7 +135,7 @@ const MATCH_PLAY_SQL = `alter table games drop constraint if exists games_format
 alter table games add constraint games_format_check check (
   format in (
     'individual_net', 'individual_gross', 'better_ball_2', 'better_ball_4',
-    'composite', 'scramble_2', 'scramble_4',
+    'composite', 'scramble_2', 'scramble_4', 'alt_shot_2',
     'match_play', 'ryder_cup'
   )
 );
@@ -183,6 +183,70 @@ create policy match_players_select on match_players for select to anon using (tr
 create policy match_players_insert on match_players for insert to anon with check (true);
 create policy match_players_update on match_players for update to anon using (true) with check (true);
 create policy match_players_delete on match_players for delete to anon using (true);`;
+
+/** Shown under Add Game when saving a 2-Man Alternate Shot fails because the database doesn't know that format yet (migration 0015). */
+export function AltShotSetupNotice() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800 }}>One-time setup needed</div>
+      <div style={styles.helpText}>
+        Alternate Shot needs one small change in the database. In Supabase, open <b>SQL Editor</b>, paste the text
+        below and click <b>Run</b>, then come back here and create the game again.
+      </div>
+      <pre
+        style={{
+          whiteSpace: "pre-wrap",
+          marginTop: 8,
+          padding: 10,
+          borderRadius: 12,
+          border: `1px solid ${THEME.border}`,
+          background: "rgba(22,35,29,0.05)",
+          fontSize: 12,
+          color: THEME.text,
+          maxHeight: 220,
+          overflowY: "auto",
+        }}
+      >
+        {ALT_SHOT_SQL}
+      </pre>
+      <button
+        style={{ ...styles.smallBtn, marginTop: 8, minHeight: 44 }}
+        onClick={() => {
+          Promise.resolve(navigator.clipboard?.writeText(ALT_SHOT_SQL)).then(
+            () => setCopied(true),
+            () => setCopied(false)
+          );
+        }}
+      >
+        {copied ? "Copied ✅" : "Copy SQL"}
+      </button>
+    </div>
+  );
+}
+
+/** One-time database setup for 2-Man Alternate Shot (same as migrations/0015). */
+const ALT_SHOT_SQL = `alter table games drop constraint if exists games_format_check;
+alter table games add constraint games_format_check check (
+  format in (
+    'individual_net', 'individual_gross', 'better_ball_2', 'better_ball_4',
+    'composite', 'scramble_2', 'scramble_4', 'alt_shot_2',
+    'match_play', 'ryder_cup'
+  )
+);
+
+alter table games drop constraint if exists games_handicap_allowance_shape;
+alter table games add constraint games_handicap_allowance_shape check (
+  handicap_allowance is null
+  or (
+    jsonb_typeof(handicap_allowance) = 'array'
+    and (
+      (format in ('scramble_2', 'alt_shot_2') and jsonb_array_length(handicap_allowance) = 2)
+      or (format = 'scramble_4' and jsonb_array_length(handicap_allowance) = 4)
+      or (format not in ('scramble_2', 'scramble_4', 'alt_shot_2'))
+    )
+  )
+);`;
 
 /** Shown in Admin → Drinking Mode until the database has its setting and table (migration 0014). */
 export function DrinkingSetupNotice() {
