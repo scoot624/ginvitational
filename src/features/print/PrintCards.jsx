@@ -1,6 +1,7 @@
 // Print scorecards: two per landscape sheet at 100% scale.
 
 import { STROKE_INDEX, strokesOnHole } from "../../lib/course";
+import { isSharedBallFormat } from "../../lib/gameConfig";
 import { clampInt, lastName } from "../../lib/golf";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { FONT_DISPLAY } from "../../theme";
@@ -75,7 +76,7 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
   // team-pairing data to know who's on a team with whom, so those holes are
   // intentionally left without dots rather than guessing wrong.
   function pctForHole(h) {
-    if (game && (game.format === "scramble_2" || game.format === "scramble_4")) return { pct: null, shared: true };
+    if (game && isSharedBallFormat(game.format)) return { pct: null, shared: true };
     if (!game || game.format !== "composite") return { pct: clampInt(game?.handicap_pct, 100), shared: false };
     const seg = (game.segments || []).find((s) => (s.holes || []).includes(h));
     if (!seg) return { pct: 100, shared: false };
@@ -84,8 +85,7 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
   }
 
   const hasSharedHoles =
-    game?.format === "scramble_2" ||
-    game?.format === "scramble_4" ||
+    isSharedBallFormat(game?.format) ||
     (game?.format === "composite" && (game.segments || []).some((s) => s.formatType === "shared"));
 
   // "•" for a received stroke, "+" for a plus-handicap player giving one back.
@@ -144,7 +144,7 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
               <span style={ps.metaLabel}>Handicap:</span>{" "}
               <span>
                 {game ? game.name : "Course Handicap"}
-                {game && game.format !== "composite" && game.format !== "scramble_2" && game.format !== "scramble_4"
+                {game && game.format !== "composite" && !isSharedBallFormat(game.format)
                   ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
                   : ""}
                 {offset !== 0 ? " • Field-Relative" : ""}
@@ -152,7 +152,7 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
             </div>
             {hasSharedHoles && (
               <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
-                Scramble-style holes aren't dot-marked — allocate by the team's blended handicap.
+                Scramble / alternate-shot holes aren't dot-marked — allocate by the team's blended handicap.
               </div>
             )}
           </div>

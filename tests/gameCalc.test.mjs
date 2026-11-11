@@ -87,3 +87,43 @@ test('composite round: scramble holes, better-ball holes and both-count holes ea
   const expectedStrokes = [1, 2, 3, 4, 5, 6].filter((h) => STROKE_INDEX[h - 1] <= 7).length;
   assert.equal(run(hc, sc).toPar, -expectedStrokes);
 });
+
+test('2-Man Alternate Shot is scored and handicapped exactly like the 2-Man Scramble', async () => {
+  const { computeGameRows } = await import('../src/lib/gameCalc.js');
+  const { isSharedBallFormat, GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, SCRAMBLE_DEFAULT_PCTS } = await import('../src/lib/gameConfig.js');
+  assert.ok(isSharedBallFormat('alt_shot_2') && isSharedBallFormat('scramble_2') && isSharedBallFormat('scramble_4'));
+  assert.ok(!isSharedBallFormat('better_ball_2') && !isSharedBallFormat('composite') && !isSharedBallFormat('match_play'));
+  assert.equal(GAME_FORMAT_LABELS.alt_shot_2, '2-Man Alternate Shot');
+  assert.equal(GAME_FORMAT_TEAM_SIZE.alt_shot_2, 2);
+  assert.deepEqual(SCRAMBLE_DEFAULT_PCTS.alt_shot_2, SCRAMBLE_DEFAULT_PCTS.scramble_2); // 35 / 15
+
+  const players = [
+    { id: 'a', name: 'Ann Able', handicap: 10 },
+    { id: 'b', name: 'Bob Best', handicap: 20 },
+    { id: 'c', name: 'Cy Cole', handicap: 4 },
+    { id: 'd', name: 'Di Dunn', handicap: 30 },
+  ];
+  const teams = [{ id: 't1', game_id: 'g', name: 'Team 1' }, { id: 't2', game_id: 'g', name: 'Team 2' }];
+  const ctxFor = (id) => ({
+    PARS, STROKE_INDEX, fieldOffset: 0, players,
+    playersById: new Map(players.map((p) => [p.id, p])),
+    teams: teams.map((t) => ({ ...t, game_id: id })),
+    teamMembersByTeam: new Map([['t1', ['a', 'b']], ['t2', ['c', 'd']]]),
+    // the entry screen saves the team's one score under both partners
+    scoresByPlayer: new Map([
+      ['a', { 1: 5, 2: 4, 3: 6 }], ['b', { 1: 5, 2: 4, 3: 6 }],
+      ['c', { 1: 4, 2: 4, 3: 5 }], ['d', { 1: 4, 2: 4, 3: 5 }],
+    ]),
+    credit: new Map([['a', { 1: 1 }], ['b', { 1: 1 }]]), // Drinking Mode credit: both partners' drinks count on a shared ball
+  });
+  const scramble = computeGameRows({ id: 's', format: 'scramble_2', handicap_pct: 100, handicap_allowance: [35, 15] }, ctxFor('s'));
+  const alt = computeGameRows({ id: 'x', format: 'alt_shot_2', handicap_pct: 100, handicap_allowance: [35, 15] }, ctxFor('x'));
+  const shape = (rows) => rows.map(({ name, toPar, holesPlayed, teamHandicap, scoresByHole, gross }) => ({ name, toPar, holesPlayed, teamHandicap, scoresByHole, gross }));
+  assert.deepEqual(shape(alt), shape(scramble));
+  // Team 1 blend: 10 x 35% + 20 x 15% = 6.5 -> 7 strokes; Team 2: 4 x 35% + 30 x 15% = 5.9 -> 6
+  assert.equal(alt.find((r) => r.name === 'Team 1').teamHandicap, 7);
+  assert.equal(alt.find((r) => r.name === 'Team 2').teamHandicap, 6);
+  // and a different allowance changes it the same way it does for the scramble
+  const alt50 = computeGameRows({ id: 'x', format: 'alt_shot_2', handicap_pct: 100, handicap_allowance: [50, 50] }, ctxFor('x'));
+  assert.equal(alt50.find((r) => r.name === 'Team 1').teamHandicap, 15);
+});

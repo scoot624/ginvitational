@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { AdminSection } from "../../components/AdminSection";
-import { MatchSetupNotice } from "../../components/SetupNotices";
+import { AltShotSetupNotice, MatchSetupNotice } from "../../components/SetupNotices";
 import { MatchEditor } from "../match/MatchEditor";
 import { RosterPicker } from "../match/RosterPicker";
 import { useEventDataContext } from "../../hooks/eventDataContext";
-import { GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, SCRAMBLE_DEFAULT_PCTS, SEGMENT_FORMAT_OPTIONS, isMatchFormat } from "../../lib/gameConfig";
+import { GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, SCRAMBLE_DEFAULT_PCTS, SEGMENT_FORMAT_OPTIONS, isMatchFormat, isSharedBallFormat } from "../../lib/gameConfig";
 import { clampInt } from "../../lib/golf";
 import { HANDICAP_MODES } from "../../lib/matchPlay";
 import { supabase } from "../../lib/supabase";
@@ -128,7 +128,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
       return;
     }
 
-    if (format === "scramble_2" || format === "scramble_4") {
+    if (isSharedBallFormat(format)) {
       setNewGameScramblePcts(SCRAMBLE_DEFAULT_PCTS[format]);
       return;
     }
@@ -358,7 +358,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
     if (isMatchFormat(newGameFormat)) return createMatchGame();
     const name = newGameName.trim() || GAME_FORMAT_LABELS[newGameFormat];
     const isComposite = newGameFormat === "composite";
-    const isScramble = newGameFormat === "scramble_2" || newGameFormat === "scramble_4";
+    const isScramble = isSharedBallFormat(newGameFormat); // Scramble or Alternate Shot: same scoring and handicap
     const handicap_pct = clampInt(newGameHandicapPct, 100);
 
     let counting_rule = null;
@@ -577,7 +577,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                                 .map((s) => `Holes ${Math.min(...s.holes)}-${Math.max(...s.holes)}: ${s.label}`)
                                 .join(" • ")}
                             </div>
-                          ) : g.format === "scramble_2" || g.format === "scramble_4" ? (
+                          ) : isSharedBallFormat(g.format) ? (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               {GAME_FORMAT_LABELS[g.format]} • HCP {(g.handicap_allowance || []).join("/")}%
                               (low → high)
@@ -590,8 +590,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                           )}
                           {(g.format === "better_ball_2" ||
                             g.format === "better_ball_4" ||
-                            g.format === "scramble_2" ||
-                            g.format === "scramble_4" ||
+                            isSharedBallFormat(g.format) ||
                             g.format === "composite") && (
                             <div style={{ fontSize: 12, color: THEME.textMuted, marginTop: 6 }}>
                               Teams: {gameTeams.filter((t) => t.game_id === g.id).length}
@@ -692,7 +691,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                     </div>
                   )}
 
-                  {newGameFormat === "scramble_2" || newGameFormat === "scramble_4" ? (
+                  {isSharedBallFormat(newGameFormat) ? (
                     <div style={{ display: "grid", gap: 8 }}>
                       <div style={styles.label}>
                         Handicap % per player, lowest handicap to highest — a blend, not a per-player deduction
@@ -720,6 +719,9 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                       <div style={styles.helpText}>
                         Team handicap = each teammate's own handicap × their %, added together. The two defaults
                         above are a common starting point — change them to whatever your event uses.
+                        {newGameFormat === "alt_shot_2"
+                          ? " Alternate Shot is scored exactly like the 2-Man Scramble: partners take turns hitting one ball and post one score per hole."
+                          : ""}
                       </div>
                     </div>
                   ) : (
@@ -739,7 +741,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                     )
                   )}
 
-                  {newGameFormat !== "composite" && newGameFormat !== "scramble_2" && newGameFormat !== "scramble_4" && !isMatchFormat(newGameFormat) && (
+                  {newGameFormat !== "composite" && !isSharedBallFormat(newGameFormat) && !isMatchFormat(newGameFormat) && (
                     <label
                       style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: THEME.textMuted }}
                     >
@@ -753,8 +755,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                   )}
 
                   {newGameFormat !== "composite" &&
-                    newGameFormat !== "scramble_2" &&
-                    newGameFormat !== "scramble_4" &&
+                    !isSharedBallFormat(newGameFormat) &&
                     !isMatchFormat(newGameFormat) &&
                     newGameAdvancedOn && (
                     <div
@@ -998,8 +999,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
 
                   {(newGameFormat === "better_ball_2" ||
                     newGameFormat === "better_ball_4" ||
-                    newGameFormat === "scramble_2" ||
-                    newGameFormat === "scramble_4" ||
+                    isSharedBallFormat(newGameFormat) ||
                     newGameFormat === "composite") && (
                     <div style={styles.helpText}>
                       {(() => {
@@ -1044,6 +1044,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                     Create Game
                     </button>
                     {gamesMsg ? <div style={styles.helpText}>{gamesMsg}</div> : null}
+                    {newGameFormat === "alt_shot_2" && gamesMsg.includes("games_format_check") ? <AltShotSetupNotice /> : null}
                     </div>
                   </>
                 )}

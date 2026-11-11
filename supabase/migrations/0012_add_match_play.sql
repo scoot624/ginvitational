@@ -11,7 +11,7 @@ alter table games drop constraint if exists games_format_check;
 alter table games add constraint games_format_check check (
   format in (
     'individual_net', 'individual_gross', 'better_ball_2', 'better_ball_4',
-    'composite', 'scramble_2', 'scramble_4',
+    'composite', 'scramble_2', 'scramble_4', 'alt_shot_2',
     'match_play', 'ryder_cup'
   )
 );

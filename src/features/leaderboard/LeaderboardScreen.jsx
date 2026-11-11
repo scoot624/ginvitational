@@ -6,7 +6,7 @@ import { ScorecardDetail } from "./ScorecardDetail";
 import { MatchBoard } from "../match/MatchBoard";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { ROUND_OVERALL } from "../../lib/config";
-import { GAME_SCORE_LABELS, isMatchFormat } from "../../lib/gameConfig";
+import { GAME_SCORE_LABELS, isMatchFormat, isSharedBallFormat } from "../../lib/gameConfig";
 import { formatToPar } from "../../lib/golf";
 import { lastPlaceRank } from "../../lib/ranking";
 import { THEME, netColorStyle, styles } from "../../theme";
@@ -222,8 +222,7 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
               const isTeamFormat =
                 game.format === "better_ball_2" ||
                 game.format === "better_ball_4" ||
-                game.format === "scramble_2" ||
-                game.format === "scramble_4" ||
+                isSharedBallFormat(game.format) ||
                 game.format === "composite";
               const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
 

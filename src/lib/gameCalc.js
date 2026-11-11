@@ -11,6 +11,7 @@
  */
 
 import { creditFor, sharedCredit } from "./drinks.js";
+import { isSharedBallFormat } from "./gameConfig.js";
 import { clampInt, lastName, strokesForHandicap } from "./golf.js";
 
 /** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */
@@ -448,7 +449,7 @@ export function computeGameRows(game, ctx) {
     });
   }
 
-  if (game.format === "scramble_2" || game.format === "scramble_4") {
+  if (isSharedBallFormat(game.format)) {
     const gameTeams = teams.filter((t) => t.game_id === game.id);
     return computeScrambleGameRows(game, gameTeams, teamMembersByTeam, playersById, scoresByPlayer, {
       PARS,
