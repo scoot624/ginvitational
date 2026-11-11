@@ -1,6 +1,7 @@
 import { DangerZoneSection } from "./DangerZoneSection";
 import { EventNameSection } from "./EventNameSection";
 import { GamesSection } from "./GamesSection";
+import { DrinkingModeSection } from "./DrinkingModeSection";
 import { HandicapBasisSection } from "./HandicapBasisSection";
 import { ImportSection } from "./ImportSection";
 import { LogoSection } from "./LogoSection";
@@ -198,6 +199,9 @@ export function AdminScreen({ adminOn, adminPin, setAdminPin, enterAdmin, setAdm
 
           {/* Handicap Basis */}
           <HandicapBasisSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
+
+          {/* Drinking Mode */}
+          <DrinkingModeSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
 
           {/* Import Tee Sheet */}
           <ImportSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} />
