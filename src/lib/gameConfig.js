@@ -25,6 +25,23 @@ export const GAME_FORMAT_TEAM_SIZE = {
   // composite's team size is admin-chosen (newGameTeamSize), not fixed by format
 };
 
+/** The "Team size" picker in Admin → Add Game: how many players play together. */
+export const TEAM_SIZE_OPTIONS = [
+  { size: 1, label: "Individual (1 player)" },
+  { size: 2, label: "2-Man (pairs)" },
+  { size: 4, label: "4-Man (full group)" },
+];
+
+/**
+ * Which formats are offered for each team size, so the Format list only shows what fits. Match Play is under 1 and 2
+ * (singles, four-ball and foursomes are chosen per match later); a Multi-Format Round is built for 2 or 4.
+ */
+export const FORMATS_BY_TEAM_SIZE = {
+  1: ["individual_net", "individual_gross", "match_play"],
+  2: ["better_ball_2", "scramble_2", "alt_shot_2", "composite", "match_play"],
+  4: ["better_ball_4", "scramble_4", "composite"],
+};
+
 export const GAME_SCORE_LABELS = {
   individual_net: "Net vs Par",
   individual_gross: "Gross vs Par",
@@ -56,9 +73,23 @@ export const isSharedBallFormat = (f) => f === "scramble_2" || f === "scramble_4
 // segments (Scramble) use one team score + a blended team handicap.
 export const SEGMENT_FORMAT_OPTIONS = {
   best_ball: { label: "Better Ball (best score counts)", kind: "individual", scoresCounted: 1, slots: ["net"] },
-  combined: { label: "Both Count (two scores added)", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
+  combined: { label: "Total Score (both count, added together)", kind: "individual", scoresCounted: 2, slots: ["net", "net"] },
   scramble: { label: "Scramble", kind: "shared" },
+  alt_shot: { label: "Alternate Shot", kind: "shared", teamSizes: [2] }, // scored like the scramble; pairs only
 };
+
+/** The segment choices for a multi-format round of this team size ([key, option] pairs, in menu order). */
+export function segmentOptionsFor(teamSize) {
+  return Object.entries(SEGMENT_FORMAT_OPTIONS)
+    .filter(([, o]) => !o.teamSizes || o.teamSizes.includes(teamSize))
+    .map(([key, o]) => [key, key === "combined" && teamSize === 4 ? { ...o, label: "Total Score (two best scores added)" } : o]);
+}
+
+/** One segment choice for this team size, or Better Ball when the saved key doesn't exist for it. */
+export function segmentOption(key, teamSize) {
+  const opts = segmentOptionsFor(teamSize);
+  return (opts.find(([k]) => k === key) || opts.find(([k]) => k === "best_ball"))[1];
+}
 
 // Each preset: { label, handicapPct, scoresCounted, slots }
 export const GAME_PRESETS = {

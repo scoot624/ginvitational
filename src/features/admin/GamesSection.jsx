@@ -4,7 +4,7 @@ import { AltShotSetupNotice, MatchSetupNotice } from "../../components/SetupNoti
 import { MatchEditor } from "../match/MatchEditor";
 import { RosterPicker } from "../match/RosterPicker";
 import { useEventDataContext } from "../../hooks/eventDataContext";
-import { GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, SCRAMBLE_DEFAULT_PCTS, SEGMENT_FORMAT_OPTIONS, isMatchFormat, isSharedBallFormat } from "../../lib/gameConfig";
+import { FORMATS_BY_TEAM_SIZE, GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, SCRAMBLE_DEFAULT_PCTS, TEAM_SIZE_OPTIONS, isMatchFormat, isSharedBallFormat, segmentOption, segmentOptionsFor } from "../../lib/gameConfig";
 import { clampInt } from "../../lib/golf";
 import { HANDICAP_MODES } from "../../lib/matchPlay";
 import { supabase } from "../../lib/supabase";
@@ -51,8 +51,8 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
 
   const [gamesMsg, setGamesMsg] = useState("");
 
-  // Admin: Composite (multi-format) game builder
-  const [newGameTeamSize, setNewGameTeamSize] = useState(2);
+  // Admin: Team size picker (1, 2 or 4): decides which formats the Format list offers, and a Multi-Format Round's team size
+  const [newGameTeamSize, setNewGameTeamSize] = useState(1);
 
   // When a playing group is bigger than a 2-man team: "balanced" pairs the
   // lowest handicap with the highest, "order" pairs them as listed, "keep"
@@ -119,7 +119,6 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
     }
 
     if (format === "composite") {
-      setNewGameTeamSize(2);
       setNewGameSegments([
         { fromHole: 1, toHole: 6, formatKey: "scramble", handicapPct: 100, lowPct: 35, highPct: 15 },
         { fromHole: 7, toHole: 12, formatKey: "best_ball", handicapPct: 100, lowPct: 35, highPct: 15 },
@@ -135,6 +134,23 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
 
     const presets = GAME_PRESETS[format] || [];
     if (presets[0]) applyPreset(presets[0]);
+  }
+
+  // Picking a team size narrows the Format list. The format stays if it still fits (a Multi-Format Round going from
+  // 2-Man to 4-Man, or Match Play from 1 to 2); otherwise it moves to the first format for that size.
+  function selectNewGameTeamSize(size) {
+    setNewGameTeamSize(size);
+    const allowed = FORMATS_BY_TEAM_SIZE[size] || [];
+    if (allowed.includes(newGameFormat)) {
+      if (newGameFormat === "composite") {
+        // a segment type that only exists for another team size (Alternate Shot is pairs only) becomes a Scramble
+        setNewGameSegments((prev) =>
+          prev.map((s) => (segmentOptionsFor(size).some(([k]) => k === s.formatKey) ? s : { ...s, formatKey: "scramble" }))
+        );
+      }
+      return;
+    }
+    if (allowed[0]) selectNewGameFormat(allowed[0]);
   }
 
   // --- Scramble ranked handicap-% builder ---
@@ -379,7 +395,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
         return;
       }
       segments = newGameSegments.map((s) => {
-        const opt = SEGMENT_FORMAT_OPTIONS[s.formatKey] || SEGMENT_FORMAT_OPTIONS.best_ball;
+        const opt = segmentOption(s.formatKey, clampInt(newGameTeamSize, 2));
         const from = Math.min(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
         const to = Math.max(clampInt(s.fromHole, 1), clampInt(s.toHole, 1));
         const holes = [];
@@ -649,17 +665,30 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
 
                     <div style={{ display: "grid", gap: 10 }}>
                   <label style={styles.label}>
+                    Team size
+                    <select
+                      style={styles.input}
+                      value={newGameTeamSize}
+                      onChange={(e) => selectNewGameTeamSize(clampInt(e.target.value, 1))}
+                    >
+                      {TEAM_SIZE_OPTIONS.map((o) => (
+                        <option key={o.size} value={o.size}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={styles.label}>
                     Format
                     <select
                       style={styles.input}
                       value={newGameFormat}
                       onChange={(e) => selectNewGameFormat(e.target.value)}
                     >
-                      {Object.entries(GAME_FORMAT_LABELS)
-                        .filter(([key]) => key !== "ryder_cup") // parked for now
-                        .map(([key, label]) => (
+                      {(FORMATS_BY_TEAM_SIZE[newGameTeamSize] || []).map((key) => (
                         <option key={key} value={key}>
-                          {label}
+                          {GAME_FORMAT_LABELS[key]}
                         </option>
                       ))}
                     </select>
@@ -880,22 +909,10 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
 
                   {newGameFormat === "composite" && (
                     <div style={{ display: "grid", gap: 10 }}>
-                      <label style={styles.label}>
-                        Team size
-                        <select
-                          style={styles.input}
-                          value={newGameTeamSize}
-                          onChange={(e) => setNewGameTeamSize(clampInt(e.target.value, 2))}
-                        >
-                          <option value={2}>2-Man</option>
-                          <option value={4}>4-Man</option>
-                        </select>
-                      </label>
-
-                      <div style={styles.label}>Segments (holes 1–18)</div>
+                      <div style={styles.label}>Segments (holes 1–18) — {newGameTeamSize === 4 ? "4-Man teams" : "2-Man teams"}</div>
 
                       {newGameSegments.map((seg, i) => {
-                        const opt = SEGMENT_FORMAT_OPTIONS[seg.formatKey] || SEGMENT_FORMAT_OPTIONS.best_ball;
+                        const opt = segmentOption(seg.formatKey, clampInt(newGameTeamSize, 2));
                         return (
                           <div
                             key={i}
@@ -931,7 +948,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                                 value={seg.formatKey}
                                 onChange={(e) => updateSegment(i, { formatKey: e.target.value })}
                               >
-                                {Object.entries(SEGMENT_FORMAT_OPTIONS).map(([key, o]) => (
+                                {segmentOptionsFor(clampInt(newGameTeamSize, 2)).map(([key, o]) => (
                                   <option key={key} value={key}>
                                     {o.label}
                                   </option>
@@ -1021,7 +1038,7 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
                             {canSplit && (
                               <label style={styles.label}>
                                 Your groups have more than 2 players. For 2-man teams:
-                                <select style={styles.input} value={newGameSplit} onChange={(e) => setNewGameSplit(e.target.value)}>
+                                <select style={{ ...styles.input, width: "100%", maxWidth: "100%", boxSizing: "border-box" }} value={newGameSplit} onChange={(e) => setNewGameSplit(e.target.value)}>
                                   <option value="balanced">Split each group into pairs: lowest + highest handicap together</option>
                                   <option value="order">Split each group into pairs: in the order listed</option>
                                   <option value="keep">Keep each whole group as one team</option>
