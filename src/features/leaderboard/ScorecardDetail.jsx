@@ -5,7 +5,7 @@ import { StrokeDots } from "../../components/StrokeMarks";
 import { PARS, STROKE_INDEX } from "../../lib/course";
 import { drinksOnHole } from "../../lib/drinks";
 import { strokesOnHoleForGame } from "../../lib/gameCalc";
-import { clampInt, formatToPar } from "../../lib/golf";
+import { clampInt, formatToPar, hcpLabel } from "../../lib/golf";
 import { THEME, styles } from "../../theme";
 
 /**
@@ -123,6 +123,9 @@ export function ScorecardDetail({ player, game }) {
 
   return (
     <div style={{ padding: "10px 8px" }}>
+      <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>
+        {player.name} ({hcpLabel(player.handicap)})
+      </div>
       {/* overscrollBehaviorX stops a horizontal scroll here from chaining
           into the Leaderboard's own horizontally-scrollable table once this
           one hits its edge. */}

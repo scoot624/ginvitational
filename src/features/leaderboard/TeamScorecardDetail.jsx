@@ -6,7 +6,7 @@ import { StrokeDots, WithStrokes } from "../../components/StrokeMarks";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { PARS, STROKE_INDEX } from "../../lib/course";
 import { drinksOnHole } from "../../lib/drinks";
-import { formatToPar, surname } from "../../lib/golf";
+import { formatToPar, hcpLabel, surname } from "../../lib/golf";
 import { THEME, styles } from "../../theme";
 
 export function TeamScorecardDetail({ row, roundId }) {
@@ -70,7 +70,7 @@ export function TeamScorecardDetail({ row, roundId }) {
   const show = (v) => (v == null || v === "" ? "" : v);
   const netColor = (n) => (n == null ? {} : n < 0 ? { color: THEME.good } : n > 0 ? { color: THEME.bad } : { opacity: 0.9 });
 
-  const LABEL_W = 72;
+  const LABEL_W = 96; // wide enough for "McCloskey (7)"
   const stickyShadow = "2px 0 4px rgba(0,0,0,0.10)";
   const labelBase = {
     position: "sticky",
@@ -107,7 +107,7 @@ export function TeamScorecardDetail({ row, roundId }) {
       : []),
     ...(anySolo
       ? members.map((m) => ({
-          label: surname(m.name),
+          label: `${surname(m.name)} (${hcpLabel(m.handicap)})`,
           hole: (x) =>
             isSolo(x) ? (
               <WithStrokes n={x.m && x.m.strokes ? x.m.strokes[m.id] : 0}>{x.d && !x.d.shared && x.d.grosses[m.id] != null ? x.d.grosses[m.id] : ""}</WithStrokes>
