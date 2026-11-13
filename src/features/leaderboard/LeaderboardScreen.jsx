@@ -264,12 +264,8 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
 
                                 <td style={{ ...lbTd, minWidth: 120 }}>
                                   {isTeamFormat ? (
-                                    <>
-                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
-                                      <div style={styles.playerMeta}>
-                                        {r.members.map((m) => `${m.name} (HCP ${m.handicap})`).join(" • ")}
-                                      </div>
-                                    </>
+                                    // one line per team: the players' last names ("Cole / Dunn")
+                                    <div style={{ fontWeight: 950 }}>{r.name}</div>
                                   ) : (
                                     <>
                                       <button

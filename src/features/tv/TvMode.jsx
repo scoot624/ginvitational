@@ -207,6 +207,8 @@ export function TvMode({ eventName, subtitle, board, messages, forms, onExit }) 
                       style={{
                         minWidth: 0,
                         fontWeight: 700,
+                        // a team of four last names is long: shrink it a little rather than cut it off
+                        fontSize: r.name.length > 30 ? "0.72em" : r.name.length > 22 ? "0.85em" : undefined,
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",

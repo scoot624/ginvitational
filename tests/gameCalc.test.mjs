@@ -121,9 +121,9 @@ test('2-Man Alternate Shot is scored and handicapped exactly like the 2-Man Scra
   const shape = (rows) => rows.map(({ name, toPar, holesPlayed, teamHandicap, scoresByHole, gross }) => ({ name, toPar, holesPlayed, teamHandicap, scoresByHole, gross }));
   assert.deepEqual(shape(alt), shape(scramble));
   // Team 1 blend: 10 x 35% + 20 x 15% = 6.5 -> 7 strokes; Team 2: 4 x 35% + 30 x 15% = 5.9 -> 6
-  assert.equal(alt.find((r) => r.name === 'Team 1').teamHandicap, 7);
-  assert.equal(alt.find((r) => r.name === 'Team 2').teamHandicap, 6);
+  assert.equal(alt.find((r) => r.teamName === 'Team 1').teamHandicap, 7);
+  assert.equal(alt.find((r) => r.teamName === 'Team 2').teamHandicap, 6);
   // and a different allowance changes it the same way it does for the scramble
   const alt50 = computeGameRows({ id: 'x', format: 'alt_shot_2', handicap_pct: 100, handicap_allowance: [50, 50] }, ctxFor('x'));
-  assert.equal(alt50.find((r) => r.name === 'Team 1').teamHandicap, 15);
+  assert.equal(alt50.find((r) => r.teamName === 'Team 1').teamHandicap, 15);
 });

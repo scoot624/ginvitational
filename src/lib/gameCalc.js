@@ -14,6 +14,14 @@ import { creditFor, sharedCredit } from "./drinks.js";
 import { isSharedBallFormat } from "./gameConfig.js";
 import { clampInt, lastName, strokesForHandicap } from "./golf.js";
 
+/**
+ * What a team is called on a board: its players' last names, one line ("Cole / Dunn", or all four for a 4-man team).
+ * Falls back to the saved team name when a team has no players yet.
+ */
+export function teamLabel(members, fallback) {
+  return (members || []).map((p) => lastName(p.name)).filter(Boolean).join(" / ") || fallback;
+}
+
 /** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */
 function playingHandicap(handicap, handicapPct) {
   return Math.round(clampInt(handicap, 0) * (clampInt(handicapPct, 100) / 100));
@@ -204,8 +212,9 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
 
     return {
       id: team.id,
-      name: team.name,
-      last: team.name,
+      name: teamLabel(members, team.name),
+      teamName: team.name, // the name saved with the team (not shown on boards)
+      last: teamLabel(members, team.name),
       members: members.map((p) => ({ id: p.id, name: p.name, handicap: clampInt(p.handicap, 0) })),
       holesPlayed,
       toPar,
@@ -264,8 +273,9 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
 
     return {
       id: team.id,
-      name: team.name,
-      last: team.name,
+      name: teamLabel(members, team.name),
+      teamName: team.name, // the name saved with the team (not shown on boards)
+      last: teamLabel(members, team.name),
       members: members.map((p) => ({ id: p.id, name: p.name, handicap: clampInt(p.handicap, 0) })),
       teamHandicap,
       holesPlayed,
@@ -369,8 +379,9 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
 
     return {
       id: team.id,
-      name: team.name,
-      last: team.name,
+      name: teamLabel(members, team.name),
+      teamName: team.name, // the name saved with the team (not shown on boards)
+      last: teamLabel(members, team.name),
       members: members.map((p) => ({ id: p.id, name: p.name, handicap: clampInt(p.handicap, 0) })),
       holesPlayed,
       toPar,
