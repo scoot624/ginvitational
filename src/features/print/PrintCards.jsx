@@ -1,19 +1,16 @@
 // Print scorecards: two per landscape sheet at 100% scale.
+// A team game prints one card per team (one shared box on a scramble / alternate-shot hole, a box per player on a
+// better-ball hole); an individual game prints one card per playing group. See lib/printCards for what goes on each.
 
 import { STROKE_INDEX, strokesOnHole } from "../../lib/course";
 import { isSharedBallFormat } from "../../lib/gameConfig";
 import { clampInt, lastName } from "../../lib/golf";
+import { buildPrintCards } from "../../lib/printCards";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { FONT_DISPLAY } from "../../theme";
 
-export function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, eventName, logoSrc, game, fieldOffset }) {
-  // members per foursome (up to 4)
-  const membersByFid = new Map();
-  for (const f of foursomes) {
-    const pids = foursomePlayers.filter((fp) => fp.foursome_id === f.id).map((x) => x.player_id);
-    const mem = players.filter((p) => pids.includes(p.id)).slice(0, 4);
-    membersByFid.set(f.id, mem);
-  }
+export function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, gameTeams, gameTeamMembers, eventName, logoSrc, game, fieldOffset }) {
+  const cards = buildPrintCards({ foursomes, players, foursomePlayers, game, gameTeams, gameTeamMembers, fieldOffset });
 
   // Everyone starting on the same hole (just different tee times) → the tee
   // time is what tells the cards apart, so print that. If starting holes
@@ -23,43 +20,177 @@ export function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, even
 
   // 2 per page
   const pages = [];
-  for (let i = 0; i < foursomes.length; i += 2) pages.push([foursomes[i], foursomes[i + 1] || null]);
+  for (let i = 0; i < cards.length; i += 2) pages.push([cards[i], cards[i + 1] || null]);
+  const renderCard = (card) =>
+    card.kind === "team" ? (
+      <PrintTeamCard card={card} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
+    ) : (
+      <PrintOneGroupCard f={card.f} members={card.members} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
+    );
 
   return (
     <div id="printRoot" style={ps.root}>
       {pages.map((pair, idx) => (
         <div className="printPage" key={idx} style={ps.page}>
           <div style={ps.twoUpRow}>
-            <div style={ps.col}>
-              {pair[0] && (
-                <PrintOneGroupCard
-                  f={pair[0]}
-                  members={membersByFid.get(pair[0].id) || []}
-                  showTeeTime={showTeeTime}
-                  eventName={eventName}
-                  logoSrc={logoSrc}
-                  game={game}
-                  fieldOffset={fieldOffset}
-                />
-              )}
-            </div>
+            <div style={ps.col}>{pair[0] && renderCard(pair[0])}</div>
 
-            <div style={ps.col}>
-              {pair[1] && (
-                <PrintOneGroupCard
-                  f={pair[1]}
-                  members={membersByFid.get(pair[1].id) || []}
-                  showTeeTime={showTeeTime}
-                  eventName={eventName}
-                  logoSrc={logoSrc}
-                  game={game}
-                  fieldOffset={fieldOffset}
-                />
-              )}
-            </div>
+            <div style={ps.col}>{pair[1] && renderCard(pair[1])}</div>
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Title, group / team details and logo at the top of a card. `teamLabel` adds a "Team:" line; `note` adds a small grey line. */
+function CardHeader({ f, showTeeTime, eventName, logoSrc, game, offset, teamLabel, note }) {
+  const g = f || {};
+  return (
+    <div style={ps.headerRow}>
+      <div style={{ flex: "1 1 0", minWidth: 0 }}>
+        <div style={ps.title}>{eventName || "The Ginvitational"}</div>
+
+        {/* Meta block */}
+        <div style={ps.metaBlock}>
+          {teamLabel ? (
+            <div style={ps.metaLine}>
+              <span style={ps.metaLabel}>Team:</span> <span style={{ fontWeight: 700 }}>{teamLabel}</span>
+            </div>
+          ) : null}
+          <div style={ps.metaLine}>
+            <span style={ps.metaLabel}>Group Name:</span> <span>{g.group_name || ""}</span>
+          </div>
+          {/* Only the detail that tells the groups apart: tee time when everyone
+              starts on the same hole, otherwise the starting hole. */}
+          {showTeeTime ? (
+            <div style={ps.metaLine}>
+              <span style={ps.metaLabel}>Tee Time:</span> <span>{formatTeeTime(g.tee_time)}</span>
+            </div>
+          ) : (
+            <div style={ps.metaLine}>
+              <span style={ps.metaLabel}>Starting Hole:</span> <span>{g.starting_hole || ""}</span>
+            </div>
+          )}
+          <div style={ps.metaLine}>
+            <span style={ps.metaLabel}>Handicap:</span>{" "}
+            <span>
+              {game ? game.name : "Course Handicap"}
+              {game && game.format !== "composite" && !isSharedBallFormat(game.format)
+                ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
+                : ""}
+              {offset !== 0 ? " • Field-Relative" : ""}
+            </span>
+          </div>
+          {note ? <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>{note}</div> : null}
+        </div>
+      </div>
+
+      <img src={logoSrc} alt="" style={ps.logo} />
+    </div>
+  );
+}
+
+/** The group code row at the bottom of a card (it is what opens the group on the Enter Scores screen). */
+function CardFooter({ f }) {
+  return (
+    <div style={ps.bottomRow}>
+      <div style={ps.bottomInner}>
+        <span style={{ fontWeight: 700 }}>Group Code</span>
+        <span style={{ marginLeft: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+          {(f && f.code) || ""}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One scorecard for one TEAM. A hole the team plays as one ball (scramble / alternate shot) is a single wide box;
+ * a hole each player plays their own ball is a box per player. The Out / In / Total rows are one team box when any hole
+ * is a shared ball, and a box per player when every hole is own-ball. Dots mark handicap strokes (the team ball's on a
+ * shared box, each player's own on the rest).
+ */
+export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fieldOffset }) {
+  const { members, holes, anyShared, f } = card;
+  const n = Math.max(1, members.length);
+  const offset = clampInt(fieldOffset, 0);
+  const dotStr = (k) => (k > 0 ? "•".repeat(k) : k < 0 ? "+".repeat(-k) : "");
+  const colWidth = `${80 / n}%`;
+
+  const holeRows = (start, end) =>
+    Array.from({ length: end - start + 1 }, (_, k) => {
+      const h = start + k;
+      const hm = holes[h - 1];
+      return (
+        <tr key={h}>
+          <td style={ps.tdHole}>{h}</td>
+          <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
+          {hm.shared ? (
+            <td colSpan={n} style={ps.tdScore}>
+              <div style={ps.scoreWriteArea} />
+              <div style={ps.dotCorner}>{dotStr(hm.ballStrokes)}</div>
+              <div style={ps.teamBallTag}>team ball</div>
+            </td>
+          ) : (
+            members.map((p) => (
+              <td key={`${h}-${p.id}`} style={ps.tdScore}>
+                <div style={ps.scoreWriteArea} />
+                <div style={ps.dotCorner}>{dotStr((hm.strokes || {})[p.id] || 0)}</div>
+              </td>
+            ))
+          )}
+        </tr>
+      );
+    });
+
+  // Out / In / Total: one team box when any hole is shared, otherwise a box under each player
+  const totalRow = (label, key) => (
+    <tr key={key}>
+      <td style={ps.tdOutInTotal}>{label}</td>
+      <td style={ps.tdOutInTotal} />
+      {anyShared ? (
+        <td colSpan={n} style={ps.tdScore}>
+          <div style={ps.scoreWriteArea} />
+        </td>
+      ) : (
+        members.map((p) => (
+          <td key={`${key}-${p.id}`} style={ps.tdScore}>
+            <div style={ps.scoreWriteArea} />
+          </td>
+        ))
+      )}
+    </tr>
+  );
+
+  return (
+    <div style={ps.cardOuter}>
+      <CardHeader f={f} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} offset={offset} teamLabel={card.label} />
+
+      <table style={ps.table}>
+        <thead>
+          <tr>
+            <th style={ps.thHole}>Hole</th>
+            <th style={ps.thHi}>H.I</th>
+            {members.map((p) => (
+              <th key={p.id} style={{ ...ps.thPlayer, width: colWidth }}>
+                <div style={ps.playerLast}>{lastName(p.name) || p.name}</div>
+                <div style={ps.playerHcp}>HCP {clampInt(p.handicap, 0)}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+
+        <tbody>
+          {holeRows(1, 9)}
+          {totalRow("Out", "out")}
+          {holeRows(10, 18)}
+          {totalRow("In", "in")}
+          {totalRow("Total", "tot")}
+        </tbody>
+      </table>
+
+      <CardFooter f={f} />
     </div>
   );
 }
@@ -120,46 +251,15 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
     <div style={ps.cardOuter}>
       {/* Header: title + group details on the left, spool logo top-right. The
           logo spans the height of the text beside it, so it adds no height. */}
-      <div style={ps.headerRow}>
-        <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div style={ps.title}>{eventName || "The Ginvitational"}</div>
-
-          {/* Meta block */}
-          <div style={ps.metaBlock}>
-            <div style={ps.metaLine}>
-              <span style={ps.metaLabel}>Group Name:</span> <span>{f.group_name || ""}</span>
-            </div>
-            {/* Only the detail that tells the groups apart: tee time when everyone
-                starts on the same hole, otherwise the starting hole. */}
-            {showTeeTime ? (
-              <div style={ps.metaLine}>
-                <span style={ps.metaLabel}>Tee Time:</span> <span>{formatTeeTime(f.tee_time)}</span>
-              </div>
-            ) : (
-              <div style={ps.metaLine}>
-                <span style={ps.metaLabel}>Starting Hole:</span> <span>{f.starting_hole || ""}</span>
-              </div>
-            )}
-            <div style={ps.metaLine}>
-              <span style={ps.metaLabel}>Handicap:</span>{" "}
-              <span>
-                {game ? game.name : "Course Handicap"}
-                {game && game.format !== "composite" && !isSharedBallFormat(game.format)
-                  ? ` • ${clampInt(game.handicap_pct, 100)}% allocation`
-                  : ""}
-                {offset !== 0 ? " • Field-Relative" : ""}
-              </span>
-            </div>
-            {hasSharedHoles && (
-              <div style={{ ...ps.metaLine, fontSize: 10, opacity: 0.75 }}>
-                Scramble / alternate-shot holes aren't dot-marked — allocate by the team's blended handicap.
-              </div>
-            )}
-          </div>
-        </div>
-
-        <img src={logoSrc} alt="" style={ps.logo} />
-      </div>
+      <CardHeader
+        f={f}
+        showTeeTime={showTeeTime}
+        eventName={eventName}
+        logoSrc={logoSrc}
+        game={game}
+        offset={offset}
+        note={hasSharedHoles ? "Scramble / alternate-shot holes aren't dot-marked — allocate by the team's blended handicap." : null}
+      />
 
       {/* Main table */}
       <table style={ps.table}>
@@ -217,14 +317,7 @@ export function PrintOneGroupCard({ f, members, showTeeTime, eventName, logoSrc,
       </table>
 
       {/* Bottom code row */}
-      <div style={ps.bottomRow}>
-        <div style={ps.bottomInner}>
-          <span style={{ fontWeight: 700 }}>Group Code</span>
-          <span style={{ marginLeft: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-            {f.code || ""}
-          </span>
-        </div>
-      </div>
+      <CardFooter f={f} />
     </div>
   );
 }
@@ -270,6 +363,8 @@ const ps = {
   tdScore: { border: "1px solid #000", padding: 2, position: "relative" },
   scoreWriteArea: { height: 21, width: "100%" },
   dotCorner: { position: "absolute", top: 1, right: 3, fontSize: 12, lineHeight: 1, letterSpacing: 1 },
+  // a tiny reminder in a shared box that this hole is one score for the whole team
+  teamBallTag: { position: "absolute", top: 2, left: 4, fontSize: 7, lineHeight: 1, textTransform: "uppercase", letterSpacing: 0.6, opacity: 0.55 },
 
   tdOutInTotal: { border: "1px solid #000", padding: "2px 4px", fontSize: 11, textAlign: "right", fontWeight: 700 },
 

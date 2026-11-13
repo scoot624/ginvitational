@@ -963,6 +963,8 @@ export default function App() {
     foursomes={foursomes}
     players={players}
     foursomePlayers={foursomePlayers}
+    gameTeams={gameTeams}
+    gameTeamMembers={gameTeamMembers}
     eventName={eventName}
     logoSrc={logoSrc}
     game={printGame}
