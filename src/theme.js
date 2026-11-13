@@ -60,8 +60,8 @@ export const THEME = {
   chromeBorder: "rgba(237, 231, 216, 0.20)",
 };
 
-/** The handicap-stroke dot / "+" color: dark enough to read on the cream scorecard. */
-export const STROKE_COLOR = "#8A6238";
+/** The handicap-stroke dot / "+" color: black, so it reads clearly on the cream scorecard. */
+export const STROKE_COLOR = "#000000";
 
 export const FONT_DISPLAY = "'Fraunces', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif";
 
