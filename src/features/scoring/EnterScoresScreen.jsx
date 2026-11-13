@@ -2,7 +2,7 @@ import { DrinkControls } from "../drinks/DrinkControls";
 import { StrokeDots } from "../../components/StrokeMarks";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { PARS, STROKE_INDEX } from "../../lib/course";
-import { clampInt } from "../../lib/golf";
+import { clampInt, hcpLabel } from "../../lib/golf";
 import { strokesForEntry } from "../../lib/strokes";
 import { THEME, styles } from "../../theme";
 
@@ -98,7 +98,7 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
-                                {grp.players.map((p) => p.name).join(" / ")}
+                                {grp.players.map((p) => `${p.name} (${hcpLabel(p.handicap)})`).join(" / ")}
                               </div>
                               {/* a dot per handicap stroke this player (or the shared ball) gets on this hole; a "+" gives one back */}
                               {stroke.strokes ? (
@@ -107,11 +107,9 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
                                 </span>
                               ) : null}
                             </div>
-                            <div style={{ fontSize: 12, color: THEME.textMuted }}>
-                              {grp.shared
-                                ? "Team score — one shared ball"
-                                : `HCP ${clampInt(grp.players[0].handicap, 0)}`}
-                            </div>
+                            {grp.shared ? (
+                              <div style={{ fontSize: 12, color: THEME.textMuted }}>Team score — one shared ball</div>
+                            ) : null}
                           </div>
 
                           <input
