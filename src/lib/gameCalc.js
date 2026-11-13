@@ -187,6 +187,7 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
     let totalCounted = 0;
     let parPlayed = 0;
     const countedByHole = {};
+    const detailByHole = {}; // for the team scorecard: { hole: { par, counted, shared, grosses } }
 
     for (let h = 1; h <= 18; h++) {
       const memberValues = members
@@ -203,6 +204,12 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
       if (counted == null) continue;
 
       countedByHole[h] = counted;
+      detailByHole[h] = {
+        par: PARS[h - 1] * parMultiplier,
+        counted,
+        shared: false,
+        grosses: Object.fromEntries(memberValues.map((m) => [m.playerId, m.gross])),
+      };
       holesPlayed += 1;
       totalCounted += counted;
       parPlayed += PARS[h - 1] * parMultiplier;
@@ -219,6 +226,7 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
       holesPlayed,
       toPar,
       scoresByHole: countedByHole,
+      detailByHole,
       gross: totalCounted,
     };
   });
@@ -252,6 +260,7 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
     let totalCounted = 0;
     let parPlayed = 0;
     const countedByHole = {};
+    const detailByHole = {};
 
     for (let h = 1; h <= 18; h++) {
       const grosses = members
@@ -264,6 +273,7 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
       const counted = netScoreForHoleGame(gross, teamHandicap, 100, h, STROKE_INDEX, sharedCredit(credit, memberIds, h));
 
       countedByHole[h] = counted;
+      detailByHole[h] = { par: PARS[h - 1], counted, shared: true, gross };
       holesPlayed += 1;
       totalCounted += counted;
       parPlayed += PARS[h - 1];
@@ -281,6 +291,7 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
       holesPlayed,
       toPar,
       scoresByHole: countedByHole,
+      detailByHole,
       gross: totalCounted,
     };
   });
@@ -322,6 +333,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
     let totalCounted = 0;
     let parPlayed = 0;
     const countedByHole = {};
+    const detailByHole = {};
 
     for (let h = 1; h <= 18; h++) {
       const seg = holeSegment.get(h);
@@ -329,6 +341,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
 
       let counted = null;
       let parMultiplier = 1;
+      let detail = null; // what was scored on this hole, for the team scorecard
 
       if (seg.formatType === "shared") {
         // One shared team score per hole — always compared against a single
@@ -347,6 +360,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
             lowHcp * (clampInt(allowance.lowPct, 0) / 100) + highHcp * (clampInt(allowance.highPct, 0) / 100)
           );
           counted = netScoreForHoleGame(gross, teamHandicap, 100, h, STROKE_INDEX, sharedCredit(credit, memberIds, h));
+          detail = { shared: true, gross };
         }
       } else {
         const pct = clampInt(seg.handicapPct, 100);
@@ -361,6 +375,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
 
         const rule = seg.countingRule || { scoresCounted: 1, slots: ["net"] };
         counted = teamCountedTotalForHole(memberValues, rule);
+        detail = { shared: false, grosses: Object.fromEntries(memberValues.map((m) => [m.playerId, m.gross])) };
         // Comparing N summed strokes against a single hole's par overstates
         // "to par" whenever N > 1 (e.g. Combined Score's two summed net
         // scores vs. one hole's par) — scale the baseline to match.
@@ -370,6 +385,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       if (counted == null) continue;
 
       countedByHole[h] = counted;
+      detailByHole[h] = { par: PARS[h - 1] * parMultiplier, counted, ...detail };
       holesPlayed += 1;
       totalCounted += counted;
       parPlayed += PARS[h - 1] * parMultiplier;
@@ -386,6 +402,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       holesPlayed,
       toPar,
       scoresByHole: countedByHole,
+      detailByHole,
       gross: totalCounted,
     };
   });

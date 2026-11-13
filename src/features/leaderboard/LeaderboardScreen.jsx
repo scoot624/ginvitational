@@ -3,6 +3,7 @@ import { DrinkBadge } from "../drinks/DrinkBadge";
 import { LockedBoardPanel } from "./LockedBoardPanel";
 import { expandChevronStyle, expandRowCellStyle } from "./rankStyles";
 import { ScorecardDetail } from "./ScorecardDetail";
+import { TeamScorecardDetail } from "./TeamScorecardDetail";
 import { MatchBoard } from "../match/MatchBoard";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { ROUND_OVERALL } from "../../lib/config";
@@ -228,7 +229,7 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                   <>
                     <div style={styles.helpText}>
                       {isTeamFormat
-                        ? `Team leaderboard for ${game.name}.`
+                        ? `Team leaderboard for ${game.name}. Tap a team to see its scorecard.`
                         : "Tap a player name to view their scorecard."}{" "}
                       Auto-refreshes every minute.
                     </div>
@@ -254,7 +255,8 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                 ? { opacity: 0.6, color: THEME.textMuted }
                                 : { fontWeight: 950, ...netColorStyle(r.toPar) };
 
-                            const expanded = !isTeamFormat && r.id === scorecardPlayerId;
+                            // a team row opens its team scorecard (only for a single round: "Overall" has no hole-by-hole)
+                            const expanded = r.id === scorecardPlayerId && (!isTeamFormat || !!r.detailByHole);
 
                             return [
                               <tr key={r.id}>
@@ -262,8 +264,26 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
 
                                 <td style={{ ...lbTd, minWidth: 120 }}>
                                   {isTeamFormat ? (
-                                    // one line per team: the players' last names ("Cole / Dunn")
-                                    <div style={{ fontWeight: 950 }}>{r.name}</div>
+                                    // one line per team: the players' last names ("Cole / Dunn"), tap for the team scorecard
+                                    r.detailByHole ? (
+                                      <button
+                                        style={{
+                                          ...styles.playerLink,
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                          maxWidth: "100%",
+                                          textAlign: "left",
+                                          whiteSpace: "normal", // a four-name team wraps instead of running into the arrow
+                                        }}
+                                        onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
+                                      >
+                                        <span style={{ minWidth: 0 }}>{r.name}</span>
+                                        <span style={{ ...expandChevronStyle(expanded), flex: "none" }}>▸</span>
+                                      </button>
+                                    ) : (
+                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
+                                    )
                                   ) : (
                                     <>
                                       <button
@@ -302,7 +322,14 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                               expanded && (
                                 <tr key={`${r.id}-detail`}>
                                   <td colSpan={4} style={expandRowCellStyle}>
-                                    <ScorecardDetail player={scorecardPlayer} game={game} />
+                                    {isTeamFormat ? (
+                                      <TeamScorecardDetail
+                                        row={r}
+                                        roundId={selectedRoundId && selectedRoundId !== ROUND_OVERALL ? selectedRoundId : activeRound?.id}
+                                      />
+                                    ) : (
+                                      <ScorecardDetail player={scorecardPlayer} game={game} />
+                                    )}
                                   </td>
                                 </tr>
                               ),
