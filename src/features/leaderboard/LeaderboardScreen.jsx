@@ -8,11 +8,15 @@ import { MatchBoard } from "../match/MatchBoard";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { ROUND_OVERALL } from "../../lib/config";
 import { GAME_SCORE_LABELS, isMatchFormat, isTeamFormat as isTeamGameFormat } from "../../lib/gameConfig";
-import { formatToPar } from "../../lib/golf";
+import { formatToPar, hcpLabel, surname } from "../../lib/golf";
 import { lastPlaceRank } from "../../lib/ranking";
 import { THEME, netColorStyle, styles } from "../../theme";
 
 // The Leaderboard screen: round and game tabs, and the board for the selected game.
+
+/** A team's line on the board: each player's last name with their handicap, e.g. "Cole (4) / Dunn (8)". */
+const teamWithHandicaps = (r) =>
+  (r.members || []).length > 0 ? r.members.map((m) => `${surname(m.name)} (${hcpLabel(m.handicap)})`).join(" / ") : r.name;
 
 export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameResults, selectedGameId, setSelectedGameId, unlockGameBoard, matchEntriesByGame, scorecardPlayerId, setScorecardPlayerId, scorecardPlayer }) {
   const {
@@ -152,10 +156,10 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                   <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                     <thead>
                       <tr>
-                        <th style={{ ...lbTh, width: "16%" }}>#</th>
-                        <th style={{ ...lbTh, width: "44%" }}>Player</th>
-                        <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>Net vs Par</th>
-                        <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
+                        <th style={{ ...lbTh, width: "11%" }}>#</th>
+                        <th style={{ ...lbTh, width: "52%" }}>Player</th>
+                        <th style={{ ...lbTh, width: "21%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>Net vs Par</th>
+                        <th style={{ ...lbTh, width: "16%", textAlign: "center" }}>Holes</th>
                       </tr>
                     </thead>
 
@@ -175,16 +179,15 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
 
                             <td style={{ ...lbTd, minWidth: 120 }}>
                               <button
-                                style={{ ...styles.playerLink, display: "inline-flex", alignItems: "center", gap: 6 }}
+                                style={{ ...styles.playerLink, display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%", textAlign: "left", whiteSpace: "normal" }}
                                 onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
                               >
-                                {r.name}
-                                <span style={expandChevronStyle(expanded)}>▸</span>
+                                <span style={{ minWidth: 0 }}>
+                                  {r.name} ({hcpLabel(r.handicap)})
+                                </span>
+                                <span style={{ ...expandChevronStyle(expanded), flex: "none" }}>▸</span>
                               </button>
-                              <div style={styles.playerMeta}>
-                                HCP {r.handicap}
-                                {r.charity ? ` • ${r.charity}` : ""}
-                              </div>
+                              {r.charity ? <div style={styles.playerMeta}>{r.charity}</div> : null}
                               <DrinkBadge playerId={r.id} roundId={activeRound?.id} holesPlayed={r.holesPlayed} />
                             </td>
 
@@ -240,10 +243,10 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                       <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                         <thead>
                           <tr>
-                            <th style={{ ...lbTh, width: "16%" }}>#</th>
-                            <th style={{ ...lbTh, width: "44%" }}>{isTeamFormat ? "Team" : "Player"}</th>
-                            <th style={{ ...lbTh, width: "22%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>{scoreLabel}</th>
-                            <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
+                            <th style={{ ...lbTh, width: "11%" }}>#</th>
+                            <th style={{ ...lbTh, width: "52%" }}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...lbTh, width: "21%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>{scoreLabel}</th>
+                            <th style={{ ...lbTh, width: "16%", textAlign: "center" }}>Holes</th>
                           </tr>
                         </thead>
 
@@ -278,11 +281,11 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                         }}
                                         onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
                                       >
-                                        <span style={{ minWidth: 0 }}>{r.name}</span>
+                                        <span style={{ minWidth: 0 }}>{teamWithHandicaps(r)}</span>
                                         <span style={{ ...expandChevronStyle(expanded), flex: "none" }}>▸</span>
                                       </button>
                                     ) : (
-                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
+                                      <div style={{ fontWeight: 950 }}>{teamWithHandicaps(r)}</div>
                                     )
                                   ) : (
                                     <>
@@ -292,16 +295,18 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                           display: "inline-flex",
                                           alignItems: "center",
                                           gap: 6,
+                                          maxWidth: "100%",
+                                          textAlign: "left",
+                                          whiteSpace: "normal",
                                         }}
                                         onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
                                       >
-                                        {r.name}
-                                        <span style={expandChevronStyle(expanded)}>▸</span>
+                                        <span style={{ minWidth: 0 }}>
+                                          {r.name} ({hcpLabel(r.handicap)})
+                                        </span>
+                                        <span style={{ ...expandChevronStyle(expanded), flex: "none" }}>▸</span>
                                       </button>
-                                      <div style={styles.playerMeta}>
-                                        HCP {r.handicap}
-                                        {r.charity ? ` • ${r.charity}` : ""}
-                                      </div>
+                                      {r.charity ? <div style={styles.playerMeta}>{r.charity}</div> : null}
                                       <DrinkBadge
                                         playerId={r.id}
                                         roundId={selectedRoundId === ROUND_OVERALL ? null : selectedRoundId || activeRound?.id}
