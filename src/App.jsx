@@ -732,6 +732,14 @@ export default function App() {
 
   // Sends every waiting score. Anything the database refuses (offline, error) stays queued
   // and is shown in the banner; the rest is removed once it is safely uploaded.
+  // Throw away scores still waiting to upload on this phone (for one round, or all), e.g. after they are deleted in Admin.
+  function discardUnsentScores(roundId = null) {
+    const keep = roundId ? readPendingScores().filter((q) => q.round_id !== roundId) : [];
+    writePendingScores(keep);
+    setPendingScores(keep);
+    setPendingErr("");
+  }
+
   async function uploadPendingScores() {
     if (uploadingRef.current) {
       uploadAgainRef.current = true; // something new was queued mid-upload: go round again
@@ -944,7 +952,7 @@ export default function App() {
         {tab === "enter" && <EnterScoresScreen activeFoursome={activeFoursome} setActiveFoursome={setActiveFoursome} setActivePlayers={setActivePlayers} setEntryCode={setEntryCode} setTab={setTab} hole={hole} roundComplete={roundComplete} setRoundComplete={setRoundComplete} saveHoleThenNavigate={saveHoleThenNavigate} holeEntryGroups={holeEntryGroups} activePlayers={activePlayers} holeInputs={holeInputs} setHoleInputs={setHoleInputs} />}
 
     {/* ADMIN */}
-    {tab === "admin" && <AdminScreen adminOn={adminOn} adminPin={adminPin} setAdminPin={setAdminPin} enterAdmin={enterAdmin} setAdminOn={setAdminOn} setTab={setTab} printGame={printGame} setPrintGameId={setPrintGameId} logoSrc={logoSrc} setPrintAllOn={setPrintAllOn} phoneSetupOn={phoneSetupOn} eventName={eventName} setPhoneSetupOn={setPhoneSetupOn} isWide={isWide} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} tagline={tagline} customLogo={customLogo} setMultiRoundEnabled={setMultiRoundEnabled} setRoundActive={setRoundActive} newRoundLabel={newRoundLabel} setNewRoundLabel={setNewRoundLabel} createRound={createRound} roundsMsg={roundsMsg} deleteGame={deleteGame} deleteRound={deleteRound} />}
+    {tab === "admin" && <AdminScreen adminOn={adminOn} adminPin={adminPin} setAdminPin={setAdminPin} enterAdmin={enterAdmin} setAdminOn={setAdminOn} setTab={setTab} printGame={printGame} setPrintGameId={setPrintGameId} logoSrc={logoSrc} setPrintAllOn={setPrintAllOn} phoneSetupOn={phoneSetupOn} eventName={eventName} setPhoneSetupOn={setPhoneSetupOn} isWide={isWide} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} tagline={tagline} customLogo={customLogo} setMultiRoundEnabled={setMultiRoundEnabled} setRoundActive={setRoundActive} newRoundLabel={newRoundLabel} setNewRoundLabel={setNewRoundLabel} createRound={createRound} roundsMsg={roundsMsg} deleteGame={deleteGame} deleteRound={deleteRound} discardUnsentScores={discardUnsentScores} />}
 
         {/* Router fallback */}
         {tab === "enter" && !activeFoursome && (

@@ -18,7 +18,7 @@ import { THEME, styles } from "../../theme";
 
 // The Admin screen: the passcode gate, the top buttons, and the sections.
 
-export function AdminScreen({ adminOn, adminPin, setAdminPin, enterAdmin, setAdminOn, setTab, printGame, setPrintGameId, logoSrc, setPrintAllOn, phoneSetupOn, eventName, setPhoneSetupOn, isWide, openAdminSection, setOpenAdminSection, tagline, customLogo, setMultiRoundEnabled, setRoundActive, newRoundLabel, setNewRoundLabel, createRound, roundsMsg, deleteGame, deleteRound }) {
+export function AdminScreen({ adminOn, adminPin, setAdminPin, enterAdmin, setAdminOn, setTab, printGame, setPrintGameId, logoSrc, setPrintAllOn, phoneSetupOn, eventName, setPhoneSetupOn, isWide, openAdminSection, setOpenAdminSection, tagline, customLogo, setMultiRoundEnabled, setRoundActive, newRoundLabel, setNewRoundLabel, createRound, roundsMsg, deleteGame, deleteRound, discardUnsentScores }) {
   const {
     lastLoadErrors,
     lastLoadAt,
@@ -216,7 +216,7 @@ export function AdminScreen({ adminOn, adminPin, setAdminPin, enterAdmin, setAdm
           <RoundsSection openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} setMultiRoundEnabled={setMultiRoundEnabled} setRoundActive={setRoundActive} newRoundLabel={newRoundLabel} setNewRoundLabel={setNewRoundLabel} createRound={createRound} roundsMsg={roundsMsg} />
 
           {/* Danger Zone — every irreversible action lives here, away from routine buttons */}
-          <DangerZoneSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} deleteGame={deleteGame} deleteRound={deleteRound} />
+          <DangerZoneSection adminOn={adminOn} openAdminSection={openAdminSection} setOpenAdminSection={setOpenAdminSection} deleteGame={deleteGame} deleteRound={deleteRound} discardUnsentScores={discardUnsentScores} />
 
         </div>
         )}
