@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { computeDrinkEvents, isDrinkKind } from '../src/lib/drinkEvents.js';
 import { planPosts, safeDedupeKey } from '../src/lib/broadcastEngine.js';
 
+// The Broadcast is kept quiet about drinks: a drink is NOT announced just because it was logged.
+
 const PARS = [4, 4, 4, 3, 4, 3, 5, 3, 5, 4, 3, 5, 3, 4, 5, 4, 4, 5];
 const NOW = Date.parse('2026-06-01T15:00:00Z');
 const iso = (minAgo) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -19,6 +21,7 @@ const base = (over = {}) => ({
 const kinds = (events) => events.map((e) => e.kind).sort();
 // pretend every event was saved, the way the app does
 const asSaved = (events) => events.map((e, i) => ({ id: 'm' + i, kind: e.kind, player_id: e.playerId, dedupe_key: safeDedupeKey(e.dedupe), created_at: iso(1) }));
+const FIRST_SEEN = asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]); // the day's first drink already announced
 
 test('nothing happens with the mode off, with no drinks, or for another round', () => {
   assert.deepEqual(computeDrinkEvents(base({ drinking: { ...MIN, enabled: false }, drinks: [drink('a', 1)] })), []);
@@ -26,129 +29,107 @@ test('nothing happens with the mode off, with no drinks, or for another round', 
   assert.deepEqual(computeDrinkEvents(base({ drinks: [{ ...drink('a', 1), round_id: 'other' }] })), []);
 });
 
-test('the first drink of the field is its own card; the next first drink is "on the board"', () => {
+test('the first drink of the day is announced once; nobody else\'s first drink is', () => {
   const first = computeDrinkEvents(base({ drinks: [drink('a', 2, 10)] }));
   assert.deepEqual(kinds(first), ['drink_first']);
   assert.match(first[0].text, /a P\./);
-  // once that is saved, b's first drink is a plain "on the board" card
-  const second = computeDrinkEvents(base({ drinks: [drink('a', 2, 10), drink('b', 3, 2)], messages: asSaved(first) }));
-  assert.deepEqual(kinds(second), ['drink_logged']);
-  assert.deepEqual(second[0].dedupe, ['drink', 'b', 'r1', 1]);
+  // once that is saved, a second player's first drink gets no card
+  assert.deepEqual(computeDrinkEvents(base({ drinks: [drink('a', 2, 10), drink('b', 3, 2)], messages: asSaved(first) })), []);
+  // and neither does the same player's next drink, even a minute later
+  assert.deepEqual(computeDrinkEvents(base({ drinks: [drink('a', 2, 10), drink('a', 3, 1)], messages: asSaved(first) })), []);
 });
 
-test('a drink is announced once: saved cards are never repeated', () => {
-  const drinks = [drink('a', 2, 10), drink('a', 3, 5)];
-  const first = computeDrinkEvents(base({ drinks }));
-  assert.equal(first.length, 1);
-  assert.equal(computeDrinkEvents(base({ drinks, messages: asSaved(first) })).length, 0);
+test('plain drinks, however many are logged, make no cards', () => {
+  const drinks = ['a', 'b'].flatMap((id) => [1, 2, 3, 4, 5, 6].map((h, i) => drink(id, h, 40 - i * 5)));
+  // a and b tie at 6, so there is no leader; hole 1..6 have 2 drinks each, so no busiest hole either
+  assert.deepEqual(computeDrinkEvents(base({ drinks, messages: FIRST_SEEN })), []);
 });
 
-test('only the newest count is announced (a missed #2 does not come back later)', () => {
-  // (b has 3 drinks from long ago, so a is not the sole drink leader and the plain card is the one that shows)
-  const stale = [4, 5, 6].map((h) => drink('b', h, 300));
-  const ev = computeDrinkEvents(base({ drinks: [...stale, drink('a', 1, 20), drink('a', 2, 10), drink('a', 3, 2)], messages: asSaved([{ kind: 'drink_first', playerId: 'b', dedupe: ['drink_first_field', 'r1'] }]) }));
-  assert.equal(ev.length, 1);
-  assert.deepEqual(ev[0].dedupe, ['drink', 'a', 'r1', 3]);
+test('hitting the minimum, reaching the credit max and falling behind pace no longer post cards', () => {
+  const four = [1, 2, 3, 4].map((h, i) => drink('a', h, 30 - i * 5));
+  const noPaceCards = (evs) => !evs.some((e) => /^drink_(min|max|behind)/.test(e.kind));
+  assert.ok(noPaceCards(computeDrinkEvents(base({ drinks: four, messages: FIRST_SEEN })))); // minimum of 4 reached (a is also the sole leader, which is its own card)
+  const three = [1, 2, 3].map((h, i) => drink('a', h, 12 - i * 3));
+  assert.ok(noPaceCards(computeDrinkEvents(base({ drinking: CREDIT, drinks: three, messages: FIRST_SEEN })))); // credit max of 3 reached
+  const rows = [row('a', { holesPlayed: 12, gross: { 12: 4 } }), row('b')];
+  assert.deepEqual(computeDrinkEvents(base({ rows, scoreTimes: { 'a|12': NOW - 1000 }, drinks: [drink('b', 1, 120)], messages: FIRST_SEEN })), []); // 0 of 4 through 12 holes
 });
 
 test('drinks older than 45 minutes are not announced (an old round stays quiet)', () => {
   assert.deepEqual(computeDrinkEvents(base({ drinks: [drink('a', 1, 50), drink('b', 2, 120)] })), []);
 });
 
-test('Minimum Drinks: hitting the minimum replaces the plain card, and says the minimum', () => {
-  const drinks = [1, 2, 3, 4].map((h, i) => drink('a', h, 40 - i * 5));
-  const ev = computeDrinkEvents(base({ drinks, messages: asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]) }));
-  assert.deepEqual(kinds(ev), ['drink_min']);
-  assert.match(ev[0].text, /4/);
-  // and it only happens once, however many more are logged
-  const done = [...ev, { kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }, { kind: 'drink_leader', playerId: 'a', dedupe: ['drink_leader', 'r1', 'a', 'first'] }];
-  const more = computeDrinkEvents(base({ drinks: [...drinks, drink('a', 5, 1)], messages: asSaved(done) }));
-  assert.deepEqual(kinds(more), ['drink_logged']);
-});
-
-test('Stroke Credit: reaching the max is announced; the minimum is not a thing', () => {
-  const drinks = [1, 2, 3].map((h, i) => drink('a', h, 12 - i * 3));
-  const ev = computeDrinkEvents(base({ drinking: CREDIT, drinks, messages: asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]) }));
-  assert.deepEqual(kinds(ev), ['drink_max']);
-  assert.match(ev[0].text, /3/);
-  assert.ok(!computeDrinkEvents(base({ drinking: CREDIT, drinks: [drink('a', 1), drink('a', 2), drink('a', 3), drink('a', 4)] })).some((e) => e.kind === 'drink_min'));
-});
-
-test('behind pace: needs 6+ holes, is Minimum-only, fresh scores, and is held back for an hour per player', () => {
-  const rows = [row('a', { holesPlayed: 9, gross: { 9: 4 } }), row('b')];
-  const st = { 'a|9': NOW - 60_000 };
-  const seen = asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]);
-  const drinks = [drink('b', 1, 120)]; // someone has a drink, but nothing fresh
-  const ev = computeDrinkEvents(base({ rows, scoreTimes: st, drinks }));
-  assert.deepEqual(kinds(ev), ['drink_behind']);
-  assert.deepEqual(ev[0].dedupe, ['drink_behind', 'a', 'r1', 9]);
-  assert.match(ev[0].text, /0 of 4/);
-  // under 6 holes: quiet
-  assert.equal(computeDrinkEvents(base({ rows: [row('a', { holesPlayed: 5, gross: { 5: 4 } })], scoreTimes: { 'a|5': NOW - 1000 }, drinks })).length, 0);
-  // an hour's cooldown per player
-  const recent = [{ id: 'x', kind: 'drink_behind', player_id: 'a', dedupe_key: 'zzz', created_at: iso(30) }];
-  assert.equal(computeDrinkEvents(base({ rows, scoreTimes: st, drinks, messages: [...seen, ...recent] })).length, 0);
-  // Stroke Credit has no pace
-  assert.equal(computeDrinkEvents(base({ drinking: CREDIT, rows, scoreTimes: st, drinks })).length, 0);
-});
-
-test('drink leader: a sole leader with 3+ drinks, announced when the lead changes hands, never in a tie', () => {
+test('drink leader: a sole leader with 3+ drinks, never in a tie, at most one an hour', () => {
   const drinks = [drink('a', 1, 30), drink('a', 2, 20), drink('a', 3, 3), drink('b', 4, 25)];
-  const ev = computeDrinkEvents(base({ drinks, messages: asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]) }));
-  assert.ok(ev.some((e) => e.kind === 'drink_leader' && e.playerId === 'a'));
+  const ev = computeDrinkEvents(base({ drinks, messages: FIRST_SEEN }));
+  assert.deepEqual(kinds(ev), ['drink_leader']);
+  assert.equal(ev[0].playerId, 'a');
   // a tie at 3 each: no leader card
   const tie = [...drinks, drink('b', 5, 15), drink('b', 6, 14)];
-  assert.ok(!computeDrinkEvents(base({ drinks: tie })).some((e) => e.kind === 'drink_leader'));
+  assert.ok(!computeDrinkEvents(base({ drinks: tie, messages: FIRST_SEEN })).some((e) => e.kind === 'drink_leader'));
+  // the lead changing hands again within the hour is not announced...
+  const justBefore = [{ id: 'x', kind: 'drink_leader', player_id: 'b', dedupe_key: 'zzz', created_at: iso(20) }];
+  assert.ok(!computeDrinkEvents(base({ drinks, messages: [...FIRST_SEEN, ...justBefore] })).some((e) => e.kind === 'drink_leader'));
+  // ...but after the hour it is
+  const longAgo = [{ id: 'x', kind: 'drink_leader', player_id: 'b', dedupe_key: 'zzz', created_at: iso(90) }];
+  assert.ok(computeDrinkEvents(base({ drinks, messages: [...FIRST_SEEN, ...longAgo] })).some((e) => e.kind === 'drink_leader'));
 });
 
-test('busiest hole: sole most-popular hole at 4 drinks, then again at 8', () => {
-  const four = [drink('a', 7, 9), drink('b', 7, 8), drink('c', 7, 7), drink('d', 7, 6), drink('a', 3, 5)];
+test('busiest hole: one card at 4 drinks and one at 8, even if a different hole takes over', () => {
   const rows = ['a', 'b', 'c', 'd'].map((id) => row(id));
-  const ev = computeDrinkEvents(base({ rows, drinks: four })).filter((e) => e.kind === 'drink_hole');
+  const four = [drink('a', 7, 9), drink('b', 7, 8), drink('c', 7, 7), drink('d', 7, 6), drink('a', 3, 5)];
+  const ev = computeDrinkEvents(base({ rows, drinks: four, messages: FIRST_SEEN })).filter((e) => e.kind === 'drink_hole');
   assert.equal(ev.length, 1);
   assert.equal(ev[0].playerId, null);
-  assert.deepEqual(ev[0].dedupe, ['drink_hole', 'r1', 7, 4]);
+  assert.deepEqual(ev[0].dedupe, ['drink_hole', 'r1', 4]);
   assert.match(ev[0].text, /7/);
   // three on a hole is not enough
-  assert.ok(!computeDrinkEvents(base({ rows, drinks: four.slice(0, 3) })).some((e) => e.kind === 'drink_hole'));
-  // eight announces again (a new key)
+  assert.ok(!computeDrinkEvents(base({ rows, drinks: four.slice(0, 3), messages: FIRST_SEEN })).some((e) => e.kind === 'drink_hole'));
+  // a different hole reaching 4 later does not make a second "4" card
+  const saved = [...FIRST_SEEN, ...asSaved(ev)];
+  const hole11 = [...four, drink('a', 11, 4), drink('b', 11, 3), drink('c', 11, 2), drink('d', 11, 1), drink('a', 11, 1)];
+  assert.ok(!computeDrinkEvents(base({ rows, drinks: hole11, messages: saved })).some((e) => e.kind === 'drink_hole' && e.dedupe[2] === 4));
+  // eight announces once more
   const eight = [...four, drink('a', 7, 4), drink('b', 7, 3), drink('c', 7, 2), drink('d', 7, 1)];
-  assert.deepEqual(computeDrinkEvents(base({ rows, drinks: eight })).find((e) => e.kind === 'drink_hole').dedupe, ['drink_hole', 'r1', 7, 8]);
+  assert.deepEqual(computeDrinkEvents(base({ rows, drinks: eight, messages: saved })).find((e) => e.kind === 'drink_hole').dedupe, ['drink_hole', 'r1', 8]);
 });
 
 test('drink-to-birdie: a birdie on the drink hole, or on the next hole the group plays', () => {
-  const seen = asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]);
-  // drink on 1, birdie (gross 3 on par 4) on 2
   const rows = [row('a', { holesPlayed: 2, gross: { 1: 4, 2: 3 }, startHole: 1 })];
   const st = { 'a|1': NOW - 120_000, 'a|2': NOW - 60_000 };
-  const next = computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 1, 9)], messages: seen }));
+  const next = computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 1, 9)], messages: FIRST_SEEN }));
   assert.deepEqual(kinds(next), ['drink_birdie']);
   assert.match(next[0].text, /#1/);
   assert.match(next[0].text, /#2/);
   // drink on the birdie hole itself
-  const same = computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 2, 9)], messages: seen }));
-  assert.deepEqual(kinds(same), ['drink_birdie']);
+  assert.deepEqual(kinds(computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 2, 9)], messages: FIRST_SEEN }))), ['drink_birdie']);
   // hole 2 is the group's FIRST hole: a drink on 1 does not count (it comes last in their order)
-  const wrapped = computeDrinkEvents(base({ rows: [row('a', { holesPlayed: 2, gross: { 1: 4, 2: 3 }, startHole: 2 })], scoreTimes: st, drinks: [drink('a', 1, 9)], messages: seen }));
+  const wrapped = computeDrinkEvents(base({ rows: [row('a', { holesPlayed: 2, gross: { 1: 4, 2: 3 }, startHole: 2 })], scoreTimes: st, drinks: [drink('a', 1, 9)], messages: FIRST_SEEN }));
   assert.ok(!wrapped.some((e) => e.kind === 'drink_birdie'));
   // a birdie with no drink around it is not a drink-to-birdie
-  assert.ok(!computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 9, 9)], messages: seen })).some((e) => e.kind === 'drink_birdie'));
+  assert.ok(!computeDrinkEvents(base({ rows, scoreTimes: st, drinks: [drink('a', 9, 9)], messages: FIRST_SEEN })).some((e) => e.kind === 'drink_birdie'));
   // an ace has its own card
-  const ace = computeDrinkEvents(base({ rows: [row('a', { holesPlayed: 2, gross: { 2: 1 } })], scoreTimes: { 'a|2': NOW - 1000 }, drinks: [drink('a', 2, 9)], messages: seen }));
+  const ace = computeDrinkEvents(base({ rows: [row('a', { holesPlayed: 2, gross: { 2: 1 } })], scoreTimes: { 'a|2': NOW - 1000 }, drinks: [drink('a', 2, 9)], messages: FIRST_SEEN }));
   assert.ok(!ace.some((e) => e.kind === 'drink_birdie'));
   // and an old birdie (more than 45 minutes ago) is not announced
-  assert.ok(!computeDrinkEvents(base({ rows, scoreTimes: { 'a|1': NOW - 5_000_000, 'a|2': NOW - 4_000_000 }, drinks: [drink('a', 1, 9)], messages: seen })).some((e) => e.kind === 'drink_birdie'));
+  assert.ok(!computeDrinkEvents(base({ rows, scoreTimes: { 'a|1': NOW - 5_000_000, 'a|2': NOW - 4_000_000 }, drinks: [drink('a', 1, 9)], messages: FIRST_SEEN })).some((e) => e.kind === 'drink_birdie'));
 });
 
-test('one card per player per check: a birdie beats the milestone, which beats the plain card', () => {
-  const rows = [row('a', { holesPlayed: 4, gross: { 1: 4, 2: 3 } })];
-  const drinks = [1, 2, 3, 4].map((h, i) => drink('a', h, 30 - i * 6));
-  const ev = computeDrinkEvents(base({ rows, scoreTimes: { 'a|2': NOW - 1000 }, drinks, messages: asSaved([{ kind: 'drink_first', playerId: 'a', dedupe: ['drink_first_field', 'r1'] }]) }));
+test('a drink-to-birdie beats the first-drink card for the same player (one card per player per check)', () => {
+  const rows = [row('a', { holesPlayed: 2, gross: { 1: 4, 2: 3 } })];
+  const ev = computeDrinkEvents(base({ rows, scoreTimes: { 'a|2': NOW - 1000 }, drinks: [drink('a', 1, 9)] }));
   assert.deepEqual(kinds(ev), ['drink_birdie']);
 });
 
+test('a card is announced once: saved cards are never repeated', () => {
+  const drinks = [drink('a', 2, 10)];
+  const first = computeDrinkEvents(base({ drinks }));
+  assert.equal(first.length, 1);
+  assert.equal(computeDrinkEvents(base({ drinks, messages: asSaved(first) })).length, 0);
+});
+
 // ---- the end-of-round report ----
-function field(n, { allFinished = true, vsFor = () => 0 } = {}) {
+function field(n, { allFinished = true, vsFor = () => 0, perPlayer = null } = {}) {
   const ids = Array.from({ length: n }, (_, i) => 'p' + i);
   const rows = ids.map((id, i) => row(id, {
     holesPlayed: allFinished || i > 0 ? 18 : 12,
@@ -156,18 +137,18 @@ function field(n, { allFinished = true, vsFor = () => 0 } = {}) {
     gross: {},
   }));
   // drinks on holes 1-3 once each, holes 4-6 twice each (long ago, so only the report speaks)
-  const drinks = ids.flatMap((id) => [1, 2, 3, 4, 4, 5, 5, 6, 6].map((h) => drink(id, h, 200)));
-  return { rows, drinks, fieldIds: new Set(ids), scoreTimes: { 'p0|18': NOW - 30 * 60_000 } };
+  const holes = [1, 2, 3, 4, 4, 5, 5, 6, 6];
+  const drinks = ids.flatMap((id, i) => (perPlayer ? holes.slice(0, perPlayer(i)) : holes).map((h) => drink(id, h, 200)));
+  return { rows, drinks, fieldIds: new Set(ids), scoreTimes: { 'p0|18': NOW - 30 * 60_000 }, messages: asSaved([{ kind: 'drink_first', playerId: 'p0', dedupe: ['drink_first_field', 'r1'] }]) };
 }
 const vsPattern = (id, h) => (h <= 3 ? 1 : h <= 6 ? 2 : 0);
 
 test('drink report: only once the whole field has finished, as raw net-to-par stats', () => {
-  const f = field(10, { vsFor: vsPattern });
-  const ev = computeDrinkEvents(base(f));
+  const ev = computeDrinkEvents(base(field(10, { vsFor: vsPattern })));
   const card = ev.find((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'field');
   assert.ok(card, 'field card');
   assert.equal(card.playerId, null);
-  assert.match(card.text, /across 10 players/);
+  assert.match(card.text, /Across 10 players/);
   assert.match(card.text, /\+1\.50/); // drink holes
   assert.match(card.text, /0\.00/); // dry holes
   assert.match(card.text, /Two or more drinks/);
@@ -175,9 +156,21 @@ test('drink report: only once the whole field has finished, as raw net-to-par st
   assert.ok(!computeDrinkEvents(base(field(10, { allFinished: false, vsFor: vsPattern }))).some((e) => e.kind === 'drinkreport'));
 });
 
-test('drink report: too few players means no field card, only individual highlights', () => {
+test('drink report says how many hit the minimum (Minimum Drinks) or used all their credits (Stroke Credit)', () => {
+  // players 0-5 have 9 drinks, players 6-9 only 2
+  const f = field(10, { vsFor: vsPattern, perPlayer: (i) => (i < 6 ? 9 : 2) });
+  const min = computeDrinkEvents(base(f)).find((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'field');
+  assert.match(min.text, /^Drink report: 6 of 10 players hit the minimum of 4 drinks\./);
+  const credit = computeDrinkEvents(base({ ...f, drinking: CREDIT })).find((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'field');
+  assert.match(credit.text, /^Drink report: 6 of 10 players used all 3 drink credits\./);
+});
+
+test('drink report: a small field still gets the count, but no field-wide comparison', () => {
   const ev = computeDrinkEvents(base(field(9, { vsFor: vsPattern })));
-  assert.ok(!ev.some((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'field'));
+  const card = ev.find((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'field');
+  assert.ok(card);
+  assert.match(card.text, /9 of 9 players hit the minimum/);
+  assert.ok(!/Across \d+ players/.test(card.text));
 });
 
 test('drink report: highlights name the best drink hole, and it is only said once', () => {
@@ -186,12 +179,12 @@ test('drink report: highlights name the best drink hole, and it is only said onc
   const hi = ev.find((e) => e.kind === 'drinkreport' && e.dedupe[1] === 'highlights');
   assert.ok(hi);
   assert.match(hi.text, /Best drink hole: p3 P\., a net birdie on #2/);
-  assert.equal(computeDrinkEvents(base({ ...f, messages: asSaved(ev) })).filter((e) => e.kind === 'drinkreport').length, 0);
+  assert.equal(computeDrinkEvents(base({ ...f, messages: [...f.messages, ...asSaved(ev)] })).filter((e) => e.kind === 'drinkreport').length, 0);
 });
 
-test('drink cards pass through planPosts: kept as their own cards, never folded into the score cards', () => {
-  assert.ok(isDrinkKind('drink_logged') && isDrinkKind('hidden_drink_min') && isDrinkKind('drinkreport') && !isDrinkKind('leader'));
-  const ev = computeDrinkEvents(base({ drinks: [drink('a', 1, 5), drink('b', 2, 4)] }));
+test('drink cards pass through planPosts as their own cards, never folded into the score cards', () => {
+  assert.ok(isDrinkKind('drink_first') && isDrinkKind('hidden_drink_leader') && isDrinkKind('drinkreport') && !isDrinkKind('leader'));
+  const ev = computeDrinkEvents(base({ drinks: [drink('a', 2, 5)] }));
   const posts = planPosts(ev, { now: NOW, messages: [] });
   assert.equal(posts.length, ev.length);
   assert.ok(posts.every((p) => p.kind.startsWith('drink')));
