@@ -106,4 +106,7 @@ export const GAME_PRESETS = {
   ],
 };
 
+/** A game scored by teams (Better Ball, Scramble, Alternate Shot, Multi-Format Round), so its board lists teams, not players. */
+export const isTeamFormat = (f) => f === "better_ball_2" || f === "better_ball_4" || isSharedBallFormat(f) || f === "composite";
+
 export const isMatchFormat = (f) => f === "match_play" || f === "ryder_cup";

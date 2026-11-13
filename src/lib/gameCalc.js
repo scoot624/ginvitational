@@ -12,14 +12,14 @@
 
 import { creditFor, sharedCredit } from "./drinks.js";
 import { isSharedBallFormat } from "./gameConfig.js";
-import { clampInt, lastName, strokesForHandicap } from "./golf.js";
+import { clampInt, lastName, strokesForHandicap, surname } from "./golf.js";
 
 /**
  * What a team is called on a board: its players' last names, one line ("Cole / Dunn", or all four for a 4-man team).
  * Falls back to the saved team name when a team has no players yet.
  */
 export function teamLabel(members, fallback) {
-  return (members || []).map((p) => lastName(p.name)).filter(Boolean).join(" / ") || fallback;
+  return (members || []).map((p) => surname(p.name)).filter(Boolean).join(" / ") || fallback;
 }
 
 /** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */

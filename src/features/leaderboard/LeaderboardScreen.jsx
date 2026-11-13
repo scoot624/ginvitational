@@ -6,7 +6,7 @@ import { ScorecardDetail } from "./ScorecardDetail";
 import { MatchBoard } from "../match/MatchBoard";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { ROUND_OVERALL } from "../../lib/config";
-import { GAME_SCORE_LABELS, isMatchFormat, isSharedBallFormat } from "../../lib/gameConfig";
+import { GAME_SCORE_LABELS, isMatchFormat, isTeamFormat as isTeamGameFormat } from "../../lib/gameConfig";
 import { formatToPar } from "../../lib/golf";
 import { lastPlaceRank } from "../../lib/ranking";
 import { THEME, netColorStyle, styles } from "../../theme";
@@ -132,7 +132,9 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                 );
               }
 
-              if (gameResults.length <= 1 && !showRoundTabs) {
+              // One active game normally shows the plain player list (Simple Mode). A single active TEAM game still
+              // shows its own team board, otherwise the teams would never appear.
+              if (gameResults.length <= 1 && !showRoundTabs && !isTeamGameFormat(lockCheckEntry.game.format)) {
                 const lastRank = lastPlaceRank(leaderboardRows);
                 return (
               <>
@@ -219,11 +221,7 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
 
               const { game, rows } = lockCheckEntry;
               const lastRank = lastPlaceRank(rows);
-              const isTeamFormat =
-                game.format === "better_ball_2" ||
-                game.format === "better_ball_4" ||
-                isSharedBallFormat(game.format) ||
-                game.format === "composite";
+              const isTeamFormat = isTeamGameFormat(game.format);
               const scoreLabel = GAME_SCORE_LABELS[game.format] || "Score vs Par";
 
               return (
@@ -243,7 +241,7 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                           <tr>
                             <th style={{ ...lbTh, width: "16%" }}>#</th>
                             <th style={{ ...lbTh, width: "44%" }}>{isTeamFormat ? "Team" : "Player"}</th>
-                            <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>{scoreLabel}</th>
+                            <th style={{ ...lbTh, width: "22%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>{scoreLabel}</th>
                             <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
                           </tr>
                         </thead>

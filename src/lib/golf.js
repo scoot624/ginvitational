@@ -19,6 +19,23 @@ export function lastName(name) {
   return parts.slice(1).join(" ");
 }
 
+const NAME_PARTICLES = new Set(["van", "von", "der", "den", "de", "del", "della", "di", "da", "dos", "du", "la", "le", "ter", "ten", "bin", "al", "el", "st", "st."]);
+const NAME_SUFFIXES = /^(jr|sr|ii|iii|iv)\.?$/i;
+
+/**
+ * A player's surname for a short label: the last word, plus any lead-in words that belong to it, so a middle name
+ * is dropped ("Michael James Murray" -> "Murray") but "Tom Van Berg" stays "Van Berg" and "Juan De La Cruz" stays
+ * "De La Cruz". A trailing Jr./Sr./II is ignored. A single word comes back as is.
+ */
+export function surname(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  while (parts.length > 2 && NAME_SUFFIXES.test(parts[parts.length - 1])) parts.pop();
+  if (parts.length <= 1) return parts[0] || "";
+  let i = parts.length - 1;
+  while (i > 1 && NAME_PARTICLES.has(parts[i - 1].toLowerCase())) i--;
+  return parts.slice(i).join(" ");
+}
+
 /** 0 -> "E", 2 -> "+2", -1 -> "-1" */
 export function formatToPar(n) {
   if (n === 0) return "E";
