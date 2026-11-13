@@ -122,6 +122,19 @@ async function importFromTeeSheet() {
                 </label>
               )}
 
+              <div style={{ display: "grid", gap: 6 }}>
+                <a
+                  href={`${import.meta.env.BASE_URL}Ginvitational_TeeSheet_Template.xlsx`}
+                  download="Ginvitational_TeeSheet_Template.xlsx"
+                  style={{ ...styles.smallBtn, minHeight: 44, boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}
+                >
+                  ⬇ Download Excel template
+                </a>
+                <div style={styles.helpText}>
+                  Fill in the first sheet (one row per player), then choose the file below. The second sheet explains each column.
+                </div>
+              </div>
+
               <input
                 type="file"
                 accept=".xlsx,.xls"
