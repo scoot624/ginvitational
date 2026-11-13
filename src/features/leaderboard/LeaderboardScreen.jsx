@@ -1,7 +1,8 @@
 import { rankCellContent } from "../../components/LeaderIcons";
 import { DrinkBadge } from "../drinks/DrinkBadge";
 import { LockedBoardPanel } from "./LockedBoardPanel";
-import { expandChevronStyle, expandRowCellStyle } from "./rankStyles";
+import { NameLink } from "./NameLink";
+import { expandRowCellStyle } from "./rankStyles";
 import { ScorecardDetail } from "./ScorecardDetail";
 import { TeamScorecardDetail } from "./TeamScorecardDetail";
 import { MatchBoard } from "../match/MatchBoard";
@@ -152,10 +153,10 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                   <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                     <thead>
                       <tr>
-                        <th style={{ ...lbTh, width: "16%" }}>#</th>
-                        <th style={{ ...lbTh, width: "44%" }}>Player</th>
-                        <th style={{ ...lbTh, width: "22%", textAlign: "center" }}>Net vs Par</th>
-                        <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
+                        <th style={{ ...lbTh, width: "11%" }}>#</th>
+                        <th style={{ ...lbTh, width: "54%" }}>Player</th>
+                        <th style={{ ...lbTh, width: "20%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>Net vs Par</th>
+                        <th style={{ ...lbTh, width: "15%", textAlign: "center" }}>Holes</th>
                       </tr>
                     </thead>
 
@@ -174,13 +175,11 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                             <td style={{ ...lbTd, padding: "8px 2px 8px 6px" }}>{rankCellContent(r, idx, lastRank)}</td>
 
                             <td style={{ ...lbTd, minWidth: 120 }}>
-                              <button
-                                style={{ ...styles.playerLink, display: "inline-flex", alignItems: "center", gap: 6 }}
+                              <NameLink
+                                text={r.name}
+                                expanded={expanded}
                                 onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
-                              >
-                                {r.name}
-                                <span style={expandChevronStyle(expanded)}>▸</span>
-                              </button>
+                              />
                               <div style={styles.playerMeta}>
                                 HCP {r.handicap}
                                 {r.charity ? ` • ${r.charity}` : ""}
@@ -240,10 +239,10 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                       <table style={{ ...styles.table, tableLayout: "fixed", minWidth: 0 }}>
                         <thead>
                           <tr>
-                            <th style={{ ...lbTh, width: "16%" }}>#</th>
-                            <th style={{ ...lbTh, width: "44%" }}>{isTeamFormat ? "Team" : "Player"}</th>
-                            <th style={{ ...lbTh, width: "22%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>{scoreLabel}</th>
-                            <th style={{ ...lbTh, width: "18%", textAlign: "center" }}>Holes</th>
+                            <th style={{ ...lbTh, width: "11%" }}>#</th>
+                            <th style={{ ...lbTh, width: "54%" }}>{isTeamFormat ? "Team" : "Player"}</th>
+                            <th style={{ ...lbTh, width: "20%", textAlign: "center", whiteSpace: "normal", lineHeight: 1.2 }}>{scoreLabel}</th>
+                            <th style={{ ...lbTh, width: "15%", textAlign: "center" }}>Holes</th>
                           </tr>
                         </thead>
 
@@ -265,39 +264,18 @@ export function LeaderboardScreen({ selectedRoundId, setSelectedRoundId, gameRes
                                 <td style={{ ...lbTd, minWidth: 120 }}>
                                   {isTeamFormat ? (
                                     // one line per team: the players' last names ("Cole / Dunn"), tap for the team scorecard
-                                    r.detailByHole ? (
-                                      <button
-                                        style={{
-                                          ...styles.playerLink,
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                          maxWidth: "100%",
-                                          textAlign: "left",
-                                          whiteSpace: "normal", // a four-name team wraps instead of running into the arrow
-                                        }}
-                                        onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
-                                      >
-                                        <span style={{ minWidth: 0 }}>{r.name}</span>
-                                        <span style={{ ...expandChevronStyle(expanded), flex: "none" }}>▸</span>
-                                      </button>
-                                    ) : (
-                                      <div style={{ fontWeight: 950 }}>{r.name}</div>
-                                    )
+                                    <NameLink
+                                      text={r.name}
+                                      expanded={expanded}
+                                      onClick={r.detailByHole ? () => setScorecardPlayerId((id) => (id === r.id ? null : r.id)) : undefined}
+                                    />
                                   ) : (
                                     <>
-                                      <button
-                                        style={{
-                                          ...styles.playerLink,
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                        }}
+                                      <NameLink
+                                        text={r.name}
+                                        expanded={expanded}
                                         onClick={() => setScorecardPlayerId((id) => (id === r.id ? null : r.id))}
-                                      >
-                                        {r.name}
-                                        <span style={expandChevronStyle(expanded)}>▸</span>
-                                      </button>
+                                      />
                                       <div style={styles.playerMeta}>
                                         HCP {r.handicap}
                                         {r.charity ? ` • ${r.charity}` : ""}
