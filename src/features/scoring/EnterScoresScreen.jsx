@@ -1,7 +1,9 @@
 import { DrinkControls } from "../drinks/DrinkControls";
+import { StrokeDots } from "../../components/StrokeMarks";
 import { useEventDataContext } from "../../hooks/eventDataContext";
-import { PARS } from "../../lib/course";
+import { PARS, STROKE_INDEX } from "../../lib/course";
 import { clampInt } from "../../lib/golf";
+import { strokesForEntry } from "../../lib/strokes";
 import { THEME, styles } from "../../theme";
 
 // Enter Scores, step 2: type each hole for your group.
@@ -11,7 +13,16 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
     appSettings,
     rounds,
     drinking,
+    games,
+    gameTeams,
+    gameTeamMembers,
+    playersById,
+    matches,
+    matchPlayers,
+    fieldOffset,
   } = useEventDataContext();
+  // everything the stroke marker needs to follow the same handicap rules the Leaderboard uses
+  const strokeEnv = { games, gameTeams, gameTeamMembers, playersById, matches, matchPlayers, fieldOffset, STROKE_INDEX, roundId: activeFoursome?.round_id };
 
   return (
           <div style={styles.card}>
@@ -80,11 +91,21 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
                     </div>
 
                     <div style={{ display: "grid", gap: 10 }}>
-                      {holeEntryGroups(hole, activePlayers).map((grp) => (
+                      {holeEntryGroups(hole, activePlayers).map((grp) => {
+                        const stroke = strokesForEntry({ players: grp.players, shared: grp.shared }, hole, strokeEnv);
+                        return (
                         <div key={grp.key} style={drinking.enabled ? { ...styles.scoreRow, flexWrap: "wrap" } : styles.scoreRow}>
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {grp.players.map((p) => p.name).join(" / ")}
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
+                                {grp.players.map((p) => p.name).join(" / ")}
+                              </div>
+                              {/* a dot per handicap stroke this player (or the shared ball) gets on this hole; a "+" gives one back */}
+                              {stroke.strokes ? (
+                                <span style={{ flex: "none", display: "inline-flex" }}>
+                                  <StrokeDots n={stroke.strokes} size={10} />
+                                </span>
+                              ) : null}
                             </div>
                             <div style={{ fontSize: 12, color: THEME.textMuted }}>
                               {grp.shared
@@ -122,7 +143,8 @@ export function EnterScoresScreen({ activeFoursome, setActiveFoursome, setActive
                             </div>
                           ) : null}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div style={styles.navRow}>

@@ -1,6 +1,7 @@
 // Hole-by-hole scorecard shown inline under an expanded Leaderboard row.
 
 import { useEventDataContext } from "../../hooks/eventDataContext";
+import { StrokeDots } from "../../components/StrokeMarks";
 import { PARS, STROKE_INDEX } from "../../lib/course";
 import { drinksOnHole } from "../../lib/drinks";
 import { strokesOnHoleForGame } from "../../lib/gameCalc";
@@ -142,11 +143,7 @@ export function ScorecardDetail({ player, game }) {
                     <span style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
                       <span>{c.hd.h}</span>
                       <span style={markSlotStyle}>
-                        {c.hd.strokes > 0 ? (
-                          <span style={styles.strokeDot} />
-                        ) : c.hd.strokes < 0 ? (
-                          <span style={styles.giveBackMark}>+</span>
-                        ) : null}
+                        <StrokeDots n={c.hd.strokes} size={5} />
                       </span>
                     </span>
                   </th>
@@ -222,6 +219,7 @@ export function ScorecardDetail({ player, game }) {
         {isGross
           ? "+/- is gross score vs par (no handicap strokes)."
           : `+/- is net score vs par, using ${pct === 100 ? "" : `${pct}% of the `}handicap by Stroke Index.`}
+        {!isGross && pct !== 0 && holes.some((x) => x.strokes > 0) && " A dot under the hole number marks a handicap stroke on that hole."}
         {!isGross && pct !== 0 && player.playingHandicap < 0 && ' A "+" marks a hole where this plus handicap gives a stroke back.'}
         {showDrinks && drinking.variant === "credit" && !isGross
           ? ` Stroke Credit: -${drinking.creditPerDrink} per drink on the hole it was logged, up to ${drinking.maxDrinks} drinks, is included in +/-.`

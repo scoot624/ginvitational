@@ -60,6 +60,9 @@ export const THEME = {
   chromeBorder: "rgba(237, 231, 216, 0.20)",
 };
 
+/** The handicap-stroke dot / "+" color: dark enough to read on the cream scorecard. */
+export const STROKE_COLOR = "#8A6238";
+
 export const FONT_DISPLAY = "'Fraunces', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif";
 
 export const FONT_BODY = "'Public Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
@@ -338,7 +341,7 @@ strokeDot: {
   width: 8,
   height: 8,
   borderRadius: "50%",
-  background: "rgba(203,189,151,0.85)",
+  background: STROKE_COLOR,
 },
 // A plus-handicap player gives a stroke back on this hole, instead of
 // receiving one — marked with "+" rather than the filled dot above.
