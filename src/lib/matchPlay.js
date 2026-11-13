@@ -68,6 +68,19 @@ function matchHandicaps(match, { handicapMode, handicapPct, fieldOffset }) {
 }
 
 /**
+ * The handicap strokes each side gets on one hole of a match, for the Enter Scores screen.
+ * Singles / four-ball: { a: [one number per player in sideA order], b: [...] }.
+ * Foursomes (one ball a side): { team: { a, b } }.
+ * ctx: { STROKE_INDEX, handicapMode, handicapPct, fieldOffset }
+ */
+export function matchStrokesOnHole(match, ctx, hole) {
+  const hcp = matchHandicaps(match, ctx);
+  const strokes = (ph) => strokesOnHoleForGame(ph, 100, hole, ctx.STROKE_INDEX);
+  if (match.match_type === "foursomes") return { team: { a: strokes(hcp.team.a), b: strokes(hcp.team.b) } };
+  return { a: hcp.a.map(strokes), b: hcp.b.map(strokes) };
+}
+
+/**
  * match: { id, match_type, sideA: [{id,name,handicap}], sideB: [...] }
  * ctx:   { scoresByPlayer: Map(pid -> {hole: gross}), PARS, STROKE_INDEX,
  *          handicapMode, handicapPct, fieldOffset, startHole, pointsWin, pointsHalf,

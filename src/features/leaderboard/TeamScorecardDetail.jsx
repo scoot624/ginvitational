@@ -2,6 +2,7 @@
 // Holes a pair plays their own balls show each player's score; scramble / alternate-shot holes show the one team ball.
 // "Team" is the score that counts on the hole (net), and "+/-" is the running total against the team's par.
 
+import { StrokeDots, WithStrokes } from "../../components/StrokeMarks";
 import { useEventDataContext } from "../../hooks/eventDataContext";
 import { PARS, STROKE_INDEX } from "../../lib/course";
 import { drinksOnHole } from "../../lib/drinks";
@@ -11,17 +12,20 @@ import { THEME, styles } from "../../theme";
 export function TeamScorecardDetail({ row, roundId }) {
   const { drinking, drinksView } = useEventDataContext();
   const detail = row.detailByHole || {};
+  const marks = row.marksByHole || {};
   const members = row.members || [];
   const drinksOn = drinking.enabled && !!roundId;
 
   // One entry per hole, then laid out as columns (holes left to right, like a real scorecard).
   const holes = Array.from({ length: 18 }, (_, i) => i + 1).map((h) => {
     const d = detail[h] || null;
+    const m = marks[h] || null;
     return {
       h,
       si: STROKE_INDEX[h - 1],
       d,
-      par: d ? d.par : PARS[h - 1], // the team's par on a hole it has scored (two scores added = two pars)
+      m, // what the hole looks like for this team (shared ball or own balls, and who gets a stroke), scored or not
+      par: m ? m.par : d ? d.par : PARS[h - 1], // the team's par (two scores added = two pars)
       drinks: drinksOn ? members.reduce((a, m) => a + drinksOnHole(drinksView, m.id, roundId, h), 0) : 0,
     };
   });
@@ -32,8 +36,11 @@ export function TeamScorecardDetail({ row, roundId }) {
     cum += x.d.counted - x.d.par;
     x.cum = cum;
   }
-  const anyShared = holes.some((x) => x.d && x.d.shared);
-  const anySolo = holes.some((x) => x.d && !x.d.shared);
+  const isShared = (x) => (x.m ? x.m.shared : !!(x.d && x.d.shared));
+  const isSolo = (x) => (x.m ? !x.m.shared : !!(x.d && !x.d.shared));
+  const anyShared = holes.some(isShared);
+  const anySolo = holes.some(isSolo);
+  const anyStrokes = holes.some((x) => x.m && (x.m.ballStrokes || Object.values(x.m.strokes || {}).some(Boolean)));
 
   // Totals for a stretch of holes (OUT / IN / TOT): only holes that have been scored count toward scores.
   const sumRange = (from, to) => {
@@ -89,11 +96,24 @@ export function TeamScorecardDetail({ row, roundId }) {
   const lines = [
     { label: "SI", hole: (x) => x.si, sum: () => "" },
     { label: "Par", hole: (x) => x.par, sum: (s) => s.par },
-    ...(anyShared ? [{ label: "Team ball", hole: (x) => (x.d && x.d.shared ? x.d.gross : ""), sum: (s) => show(s.ball) }] : []),
+    ...(anyShared
+      ? [
+          {
+            label: "Team ball",
+            hole: (x) => (isShared(x) ? <WithStrokes n={x.m ? x.m.ballStrokes : 0}>{x.d && x.d.shared ? x.d.gross : ""}</WithStrokes> : ""),
+            sum: (s) => show(s.ball),
+          },
+        ]
+      : []),
     ...(anySolo
       ? members.map((m) => ({
           label: surname(m.name),
-          hole: (x) => (x.d && !x.d.shared && x.d.grosses[m.id] != null ? x.d.grosses[m.id] : ""),
+          hole: (x) =>
+            isSolo(x) ? (
+              <WithStrokes n={x.m && x.m.strokes ? x.m.strokes[m.id] : 0}>{x.d && !x.d.shared && x.d.grosses[m.id] != null ? x.d.grosses[m.id] : ""}</WithStrokes>
+            ) : (
+              ""
+            ),
           sum: (s) => show(s.member[m.id]),
         }))
       : []),
@@ -167,6 +187,7 @@ export function TeamScorecardDetail({ row, roundId }) {
         Team is the score that counts on each hole (net, after handicap strokes
         {showDrinks && drinking.variant === "credit" ? " and drink credit" : ""}). +/- is the running total against the team's par.
         {anyShared ? " Team ball is the one score the pair posts for a scramble or alternate-shot hole." : ""}
+        {anyStrokes ? " A dot marks a handicap stroke (a stroke the player, or the team ball, gets on that hole)." : ""}
       </div>
     </div>
   );

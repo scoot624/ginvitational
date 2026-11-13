@@ -22,6 +22,27 @@ export function teamLabel(members, fallback) {
   return (members || []).map((p) => surname(p.name)).filter(Boolean).join(" / ") || fallback;
 }
 
+/**
+ * The blended team handicap for a Scramble / Alternate Shot team: each teammate's handicap ranked from lowest to
+ * highest and weighted by game.handicap_allowance (e.g. [35, 15] for two players).
+ */
+export function scrambleTeamHandicap(members, game, fieldOffset = 0) {
+  const offset = clampInt(fieldOffset, 0);
+  const pcts = Array.isArray(game.handicap_allowance) ? game.handicap_allowance.map((p) => clampInt(p, 0)) : [];
+  const ranked = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
+  return Math.round(ranked.reduce((acc, hcp, i) => acc + hcp * ((pcts[i] || 0) / 100), 0));
+}
+
+/** The blended team handicap for a shared (Scramble / Alternate Shot) segment of a multi-format round. */
+export function compositeSharedHandicap(members, seg, fieldOffset = 0) {
+  const offset = clampInt(fieldOffset, 0);
+  const allowance = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
+  const hcps = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
+  const lowHcp = hcps[0] ?? 0;
+  const highHcp = hcps[hcps.length - 1] ?? lowHcp;
+  return Math.round(lowHcp * (clampInt(allowance.lowPct, 0) / 100) + highHcp * (clampInt(allowance.highPct, 0) / 100));
+}
+
 /** Handicap actually played, after a game's handicap %. Can be negative (a plus handicap). */
 function playingHandicap(handicap, handicapPct) {
   return Math.round(clampInt(handicap, 0) * (clampInt(handicapPct, 100) / 100));
@@ -188,6 +209,15 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
     let parPlayed = 0;
     const countedByHole = {};
     const detailByHole = {}; // for the team scorecard: { hole: { par, counted, shared, grosses } }
+    // ...and what each hole looks like for this team, scored or not: who gets a handicap stroke on it
+    const marksByHole = {};
+    for (let h = 1; h <= 18; h++) {
+      marksByHole[h] = {
+        shared: false,
+        par: PARS[h - 1] * parMultiplier,
+        strokes: Object.fromEntries(members.map((p) => [p.id, strokesOnHoleForGame(clampInt(p.handicap, 0) - offset, pct, h, STROKE_INDEX)])),
+      };
+    }
 
     for (let h = 1; h <= 18; h++) {
       const memberValues = members
@@ -227,6 +257,7 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
       toPar,
       scoresByHole: countedByHole,
       detailByHole,
+      marksByHole,
       gross: totalCounted,
     };
   });
@@ -245,22 +276,24 @@ export function computeTeamGameRows(game, teams, teamMembersByTeam, playersById,
  */
 export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersById, scoresByPlayer, { PARS, STROKE_INDEX, fieldOffset, credit }) {
   const offset = clampInt(fieldOffset, 0);
-  const pcts = Array.isArray(game.handicap_allowance) ? game.handicap_allowance.map((p) => clampInt(p, 0)) : [];
 
   const rows = teams.map((team) => {
     const memberIds = teamMembersByTeam.get(team.id) || [];
     const members = memberIds.map((pid) => playersById.get(pid)).filter(Boolean);
 
-    // Ranked lowest handicap to highest, so pcts[0] always lands on the
+    // Ranked lowest handicap to highest, so the first % always lands on the
     // team's own lowest-handicap player regardless of team order.
-    const rankedHcps = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
-    const teamHandicap = Math.round(rankedHcps.reduce((acc, hcp, i) => acc + hcp * ((pcts[i] || 0) / 100), 0));
+    const teamHandicap = scrambleTeamHandicap(members, game, offset);
 
     let holesPlayed = 0;
     let totalCounted = 0;
     let parPlayed = 0;
     const countedByHole = {};
     const detailByHole = {};
+    const marksByHole = {};
+    for (let h = 1; h <= 18; h++) {
+      marksByHole[h] = { shared: true, par: PARS[h - 1], ballStrokes: strokesOnHoleForGame(teamHandicap, 100, h, STROKE_INDEX) };
+    }
 
     for (let h = 1; h <= 18; h++) {
       const grosses = members
@@ -292,6 +325,7 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
       toPar,
       scoresByHole: countedByHole,
       detailByHole,
+      marksByHole,
       gross: totalCounted,
     };
   });
@@ -300,7 +334,7 @@ export function computeScrambleGameRows(game, teams, teamMembersByTeam, playersB
 }
 
 /** { holeNumber: segment } from a composite game's `segments` array. */
-function buildHoleSegmentMap(segments) {
+export function buildHoleSegmentMap(segments) {
   const map = new Map();
   for (const seg of segments || []) {
     for (const h of seg.holes || []) map.set(clampInt(h, 0), seg);
@@ -334,10 +368,24 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
     let parPlayed = 0;
     const countedByHole = {};
     const detailByHole = {};
+    const marksByHole = {};
 
     for (let h = 1; h <= 18; h++) {
       const seg = holeSegment.get(h);
       if (!seg) continue;
+
+      // who gets a handicap stroke on this hole (scored or not)
+      if (seg.formatType === "shared") {
+        marksByHole[h] = { shared: true, par: PARS[h - 1], ballStrokes: strokesOnHoleForGame(compositeSharedHandicap(members, seg, offset), 100, h, STROKE_INDEX) };
+      } else {
+        const segPct = clampInt(seg.handicapPct, 100);
+        const segMult = clampInt((seg.countingRule || {}).scoresCounted, 1);
+        marksByHole[h] = {
+          shared: false,
+          par: PARS[h - 1] * segMult,
+          strokes: Object.fromEntries(members.map((p) => [p.id, strokesOnHoleForGame(clampInt(p.handicap, 0) - offset, segPct, h, STROKE_INDEX)])),
+        };
+      }
 
       let counted = null;
       let parMultiplier = 1;
@@ -352,13 +400,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
 
         if (grosses.length > 0) {
           const gross = grosses[0]; // entry flow saves the same value to every teammate
-          const allowance = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
-          const hcps = members.map((p) => clampInt(p.handicap, 0) - offset).sort((a, b) => a - b);
-          const lowHcp = hcps[0] ?? 0;
-          const highHcp = hcps[hcps.length - 1] ?? lowHcp;
-          const teamHandicap = Math.round(
-            lowHcp * (clampInt(allowance.lowPct, 0) / 100) + highHcp * (clampInt(allowance.highPct, 0) / 100)
-          );
+          const teamHandicap = compositeSharedHandicap(members, seg, offset);
           counted = netScoreForHoleGame(gross, teamHandicap, 100, h, STROKE_INDEX, sharedCredit(credit, memberIds, h));
           detail = { shared: true, gross };
         }
@@ -403,6 +445,7 @@ export function computeCompositeGameRows(game, teams, teamMembersByTeam, players
       toPar,
       scoresByHole: countedByHole,
       detailByHole,
+      marksByHole,
       gross: totalCounted,
     };
   });
