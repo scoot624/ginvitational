@@ -81,6 +81,14 @@ export function useDrinkLogging({ drinks, loadDrinks, drinking }) {
     return { ok: true };
   }
 
+  // Throw away drinks still waiting to upload (for one round, or all), e.g. when the drinks are deleted in Admin.
+  function clearPending(roundId = null) {
+    const next = roundId ? readPendingDrinks().filter((o) => !(o.op === "add" && o.round_id === roundId)) : [];
+    writePendingDrinks(next);
+    setOps(next);
+    setError("");
+  }
+
   const hasPending = ops.length > 0;
   useEffect(() => {
     if (!hasPending) return;
@@ -94,5 +102,5 @@ export function useDrinkLogging({ drinks, loadDrinks, drinking }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasPending]);
 
-  return { drinksView, pendingCount: ops.length, error, logDrink, undoDrink, uploadPendingDrinks };
+  return { drinksView, pendingCount: ops.length, error, logDrink, undoDrink, uploadPendingDrinks, clearPending };
 }

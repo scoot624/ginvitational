@@ -3,6 +3,7 @@ import { AdminSection } from "../../components/AdminSection";
 import { ClearMessagesSetupNotice } from "../../components/SetupNotices";
 import { DeletePlayersPanel } from "../roster/DeletePlayersPanel";
 import { useEventDataContext } from "../../hooks/eventDataContext";
+import { readPendingScores } from "../scoring/pendingScores";
 import { ADMIN_PIN } from "../../lib/config";
 import { supabase } from "../../lib/supabase";
 import { errToText } from "../../lib/util";
@@ -10,19 +11,35 @@ import { THEME, styles } from "../../theme";
 
 // Admin → Danger Zone (behind the Admin passcode): clear foursomes, clear Broadcast messages, delete players, games and rounds.
 
-export function DangerZoneSection({ adminOn, openAdminSection, setOpenAdminSection, deleteGame, deleteRound }) {
+export function DangerZoneSection({ adminOn, openAdminSection, setOpenAdminSection, deleteGame, deleteRound, discardUnsentScores }) {
   const {
     players,
     games,
     appSettings,
     rounds,
+    scores,
+    drinks,
+    drinksTableReady,
+    drinkLog,
     broadcastMsgs,
     foursomes,
     foursomePlayers,
     loadBroadcast,
+    loadScores,
+    loadDrinks,
     initialLoad,
     activeRound,
   } = useEventDataContext();
+
+  // Delete scores: which round ("all" or a round id), and whether the logged drinks go too
+  const [scoreScope, setScoreScope] = useState("all");
+  const [alsoDrinks, setAlsoDrinks] = useState(false);
+  const [scoresMsg, setScoresMsg] = useState("");
+  const [scoresBusy, setScoresBusy] = useState(false);
+  const manyRounds = appSettings.multi_round_enabled && rounds.length > 1;
+  const scopeRoundId = manyRounds && scoreScope !== "all" ? scoreScope : null;
+  const scopeScores = scopeRoundId ? scores.filter((s) => s.round_id === scopeRoundId) : scores;
+  const scopeDrinks = scopeRoundId ? (drinks || []).filter((d) => d.round_id === scopeRoundId) : drinks || [];
 
   // Admin → Danger Zone
   const [dangerUnlocked, setDangerUnlocked] = useState(false);
@@ -106,6 +123,72 @@ export function DangerZoneSection({ adminOn, openAdminSection, setOpenAdminSecti
     return `Deleted ${ids.length} player${ids.length === 1 ? "" : "s"} ✅`;
   }
 
+  // Admin → Danger Zone → Delete scores: removes entered scores (all rounds, or one round) and nothing else —
+  // players, groups, games and rounds stay. Optionally the logged drinks too.
+  async function deleteScores() {
+    if (!adminOn) return alert("Admin only.");
+    const roundId = scopeRoundId;
+    const dropDrinks = alsoDrinks && drinksTableReady;
+    const nScores = scopeScores.length;
+    const nDrinks = dropDrinks ? scopeDrinks.length : 0;
+    if (nScores === 0 && nDrinks === 0) {
+      setScoresMsg("There are no scores to delete.");
+      return;
+    }
+    const unsent = readPendingScores().filter((q) => !roundId || q.round_id === roundId).length;
+    const where = roundId ? rounds.find((r) => r.id === roundId)?.label || "that round" : manyRounds ? "every round" : "this event";
+    const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+    const lines = [`Delete ${plural(nScores, "score")} for ${where}?`];
+    if (nDrinks) lines.push(`This also deletes ${plural(nDrinks, "logged drink")}.`);
+    if (unsent) lines.push(`${plural(unsent, "score")} still waiting to upload on this phone will be thrown away too.`);
+    lines.push("Players, groups and games are kept. This can't be undone.");
+    if (!confirm(lines.join("\n\n"))) return;
+
+    setScoresBusy(true);
+    setScoresMsg("Deleting…");
+    try {
+      let q = supabase.from("scores").delete({ count: "exact" });
+      q = roundId ? q.eq("round_id", roundId) : q.gte("created_at", "1970-01-01T00:00:00Z");
+      const res = await q;
+      if (res.error) {
+        console.error(res.error);
+        setScoresMsg(`Error deleting scores: ${errToText(res.error)}`);
+        await loadScores();
+        return;
+      }
+      if (nScores > 0 && !res.count) {
+        // The database accepted the request but removed nothing: deleting scores isn't allowed.
+        setScoresMsg("Nothing was deleted: the database refused. Reload and check the Leaderboard.");
+        await loadScores();
+        return;
+      }
+      let drinksGone = 0;
+      if (dropDrinks) {
+        let dq = supabase.from("drinks").delete({ count: "exact" });
+        dq = roundId ? dq.eq("round_id", roundId) : dq.gte("created_at", "1970-01-01T00:00:00Z");
+        const dres = await dq;
+        if (dres.error) {
+          console.error(dres.error);
+          setScoresMsg(`Deleted ${plural(res.count || 0, "score")}, but the drinks could not be deleted: ${errToText(dres.error)}`);
+          discardUnsentScores?.(roundId);
+          await loadScores();
+          await loadDrinks();
+          return;
+        }
+        drinksGone = dres.count || 0;
+        drinkLog?.clearPending?.(roundId);
+      }
+      discardUnsentScores?.(roundId); // so a retry on this phone can't bring deleted scores back
+      await loadScores();
+      if (dropDrinks) await loadDrinks();
+      setScoresMsg(
+        `Deleted ${plural(res.count || 0, "score")}${drinksGone ? ` and ${plural(drinksGone, "drink")}` : ""} ✅ Players and groups are untouched.`
+      );
+    } finally {
+      setScoresBusy(false);
+    }
+  }
+
   async function clearFoursomes() {
     if (!adminOn) return alert("Admin only.");
     if (!confirm("Clear all foursomes + assignments? (Does not delete players or scores)")) return;
@@ -185,6 +268,42 @@ export function DangerZoneSection({ adminOn, openAdminSection, setOpenAdminSecti
                 <button style={{ ...styles.dangerBtn, marginTop: 10 }} onClick={clearFoursomes}>
                   Clear Foursomes
                 </button>
+              </div>
+
+              <div>
+                <div style={styles.hr} />
+                <div style={{ ...styles.sectionLabel, marginTop: 14 }}>Delete scores</div>
+                <div style={styles.helpText}>
+                  Removes the scores entered so far ({scopeScores.length} right now) so you can start the scoring over. Players,
+                  groups, games and rounds are kept. Broadcast cards already posted stay until you clear them below.
+                </div>
+                {manyRounds ? (
+                  <label style={{ ...styles.label, marginTop: 10 }}>
+                    Which scores
+                    <select style={styles.input} value={scoreScope} onChange={(e) => setScoreScope(e.target.value)}>
+                      <option value="all">All rounds</option>
+                      {rounds.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label} only
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {drinksTableReady ? (
+                  <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10, fontSize: 13 }}>
+                    <input type="checkbox" checked={alsoDrinks} onChange={(e) => setAlsoDrinks(e.target.checked)} />
+                    Also delete the logged drinks ({scopeDrinks.length})
+                  </label>
+                ) : null}
+                <button
+                  style={{ ...styles.dangerBtn, marginTop: 10, minHeight: 44, opacity: scoresBusy ? 0.6 : 1 }}
+                  disabled={scoresBusy}
+                  onClick={deleteScores}
+                >
+                  Delete scores
+                </button>
+                {scoresMsg ? <div style={styles.helpText}>{scoresMsg}</div> : null}
               </div>
 
               <div>
