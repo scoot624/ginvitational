@@ -142,7 +142,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
   // roomy boxes to write in; a card with lots of rows (a 4-person team with shared holes) gets slightly shorter ones so two still fit a sheet
-  const boxH = layout.rows.length <= 4 ? 36 : layout.rows.length <= 5 ? 32 : 28;
+  const boxH = layout.rows.length <= 4 ? 34 : layout.rows.length <= 5 ? 30 : 26;
 
   return (
     <div style={ps.wideCard}>
@@ -158,13 +158,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
             {offset !== 0 ? " • Field-Relative" : ""}
           </div>
         </div>
-        <div style={ps.wideSide}>
-          <img src={logoSrc} alt="" style={ps.wideLogo} />
-          <div style={ps.wideCode}>
-            <b>Group Code</b>{" "}
-            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{g.code || ""}</span>
-          </div>
-        </div>
+        <img src={logoSrc} alt="" style={ps.wideLogo} />
       </div>
 
       <table style={ps.wideTable}>
@@ -220,6 +214,22 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
           ))}
         </tbody>
       </table>
+
+      {/* the marker keeps the card, then the marker and the player sign it */}
+      <div style={ps.signRow}>
+        <div style={ps.signBlock}>
+          <span>Marker's signature</span>
+          <span style={ps.signLine} />
+        </div>
+        <div style={ps.signBlock}>
+          <span>Player's signature</span>
+          <span style={ps.signLine} />
+        </div>
+        <div style={ps.signCode}>
+          <b>Group Code</b>{" "}
+          <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{g.code || ""}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -362,12 +372,12 @@ const ps = {
 
   // Team cards: holes across the page, two stacked on a landscape sheet
   stack: { display: "flex", flexDirection: "column", gap: "0.15in" },
-  wideCard: { border: "2px solid #000", padding: 8, boxSizing: "border-box", breakInside: "avoid" },
+  wideCard: { border: "2px solid #000", padding: "16px 8px 8px", boxSizing: "border-box", breakInside: "avoid" },
   wideHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 },
   wideTitle: { fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2 },
   wideMeta: { fontSize: 10.5, lineHeight: 1.3, marginTop: 2 },
   wideSide: { flex: "none", display: "flex", alignItems: "center", gap: 10 },
-  wideLogo: { display: "block", height: 44, width: "auto", maxWidth: 80, objectFit: "contain" },
+  wideLogo: { flex: "none", display: "block", height: 62, width: "auto", maxWidth: 110, objectFit: "contain" },
   wideCode: { fontSize: 10.5, whiteSpace: "nowrap" },
   wideTable: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
   wLabelHead: { border: "1px solid #000", padding: "2px 4px", fontSize: 10, textAlign: "left" },
@@ -377,6 +387,10 @@ const ps = {
   wTotalTint: { background: "#eee", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact", fontWeight: 800 },
   wBox: { border: "1px solid #000", padding: 0, position: "relative" },
   wWrite: { height: 26, width: "100%" },
+  signRow: { display: "flex", gap: 28, marginTop: 8, fontSize: 10.5 },
+  signCode: { flex: "none", alignSelf: "flex-end", fontSize: 10.5, whiteSpace: "nowrap" },
+  signBlock: { flex: "1 1 0", display: "flex", alignItems: "flex-end", gap: 6, whiteSpace: "nowrap", minWidth: 0 },
+  signLine: { flex: "1 1 0", borderBottom: "1px solid #000", height: 16, minWidth: 0 },
   wDots: { position: "absolute", top: 0, right: 2, fontSize: 11, lineHeight: 1, letterSpacing: 0.5 },
   wTag: { position: "absolute", top: 2, left: 4, fontSize: 7, lineHeight: 1, textTransform: "uppercase", letterSpacing: 0.6, opacity: 0.55 },
   wHatch: {

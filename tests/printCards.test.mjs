@@ -137,9 +137,9 @@ const ALL_B = 'BBBBBBBBBBBBBBBBBB';
 
 test('better ball: a box per player, then ONE row for the team score (the better ball) that carries the totals', () => {
   const lay = teamCardLayout(cardFor(game({ format: 'better_ball_2' })));
-  assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score = better ball (net)']);
+  assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score = better ball (net)', "Marker's score"]);
   assert.ok(lay.rows.every((r) => shape(r) === ALL_B));
-  assert.deepEqual(lay.rows.map((r) => r.totals), ['box', 'box', 'box']);
+  assert.deepEqual(lay.rows.map((r) => r.totals), ['box', 'box', 'box', 'box']);
   assert.deepEqual(lay.parRow, [4, 4, 4, 3, 4, 3, 5, 3, 5, 4, 3, 5, 3, 4, 5, 4, 4, 5]);
   assert.equal(lay.rows[1].cells[15].dots, 2); // hole 16, SI 1: the 20 handicap gets two
 });
@@ -147,13 +147,13 @@ test('better ball: a box per player, then ONE row for the team score (the better
 test('scramble / alternate shot: the players\' boxes join into one team ball box on every hole, then the team score row', () => {
   for (const format of ['scramble_2', 'alt_shot_2']) {
     const lay = teamCardLayout(cardFor(game({ format, handicap_allowance: [35, 15] })));
-    assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score (net)'], format);
+    assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score (net)', "Marker's score"], format);
     assert.equal(shape(lay.rows[0]), 'MMMMMMMMMMMMMMMMMM', format);
     assert.equal(shape(lay.rows[1]), '------------------', format); // covered by the box above
     assert.equal(shape(lay.rows[2]), ALL_B, format);
     assert.equal(lay.rows[0].cells[0].span, 2, format);
     assert.equal(lay.rows[0].cells[2].dots, 1, format); // hole 3: the team ball gets a stroke
-    assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'hatch', 'box'], format);
+    assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'hatch', 'box', 'box'], format);
   }
 });
 
@@ -166,11 +166,11 @@ test('multi-format: merged team ball boxes on shared holes, a box per player on 
     ],
   });
   const lay = teamCardLayout(cardFor(g));
-  assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score (net)']);
+  assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Team score (net)', "Marker's score"]);
   assert.equal(shape(lay.rows[0]), 'MMMMMMMMMMMMBBBBBB');
   assert.equal(shape(lay.rows[1]), '------------BBBBBB');
   assert.equal(shape(lay.rows[2]), ALL_B);
-  assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'hatch', 'box']);
+  assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'hatch', 'box', 'box']);
   assert.equal(lay.rows[0].cells[2].dots, 1); // team ball dot on hole 3
   assert.deepEqual([lay.rows[0].cells[13].dots, lay.rows[1].cells[13].dots], [1, 1]); // own-ball dots on hole 14
 });
@@ -196,9 +196,25 @@ test('different counting rules in one own-ball round: "counting score"', () => {
 test('4-person teams: a row per player; a shared hole is one box spanning all four rows', () => {
   const mk = (g) => buildPrintCards({ ...base, game: g, foursomes: [F1], foursomePlayers: fp(F1, ['a', 'b', 'c', 'd']), ...teamsFor('g', [['a', 'b', 'c', 'd']]) })[0];
   const bb = teamCardLayout(mk(game({ format: 'better_ball_4' })));
-  assert.equal(bb.rows.length, 5); // four players + the team score row
+  assert.equal(bb.rows.length, 6); // four players + the team score row + the marker's score row
   assert.equal(bb.rows[4].label, 'Team score = better ball (net)');
   const sc = teamCardLayout(mk(game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] })));
   assert.equal(sc.rows[0].cells[0].span, 4);
   assert.equal(shape(sc.rows[3]), '------------------');
+});
+
+test("every team card ends with a Marker's score row: a box on every hole plus its own Out / In / Total", () => {
+  const games = [
+    game({ format: 'better_ball_2' }),
+    game({ format: 'scramble_2', handicap_allowance: [35, 15] }),
+    game({ format: 'composite', segments: [{ holes: [1, 2, 3, 4, 5, 6, 7, 8, 9], formatType: 'shared', handicapAllowance: { lowPct: 35, highPct: 15 } }, { holes: [10, 11, 12, 13, 14, 15, 16, 17, 18], formatType: 'individual', handicapPct: 100, countingRule: { scoresCounted: 1, slots: ['net'] } }] }),
+  ];
+  for (const g of games) {
+    const rows = teamCardLayout(cardFor(g)).rows;
+    const last = rows[rows.length - 1];
+    assert.equal(last.label, "Marker's score", g.format);
+    assert.equal(shape(last), ALL_B, g.format);
+    assert.equal(last.totals, 'box', g.format);
+    assert.equal(rows[rows.length - 2].key, 'team', g.format); // right under the Team score row
+  }
 });

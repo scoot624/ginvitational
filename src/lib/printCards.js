@@ -80,6 +80,8 @@ export function buildPrintCards({ foursomes, players, foursomePlayers, game, gam
  *                 team ball's dots: the first player's cell spans every player row, the others are skipped.
  *   Team score    a box on every hole for the score that counts (net): the better ball on an own-ball hole, the team
  *                 ball after strokes on a shared one. It carries the Out / In / Total.
+ *   Marker's score the last row: the marker (who keeps the card for the team) writes the team's score here hole by hole,
+ *                 with its own Out / In / Total, so it can be checked against the Team score row before signing.
  * A card with no shared holes keeps a box per player in the Out / In / Total columns too; once any hole is shared those
  * player totals are greyed out (the Team score row has the totals).
  * Returns { parRow: [18 numbers], rows: [{ key, label, player?, cells: [{ box, dots, span, skip }] x 18, totals }] }.
@@ -109,6 +111,12 @@ export function teamCardLayout(card) {
   rows.push({
     key: "team",
     label: anyShared ? "Team score (net)" : `Team score = ${how} (net)`,
+    cells: holes.map(() => ({ box: true, dots: 0, span: 1 })),
+    totals: "box",
+  });
+  rows.push({
+    key: "marker",
+    label: "Marker's score",
     cells: holes.map(() => ({ box: true, dots: 0, span: 1 })),
     totals: "box",
   });
