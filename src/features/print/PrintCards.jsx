@@ -141,8 +141,12 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
     { key: "tot", label: "TOT", from: 0, to: 18 },
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
-  // roomy boxes to write in; a card with lots of rows (a 4-person team with shared holes) gets slightly shorter ones so two still fit a sheet
-  const boxH = layout.rows.length <= 4 ? 34 : layout.rows.length <= 5 ? 30 : 26;
+  // Two cards share a landscape sheet, so each box is sized to make the pair fill most of it: whatever height is left after
+  // the header, the small rows and the signature line is shared out between the rows to write in. A card with more rows
+  // (a 4-person team) gets slightly shorter boxes. CARD_FIXED is the height of everything that isn't a write-in row.
+  const CARD_FIXED = 200;
+  const CARD_TARGET = 344;
+  const boxH = Math.max(20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / layout.rows.length) - 2));
 
   return (
     <div style={ps.wideCard}>
@@ -371,8 +375,8 @@ const ps = {
   col: { flex: "1 1 0", minWidth: 0 },
 
   // Team cards: holes across the page, two stacked on a landscape sheet
-  stack: { display: "flex", flexDirection: "column", gap: "0.15in" },
-  wideCard: { border: "2px solid #000", padding: "16px 8px 8px", boxSizing: "border-box", breakInside: "avoid" },
+  stack: { display: "flex", flexDirection: "column", gap: "0.2in" },
+  wideCard: { border: "2px solid #000", padding: "26px 10px 20px", boxSizing: "border-box", breakInside: "avoid" },
   wideHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 },
   wideTitle: { fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2 },
   wideMeta: { fontSize: 10.5, lineHeight: 1.3, marginTop: 2 },
@@ -387,7 +391,7 @@ const ps = {
   wTotalTint: { background: "#eee", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact", fontWeight: 800 },
   wBox: { border: "1px solid #000", padding: 0, position: "relative" },
   wWrite: { height: 26, width: "100%" },
-  signRow: { display: "flex", gap: 28, marginTop: 8, fontSize: 10.5 },
+  signRow: { display: "flex", gap: 28, marginTop: 14, fontSize: 10.5 },
   signCode: { flex: "none", alignSelf: "flex-end", fontSize: 10.5, whiteSpace: "nowrap" },
   signBlock: { flex: "1 1 0", display: "flex", alignItems: "flex-end", gap: 6, whiteSpace: "nowrap", minWidth: 0 },
   signLine: { flex: "1 1 0", borderBottom: "1px solid #000", height: 16, minWidth: 0 },
