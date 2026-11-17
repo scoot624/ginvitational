@@ -142,7 +142,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
   // roomy boxes to write in; a card with lots of rows (a 4-person team with shared holes) gets slightly shorter ones so two still fit a sheet
-  const boxH = layout.rows.length <= 5 ? 36 : 28;
+  const boxH = layout.rows.length <= 4 ? 36 : layout.rows.length <= 5 ? 32 : 28;
 
   return (
     <div style={ps.wideCard}>
@@ -207,10 +207,11 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
               {cols.map((c) => {
                 if (!c.hole) return row.totals === "box" ? <td key={c.key} style={ps.wBox}><div style={{ ...ps.wWrite, height: boxH }} /></td> : <td key={c.key} style={ps.wHatch} />;
                 const cell = row.cells[c.hole - 1];
-                if (!cell.box) return <td key={c.key} style={ps.wHatch} />;
+                if (cell.skip) return null; // covered by the team ball box above it
                 return (
-                  <td key={c.key} style={ps.wBox}>
-                    <div style={{ ...ps.wWrite, height: boxH }} />
+                  <td key={c.key} rowSpan={cell.span} style={ps.wBox}>
+                    <div style={{ ...ps.wWrite, height: boxH * cell.span + (cell.span - 1) }} />
+                    {cell.span > 1 ? <div style={ps.wTag}>team ball</div> : null}
                     <div style={ps.wDots}>{dotStr(cell.dots)}</div>
                   </td>
                 );
@@ -377,6 +378,7 @@ const ps = {
   wBox: { border: "1px solid #000", padding: 0, position: "relative" },
   wWrite: { height: 26, width: "100%" },
   wDots: { position: "absolute", top: 0, right: 2, fontSize: 11, lineHeight: 1, letterSpacing: 0.5 },
+  wTag: { position: "absolute", top: 2, left: 4, fontSize: 7, lineHeight: 1, textTransform: "uppercase", letterSpacing: 0.6, opacity: 0.55 },
   wHatch: {
     border: "1px solid #000",
     padding: 0,
