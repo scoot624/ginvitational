@@ -1,11 +1,12 @@
-// Print scorecards: two per landscape sheet at 100% scale.
-// A team game prints one card per team (one shared box on a scramble / alternate-shot hole, a box per player on a
-// better-ball hole); an individual game prints one card per playing group. See lib/printCards for what goes on each.
+// Print scorecards on landscape sheets at 100% scale.
+// A team game prints one card per team, laid out like the Leaderboard's scorecard (holes across the top, a row for each
+// thing to write down), two stacked on each sheet. An individual game prints one card per playing group, two side by
+// side. See lib/printCards for what goes on each card.
 
 import { STROKE_INDEX, strokesOnHole } from "../../lib/course";
 import { isSharedBallFormat } from "../../lib/gameConfig";
-import { clampInt, lastName } from "../../lib/golf";
-import { buildPrintCards } from "../../lib/printCards";
+import { clampInt, hcpLabel, lastName, surname } from "../../lib/golf";
+import { buildPrintCards, teamCardLayout } from "../../lib/printCards";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { FONT_DISPLAY } from "../../theme";
 
@@ -18,24 +19,37 @@ export function PrintTwoUpScorecards({ foursomes, players, foursomePlayers, game
   const startHoles = new Set(foursomes.map((f) => String(f.starting_hole ?? "").trim() || "1"));
   const showTeeTime = startHoles.size <= 1;
 
-  // 2 per page
-  const pages = [];
-  for (let i = 0; i < cards.length; i += 2) pages.push([cards[i], cards[i + 1] || null]);
-  const renderCard = (card) =>
-    card.kind === "team" ? (
-      <PrintTeamCard card={card} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
-    ) : (
-      <PrintOneGroupCard f={card.f} members={card.members} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
-    );
+  // Team cards are wide (holes across the page): two stacked per sheet. Group cards are tall: two side by side per sheet.
+  const pairUp = (list) => {
+    const out = [];
+    for (let i = 0; i < list.length; i += 2) out.push([list[i], list[i + 1] || null]);
+    return out;
+  };
+  const teamPages = pairUp(cards.filter((c) => c.kind === "team"));
+  const groupPages = pairUp(cards.filter((c) => c.kind !== "team"));
+  const teamCard = (card) => (
+    <PrintTeamCard card={card} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
+  );
+  const groupCard = (card) => (
+    <PrintOneGroupCard f={card.f} members={card.members} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} fieldOffset={fieldOffset} />
+  );
 
   return (
     <div id="printRoot" style={ps.root}>
-      {pages.map((pair, idx) => (
-        <div className="printPage" key={idx} style={ps.page}>
+      {teamPages.map((pair, idx) => (
+        <div className="printPage" key={`team-${idx}`} style={ps.page}>
+          <div style={ps.stack}>
+            {pair[0] && teamCard(pair[0])}
+            {pair[1] && teamCard(pair[1])}
+          </div>
+        </div>
+      ))}
+      {groupPages.map((pair, idx) => (
+        <div className="printPage" key={`group-${idx}`} style={ps.page}>
           <div style={ps.twoUpRow}>
-            <div style={ps.col}>{pair[0] && renderCard(pair[0])}</div>
+            <div style={ps.col}>{pair[0] && groupCard(pair[0])}</div>
 
-            <div style={ps.col}>{pair[1] && renderCard(pair[1])}</div>
+            <div style={ps.col}>{pair[1] && groupCard(pair[1])}</div>
           </div>
         </div>
       ))}
@@ -106,91 +120,105 @@ function CardFooter({ f }) {
 }
 
 /**
- * One scorecard for one TEAM. A hole the team plays as one ball (scramble / alternate shot) is a single wide box;
- * a hole each player plays their own ball is a box per player. The Out / In / Total rows are one team box when any hole
- * is a shared ball, and a box per player when every hole is own-ball. Dots mark handicap strokes (the team ball's on a
- * shared box, each player's own on the rest).
+ * One scorecard for one TEAM, laid out like the Leaderboard's scorecard: holes across the top and a row for each thing to
+ * write down (what the rows are is worked out in lib/printCards teamCardLayout). Greyed cells are holes a row doesn't
+ * apply to; dots mark handicap strokes; the Out / In / Total columns sit where they do on the Leaderboard.
  */
 export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fieldOffset }) {
-  const { members, holes, anyShared, f } = card;
-  const n = Math.max(1, members.length);
+  const layout = teamCardLayout(card);
+  const g = card.f || {};
   const offset = clampInt(fieldOffset, 0);
+  const who = (p) => `${surname(p.name)} (${hcpLabel(p.handicap)})`;
   const dotStr = (k) => (k > 0 ? "•".repeat(k) : k < 0 ? "+".repeat(-k) : "");
-  const colWidth = `${80 / n}%`;
 
-  const holeRows = (start, end) =>
-    Array.from({ length: end - start + 1 }, (_, k) => {
-      const h = start + k;
-      const hm = holes[h - 1];
-      return (
-        <tr key={h}>
-          <td style={ps.tdHole}>{h}</td>
-          <td style={ps.tdHi}>{STROKE_INDEX[h - 1]}</td>
-          {hm.shared ? (
-            <td colSpan={n} style={ps.tdScore}>
-              <div style={ps.scoreWriteArea} />
-              <div style={ps.dotCorner}>{dotStr(hm.ballStrokes)}</div>
-              <div style={ps.teamBallTag}>team ball</div>
-            </td>
-          ) : (
-            members.map((p) => (
-              <td key={`${h}-${p.id}`} style={ps.tdScore}>
-                <div style={ps.scoreWriteArea} />
-                <div style={ps.dotCorner}>{dotStr((hm.strokes || {})[p.id] || 0)}</div>
-              </td>
-            ))
-          )}
-        </tr>
-      );
-    });
-
-  // Out / In / Total: one team box when any hole is shared, otherwise a box under each player
-  const totalRow = (label, key) => (
-    <tr key={key}>
-      <td style={ps.tdOutInTotal}>{label}</td>
-      <td style={ps.tdOutInTotal} />
-      {anyShared ? (
-        <td colSpan={n} style={ps.tdScore}>
-          <div style={ps.scoreWriteArea} />
-        </td>
-      ) : (
-        members.map((p) => (
-          <td key={`${key}-${p.id}`} style={ps.tdScore}>
-            <div style={ps.scoreWriteArea} />
-          </td>
-        ))
-      )}
-    </tr>
-  );
+  // columns: holes 1-9, OUT, holes 10-18, IN, TOT
+  const holeNums = Array.from({ length: 18 }, (_, i) => i + 1);
+  const cols = [
+    ...holeNums.slice(0, 9).map((h) => ({ key: `h${h}`, hole: h })),
+    { key: "out", label: "OUT", from: 0, to: 9 },
+    ...holeNums.slice(9).map((h) => ({ key: `h${h}`, hole: h })),
+    { key: "in", label: "IN", from: 9, to: 18 },
+    { key: "tot", label: "TOT", from: 0, to: 18 },
+  ];
+  const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
+  // roomy boxes to write in; a card with lots of rows (a 4-person team with shared holes) gets slightly shorter ones so two still fit a sheet
+  const boxH = layout.rows.length <= 5 ? 36 : 28;
 
   return (
-    <div style={ps.cardOuter}>
-      <CardHeader f={f} showTeeTime={showTeeTime} eventName={eventName} logoSrc={logoSrc} game={game} offset={offset} teamLabel={card.label} />
+    <div style={ps.wideCard}>
+      <div style={ps.wideHeader}>
+        <div style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div style={ps.wideTitle}>{eventName || "The Ginvitational"}</div>
+          <div style={ps.wideMeta}>
+            <b>Team:</b> {card.members.map(who).join(" / ")}
+          </div>
+          <div style={ps.wideMeta}>
+            Group {g.group_name || ""} • {showTeeTime ? `Tee time ${formatTeeTime(g.tee_time)}` : `Starting hole ${g.starting_hole || ""}`} • Handicap:{" "}
+            {game ? game.name : "Course Handicap"}
+            {offset !== 0 ? " • Field-Relative" : ""}
+          </div>
+        </div>
+        <div style={ps.wideSide}>
+          <img src={logoSrc} alt="" style={ps.wideLogo} />
+          <div style={ps.wideCode}>
+            <b>Group Code</b>{" "}
+            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{g.code || ""}</span>
+          </div>
+        </div>
+      </div>
 
-      <table style={ps.table}>
+      <table style={ps.wideTable}>
+        <colgroup>
+          <col style={{ width: "13%" }} />
+          {cols.map((c) => (
+            <col key={c.key} />
+          ))}
+        </colgroup>
         <thead>
           <tr>
-            <th style={ps.thHole}>Hole</th>
-            <th style={ps.thHi}>H.I</th>
-            {members.map((p) => (
-              <th key={p.id} style={{ ...ps.thPlayer, width: colWidth }}>
-                <div style={ps.playerLast}>{lastName(p.name) || p.name}</div>
-                <div style={ps.playerHcp}>HCP {clampInt(p.handicap, 0)}</div>
+            <th style={ps.wLabelHead}>Hole</th>
+            {cols.map((c) => (
+              <th key={c.key} style={c.hole ? ps.wHead : { ...ps.wHead, ...ps.wTotalTint }}>
+                {c.hole || c.label}
               </th>
             ))}
           </tr>
         </thead>
-
         <tbody>
-          {holeRows(1, 9)}
-          {totalRow("Out", "out")}
-          {holeRows(10, 18)}
-          {totalRow("In", "in")}
-          {totalRow("Total", "tot")}
+          <tr>
+            <td style={ps.wLabel}>H.I</td>
+            {cols.map((c) => (
+              <td key={c.key} style={c.hole ? ps.wSmall : { ...ps.wSmall, ...ps.wTotalTint }}>
+                {c.hole ? STROKE_INDEX[c.hole - 1] : ""}
+              </td>
+            ))}
+          </tr>
+          <tr>
+            <td style={ps.wLabel}>Par</td>
+            {cols.map((c) => (
+              <td key={c.key} style={c.hole ? ps.wSmall : { ...ps.wSmall, ...ps.wTotalTint, fontWeight: 700 }}>
+                {c.hole ? layout.parRow[c.hole - 1] : parSum(c.from, c.to)}
+              </td>
+            ))}
+          </tr>
+          {layout.rows.map((row) => (
+            <tr key={row.key}>
+              <td style={ps.wLabel}>{row.player ? who(row.player) : row.label}</td>
+              {cols.map((c) => {
+                if (!c.hole) return row.totals === "box" ? <td key={c.key} style={ps.wBox}><div style={{ ...ps.wWrite, height: boxH }} /></td> : <td key={c.key} style={ps.wHatch} />;
+                const cell = row.cells[c.hole - 1];
+                if (!cell.box) return <td key={c.key} style={ps.wHatch} />;
+                return (
+                  <td key={c.key} style={ps.wBox}>
+                    <div style={{ ...ps.wWrite, height: boxH }} />
+                    <div style={ps.wDots}>{dotStr(cell.dots)}</div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
         </tbody>
       </table>
-
-      <CardFooter f={f} />
     </div>
   );
 }
@@ -330,6 +358,32 @@ const ps = {
   page: { width: "100%" },
   twoUpRow: { display: "flex", gap: "0.2in", alignItems: "flex-start" },
   col: { flex: "1 1 0", minWidth: 0 },
+
+  // Team cards: holes across the page, two stacked on a landscape sheet
+  stack: { display: "flex", flexDirection: "column", gap: "0.15in" },
+  wideCard: { border: "2px solid #000", padding: 8, boxSizing: "border-box", breakInside: "avoid" },
+  wideHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 },
+  wideTitle: { fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2 },
+  wideMeta: { fontSize: 10.5, lineHeight: 1.3, marginTop: 2 },
+  wideSide: { flex: "none", display: "flex", alignItems: "center", gap: 10 },
+  wideLogo: { display: "block", height: 44, width: "auto", maxWidth: 80, objectFit: "contain" },
+  wideCode: { fontSize: 10.5, whiteSpace: "nowrap" },
+  wideTable: { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
+  wLabelHead: { border: "1px solid #000", padding: "2px 4px", fontSize: 10, textAlign: "left" },
+  wHead: { border: "1px solid #000", padding: "2px 0", fontSize: 10, textAlign: "center" },
+  wLabel: { border: "1px solid #000", padding: "2px 4px", fontSize: 10, fontWeight: 700, textAlign: "left", lineHeight: 1.15 },
+  wSmall: { border: "1px solid #000", padding: "1px 0", fontSize: 9.5, textAlign: "center" },
+  wTotalTint: { background: "#eee", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact", fontWeight: 800 },
+  wBox: { border: "1px solid #000", padding: 0, position: "relative" },
+  wWrite: { height: 26, width: "100%" },
+  wDots: { position: "absolute", top: 0, right: 2, fontSize: 11, lineHeight: 1, letterSpacing: 0.5 },
+  wHatch: {
+    border: "1px solid #000",
+    padding: 0,
+    background: "repeating-linear-gradient(135deg, #fff 0, #fff 3px, #bbb 3px, #bbb 4px)",
+    WebkitPrintColorAdjust: "exact",
+    printColorAdjust: "exact",
+  },
 
   // Outer card border
   cardOuter: { border: "2px solid #000", padding: 10, boxSizing: "border-box" },

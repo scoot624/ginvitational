@@ -125,3 +125,77 @@ test('only the selected game\'s teams are used', () => {
   const cards = buildPrintCards({ ...base, game: game(), gameTeams: [...other.gameTeams, ...mine.gameTeams], gameTeamMembers: [...other.gameTeamMembers, ...mine.gameTeamMembers] });
   assert.deepEqual(cards.map((c) => c.members.map((p) => p.id)), [['a', 'b'], ['c', 'd'], ['e', 'f']]);
 });
+
+// ---- the across-the-page layout (like the Leaderboard scorecard) ----
+import { teamCardLayout } from '../src/lib/printCards.js';
+
+const cardFor = (g) => buildPrintCards({ ...base, game: g, ...teamsFor('g', pairs2) })[0];
+const labels = (layout) => layout.rows.map((r) => r.label);
+const boxes = (row) => row.cells.map((c) => (c.box ? 'B' : '.')).join('');
+
+test('better ball: a box per player, then one "Better ball = team score" row that carries the totals', () => {
+  const lay = teamCardLayout(cardFor(game({ format: 'better_ball_2' })));
+  assert.deepEqual(labels(lay), ['a Smith', 'b Smith', 'Better ball (net) = team score']);
+  assert.ok(lay.rows.every((r) => boxes(r) === 'BBBBBBBBBBBBBBBBBB'));
+  assert.deepEqual(lay.rows.map((r) => r.totals), ['box', 'box', 'box']);
+  assert.deepEqual(lay.parRow, [4, 4, 4, 3, 4, 3, 5, 3, 5, 4, 3, 5, 3, 4, 5, 4, 4, 5]);
+  // strokes are dots in the player's own boxes (hole 16, SI 1: the 20 handicap gets two)
+  assert.equal(lay.rows[1].cells[15].dots, 2);
+});
+
+test('scramble / alternate shot: a Team ball row and a Team score row, no player rows', () => {
+  for (const format of ['scramble_2', 'alt_shot_2']) {
+    const lay = teamCardLayout(cardFor(game({ format, handicap_allowance: [35, 15] })));
+    assert.deepEqual(labels(lay), ['Team ball', 'Team score (net)'], format);
+    assert.ok(boxes(lay.rows[0]) === 'BBBBBBBBBBBBBBBBBB' && boxes(lay.rows[1]) === 'BBBBBBBBBBBBBBBBBB', format);
+    assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'box'], format);
+    assert.equal(lay.rows[0].cells[2].dots, 1, format); // hole 3: the team ball gets a stroke
+  }
+});
+
+test('multi-format: team ball on shared holes, player + better ball boxes on own-ball holes, one team score row for all 18', () => {
+  const g = game({
+    format: 'composite',
+    segments: [
+      { holes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], formatType: 'shared', handicapAllowance: { lowPct: 35, highPct: 15 } },
+      { holes: [13, 14, 15, 16, 17, 18], formatType: 'individual', handicapPct: 100, countingRule: { scoresCounted: 1, slots: ['net'] } },
+    ],
+  });
+  const lay = teamCardLayout(cardFor(g));
+  assert.deepEqual(labels(lay), ['Team ball', 'a Smith', 'b Smith', 'Better ball (net)', 'Team score (net)']);
+  assert.equal(boxes(lay.rows[0]), 'BBBBBBBBBBBB......'); // team ball: holes 1-12
+  assert.equal(boxes(lay.rows[1]), '............BBBBBB'); // each player: holes 13-18
+  assert.equal(boxes(lay.rows[3]), '............BBBBBB'); // better ball: holes 13-18
+  assert.equal(boxes(lay.rows[4]), 'BBBBBBBBBBBBBBBBBB'); // team score: every hole
+  assert.deepEqual(lay.rows.map((r) => r.totals), ['hatch', 'box', 'box', 'hatch', 'box']);
+  assert.equal(lay.rows[1].cells[0].dots, 0); // no player dots on a shared hole
+});
+
+test('"both count" holes are called Total score, and the par row doubles', () => {
+  const g = game({ format: 'better_ball_2', counting_rule: { scoresCounted: 2, slots: ['net', 'net'] } });
+  const lay = teamCardLayout(cardFor(g));
+  assert.equal(lay.rows[2].label, 'Total score (net) = team score');
+  assert.deepEqual(lay.parRow.slice(0, 3), [8, 8, 8]);
+});
+
+test('different counting rules in one round are called "Counting score"', () => {
+  const g = game({
+    format: 'composite',
+    segments: [
+      { holes: [1, 2, 3, 4, 5, 6, 7, 8, 9], formatType: 'individual', handicapPct: 100, countingRule: { scoresCounted: 1, slots: ['net'] } },
+      { holes: [10, 11, 12, 13, 14, 15, 16, 17, 18], formatType: 'individual', handicapPct: 100, countingRule: { scoresCounted: 2, slots: ['net', 'net'] } },
+    ],
+  });
+  assert.equal(teamCardLayout(cardFor(g)).rows[2].label, 'Counting score (net) = team score');
+});
+
+test('4-person better ball: a row per player', () => {
+  const card = buildPrintCards({
+    ...base, game: game({ format: 'better_ball_4' }),
+    foursomes: [F1], foursomePlayers: fp(F1, ['a', 'b', 'c', 'd']),
+    ...teamsFor('g', [['a', 'b', 'c', 'd']]),
+  })[0];
+  const lay = teamCardLayout(card);
+  assert.equal(lay.rows.length, 5); // four players + the better ball row
+  assert.equal(lay.rows[4].label, 'Better ball (net) = team score');
+});

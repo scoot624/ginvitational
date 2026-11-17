@@ -71,3 +71,54 @@ export function buildPrintCards({ foursomes, players, foursomePlayers, game, gam
   for (const t of teams) if (!placed.has(t.id) && membersOfTeam(t).length > 0) cards.push(teamCard(t, null));
   return cards;
 }
+
+/**
+ * What goes on a team card laid out like the Leaderboard's scorecard (holes across the top, rows down the side):
+ *   Par              the team's par for each hole (two scores added = two pars)
+ *   Team ball        a box on every scramble / alternate-shot hole (gross), dots for the team ball's strokes
+ *   <each player>    a box on every own-ball hole (gross), dots for that player's strokes
+ *   Better ball      a box on every own-ball hole for the score that counts (the lower NET; or the added NETs when two count)
+ *   Team score       a box on every hole for the team's counting score (net), with Out / In / Total
+ * Greyed ("hatched") cells are holes that row doesn't apply to. A card with no shared holes has no separate Team score
+ * row (the Better ball row IS the team score, and carries the totals); a card with only shared holes has no player rows.
+ * Returns { parRow: [18 numbers], rows: [{ key, label, cells: [{ box, dots }] x 18, totals: "box" | "hatch" }] }.
+ */
+export function teamCardLayout(card) {
+  const { members, holes, anyShared } = card;
+  const anySolo = holes.some((h) => !h.shared);
+  const cells = (fn) => holes.map((h, i) => fn(h, i));
+
+  // how many scores count on the own-ball holes: 1 = better ball, 2 = both (total score) ...
+  const counts = new Set(holes.map((h, i) => (h.shared ? null : Math.max(1, Math.round(h.par / PARS[i])))).filter(Boolean));
+  let countLabel = "Counting score";
+  if (counts.size === 1) {
+    const n = [...counts][0];
+    countLabel = n === 1 ? "Better ball" : n === 2 && members.length === 2 ? "Total score" : `Best ${n} added`;
+  }
+
+  const rows = [];
+  if (anyShared) {
+    rows.push({ key: "ball", label: "Team ball", cells: cells((h) => ({ box: !!h.shared, dots: h.shared ? h.ballStrokes || 0 : 0 })), totals: "hatch" });
+  }
+  if (anySolo) {
+    for (const p of members) {
+      rows.push({
+        key: p.id,
+        label: p.name,
+        player: p,
+        cells: cells((h) => ({ box: !h.shared, dots: h.shared ? 0 : (h.strokes || {})[p.id] || 0 })),
+        totals: "box",
+      });
+    }
+    rows.push({
+      key: "bb",
+      label: anyShared ? `${countLabel} (net)` : `${countLabel} (net) = team score`,
+      cells: cells((h) => ({ box: !h.shared, dots: 0 })),
+      totals: anyShared ? "hatch" : "box",
+    });
+  }
+  if (anyShared) {
+    rows.push({ key: "team", label: "Team score (net)", cells: cells(() => ({ box: true, dots: 0 })), totals: "box" });
+  }
+  return { parRow: holes.map((h) => h.par), rows };
+}
