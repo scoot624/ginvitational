@@ -218,7 +218,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
                 return (
                   <td key={c.key} rowSpan={cell.span} style={ps.wBox}>
                     <div style={{ ...ps.wWrite, height: boxH * cell.span + (cell.span - 1) }} />
-                    {cell.span > 1 ? <div style={ps.wTag}>team ball</div> : null}
+                    {cell.span > 1 ? <div style={ps.wGameTag}>{cell.tag}</div> : null}
                     <div style={ps.wDots}>{dotStr(cell.dots)}</div>
                   </td>
                 );
@@ -427,6 +427,8 @@ const ps = {
   signBlock: { flex: "1 1 0", display: "flex", alignItems: "flex-end", gap: 6, whiteSpace: "nowrap", minWidth: 0 },
   signLine: { flex: "1 1 0", borderBottom: "1px solid #000", height: 16, minWidth: 0 },
   wDots: { position: "absolute", top: 0, right: 2, fontSize: 11, lineHeight: 1, letterSpacing: 0.5 },
+  // the game's name in a shared team box ("Scramble", "Alt Shot"), along the bottom so it stays clear of the stroke dots
+  wGameTag: { position: "absolute", bottom: 3, left: 0, right: 0, textAlign: "center", whiteSpace: "nowrap", fontSize: 7.5, lineHeight: 1, fontWeight: 700, opacity: 0.7 },
   wTag: { position: "absolute", top: 2, left: 4, fontSize: 7, lineHeight: 1, textTransform: "uppercase", letterSpacing: 0.6, opacity: 0.55 },
   wHatch: {
     border: "1px solid #000",
