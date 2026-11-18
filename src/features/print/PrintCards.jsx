@@ -142,14 +142,14 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
   // Two cards share a landscape sheet, so each box is sized to make the pair fill most of it: whatever height is left after
-  // the header, the small rows, the signature line and the marker's strip is shared out between the rows to write in. A card with more rows
+  // the header, the small rows, the signature line and the marker's boxes is shared out between the rows to write in. A card with more rows
   // (a 4-person team) gets slightly shorter boxes. CARD_FIXED is the height of everything that isn't a write-in row.
   const mainRows = layout.rows.filter((r) => r.key !== "marker"); // the players' rows and the Team score row
   const markerRow = layout.rows.find((r) => r.key === "marker"); // drawn separately, at the bottom of the card
   const MARKER_BOX = 28;
   // a card with many rows (a 4-person team) trims its spacing a little so two still fit a sheet
   const tight = mainRows.length >= 5;
-  const CARD_FIXED = tight ? 250 : 270;
+  const CARD_FIXED = tight ? 226 : 246;
   const CARD_TARGET = 346;
   const boxH = Math.max(tight ? 18 : 20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / mainRows.length) - 2));
 
@@ -240,7 +240,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
         </div>
       </div>
 
-      {/* the marker's own strip, kept apart from the players' scores: same holes, one row of boxes */}
+      {/* the marker's own strip, kept apart from the players' scores: a single row of boxes lining up with the holes above */}
       <table style={{ ...ps.wideTable, marginTop: tight ? 8 : 12 }}>
         <colgroup>
           <col style={{ width: "13%" }} />
@@ -248,22 +248,13 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
             <col key={c.key} />
           ))}
         </colgroup>
-        <thead>
-          <tr>
-            <th style={ps.wLabelHead}>Hole</th>
-            {cols.map((c) => (
-              <th key={c.key} style={c.hole ? ps.wHead : { ...ps.wHead, ...ps.wTotalTint }}>
-                {c.hole || c.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
         <tbody>
           <tr>
             <td style={ps.wLabel}>{markerRow ? markerRow.label : "Marker's score"}</td>
             {cols.map((c) => (
               <td key={c.key} style={ps.wBox}>
                 <div style={{ ...ps.wWrite, height: MARKER_BOX }} />
+                {c.hole ? null : <div style={ps.wTag}>{c.label}</div>}
               </td>
             ))}
           </tr>
