@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { clampInt, hcpLabel } from "../../lib/golf";
 import { supabase } from "../../lib/supabase";
 import { formatTeeTime } from "../../lib/teeSheet";
-import { errToText, makeCode } from "../../lib/util";
+import { CODE_LENGTH, cleanCode, errToText, makeCode } from "../../lib/util";
 import { GameTeamsUpdate } from "./GameTeamsUpdate";
 import { THEME, styles, timeInputFix } from "../../theme";
 
@@ -102,6 +102,7 @@ function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, o
   const [name, setName] = useState(f.group_name || "");
   const [time, setTime] = useState(toTimeInput(f.tee_time));
   const [hole, setHole] = useState(String(f.starting_hole || 1));
+  const [code, setCode] = useState(f.code || "");
   const [addId, setAddId] = useState("");
   const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
   const full = members.length >= MAX_GROUP_SIZE;
@@ -110,6 +111,7 @@ function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, o
     setName(f.group_name || "");
     setTime(toTimeInput(f.tee_time));
     setHole(String(f.starting_hole || 1));
+    setCode(f.code || "");
     setAddId("");
     setEditing(true);
   };
@@ -139,6 +141,26 @@ function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, o
               Group name
               <input style={field} value={name} onChange={(e) => setName(e.target.value)} />
             </label>
+            <div style={styles.label}>
+              Code (what the group types to enter scores)
+              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(0, 1fr) auto" }}>
+                <input
+                  style={{ ...field, fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontWeight: 900, letterSpacing: 2 }}
+                  value={code}
+                  maxLength={CODE_LENGTH}
+                  autoCapitalize="characters"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => setCode(cleanCode(e.target.value))}
+                />
+                <button type="button" style={{ ...styles.smallBtn, minHeight: 46 }} onClick={() => setCode(makeCode(CODE_LENGTH))}>
+                  Random
+                </button>
+              </div>
+              <span style={styles.helpText}>
+                Write your own ({CODE_LENGTH} letters or numbers, like BIRDIE) or tap Random. Changing it stops the old code working, so reprint or re-send it.
+              </span>
+            </div>
             <div style={{ display: "grid", gap: 10, gridTemplateColumns: "minmax(0, 1fr) 88px" }}>
               <label style={styles.label}>
                 Tee time
@@ -158,7 +180,7 @@ function RosterGroupCard({ f, members, otherGroups, unassigned, inOtherGroups, o
           <button
             style={{ ...styles.bigBtn, minHeight: 48, opacity: busy ? 0.6 : 1 }}
             disabled={busy}
-            onClick={() => ops.saveGroup(f, { name, time, hole })}
+            onClick={() => ops.saveGroup(f, { name, time, hole, code })}
           >
             Save group
           </button>
@@ -398,7 +420,11 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
     if (groups.some((g) => g.id !== selfId && sameName(g.group_name, name))) return { error: `There is already a group called "${name}".` };
     const hole = Number(d.hole);
     if (!(hole >= 1 && hole <= 18)) return { error: "Starting hole must be 1 to 18." };
-    return { name, hole: Math.trunc(hole), tee_time: d.time ? `${d.time}:00` : null };
+    const code = cleanCode(d.code);
+    if (code.length !== CODE_LENGTH) return { error: `The code needs exactly ${CODE_LENGTH} letters or numbers.` };
+    const clash = foursomes.find((g) => g.id !== selfId && String(g.code || "").toUpperCase() === code);
+    if (clash) return { error: `The code ${code} is already used by "${clash.group_name}". Pick another.` };
+    return { name, code, hole: Math.trunc(hole), tee_time: d.time ? `${d.time}:00` : null };
   }
 
   // a successful change to who is in which group (or what a group is called) means the games' teams may be out of step
@@ -415,9 +441,9 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
         if (v.error) return v.error;
         const { error } = await supabase
           .from("foursomes")
-          .update({ group_name: v.name, tee_time: v.tee_time, starting_hole: v.hole })
+          .update({ group_name: v.name, code: v.code, tee_time: v.tee_time, starting_hole: v.hole })
           .eq("id", f.id);
-        if (error) return errToText(error);
+        if (error) return error.code === "23505" ? `The code ${v.code} is already taken. Pick another.` : errToText(error);
         if (!sameName(f.group_name, v.name)) {
           return syncTeamLabel(membersOf(f).map((p) => p.id), f.group_name, v.name);
         }
