@@ -4,6 +4,7 @@ import { AltShotSetupNotice, MatchSetupNotice } from "../../components/SetupNoti
 import { MatchEditor } from "../match/MatchEditor";
 import { RosterPicker } from "../match/RosterPicker";
 import { useEventDataContext } from "../../hooks/eventDataContext";
+import { teamGroupsForSize, teamPool } from "../../lib/teamBuilder";
 import { FORMATS_BY_TEAM_SIZE, GAME_FORMAT_LABELS, GAME_FORMAT_TEAM_SIZE, GAME_PRESETS, SCRAMBLE_DEFAULT_PCTS, TEAM_SIZE_OPTIONS, isMatchFormat, isSharedBallFormat, segmentOption, segmentOptionsFor } from "../../lib/gameConfig";
 import { clampInt } from "../../lib/golf";
 import { HANDICAP_MODES } from "../../lib/matchPlay";
@@ -216,58 +217,12 @@ export function GamesSection({ adminOn, openAdminSection, setOpenAdminSection })
    * active round. Returns { teams: [{label, members}], source }.
    */
   function baseTeamPool() {
-    const byLabel = new Map();
-    for (const p of players) {
-      const label = String(p.team_label || "").trim();
-      if (!label) continue;
-      if (!byLabel.has(label)) byLabel.set(label, []);
-      byLabel.get(label).push(p);
-    }
-    if (byLabel.size > 0) {
-      return { source: "column", teams: Array.from(byLabel.entries()).map(([label, members]) => ({ label, members })) };
-    }
-
-    const roundId = activeRound?.id;
-    const byId = new Map(players.map((p) => [p.id, p]));
-    const teams = foursomes
-      .filter((f) => !f.round_id || f.round_id === roundId)
-      .map((f) => ({
-        label: f.group_name,
-        members: foursomePlayers
-          .filter((fp) => fp.foursome_id === f.id)
-          .map((fp) => byId.get(fp.player_id))
-          .filter(Boolean),
-      }))
-      .filter((t) => t.members.length > 0);
-    return { source: "groups", teams };
+    return teamPool(players, foursomes, foursomePlayers, activeRound?.id);
   }
 
-  /** Teams for the given team size, ready to preview or save. */
+  /** Teams for the given team size, ready to preview or save (the rules live in lib/teamBuilder). */
   function teamPreviewGroups(teamSize) {
-    const { teams } = baseTeamPool();
-    const out = [];
-    for (const t of teams) {
-      if (teamSize === 2 && t.members.length > 2 && newGameSplit !== "keep") {
-        // Split a bigger group into pairs: balanced = low + high handicap together.
-        const sorted =
-          newGameSplit === "order"
-            ? [...t.members]
-            : [...t.members].sort((x, y) => clampInt(x.handicap, 0) - clampInt(y.handicap, 0));
-        const pairs = [];
-        if (newGameSplit === "order") {
-          for (let i = 0; i < sorted.length; i += 2) pairs.push(sorted.slice(i, i + 2));
-        } else {
-          let lo = 0;
-          let hi = sorted.length - 1;
-          while (lo < hi) pairs.push([sorted[lo++], sorted[hi--]]);
-          if (lo === hi) pairs.push([sorted[lo]]);
-        }
-        pairs.forEach((members, i) => out.push({ label: `${t.label} ${String.fromCharCode(65 + i)}`, members, mismatched: members.length !== teamSize }));
-      } else {
-        out.push({ label: t.label, members: t.members, mismatched: t.members.length !== teamSize });
-      }
-    }
-    return out;
+    return teamGroupsForSize(baseTeamPool().teams, teamSize, newGameSplit);
   }
 
   async function createMatchGame() {

@@ -5,6 +5,7 @@ import { clampInt, hcpLabel } from "../../lib/golf";
 import { supabase } from "../../lib/supabase";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { errToText, makeCode } from "../../lib/util";
+import { GameTeamsUpdate } from "./GameTeamsUpdate";
 import { THEME, styles, timeInputFix } from "../../theme";
 
 const toTimeInput = (t) => (t ? String(t).slice(0, 5) : "");
@@ -321,6 +322,7 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
   const [pGroup, setPGroup] = useState("");
   const [pErr, setPErr] = useState("");
   const [filter, setFilter] = useState("");
+  const [teamsStale, setTeamsStale] = useState(false); // groups changed since the page opened: the games' teams may need updating
   const field = { ...styles.input, fontSize: 16, minHeight: 46, boxSizing: "border-box", width: "100%" };
 
   const roundId = multiRound ? roundPick || activeRound?.id || "" : activeRound?.id || "";
@@ -399,9 +401,16 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
     return { name, hole: Math.trunc(hole), tee_time: d.time ? `${d.time}:00` : null };
   }
 
+  // a successful change to who is in which group (or what a group is called) means the games' teams may be out of step
+  const groupChanged = async (promise) => {
+    const ok = await promise;
+    if (ok) setTeamsStale(true);
+    return ok;
+  };
+
   const ops = {
     saveGroup: (f, d) =>
-      run(async () => {
+      groupChanged(run(async () => {
         const v = validateGroup(d, f.id);
         if (v.error) return v.error;
         const { error } = await supabase
@@ -413,18 +422,18 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
           return syncTeamLabel(membersOf(f).map((p) => p.id), f.group_name, v.name);
         }
         return null;
-      }),
+      })),
 
     removeMember: (f, p) =>
-      run(async () => {
+      groupChanged(run(async () => {
         const { error } = await supabase.from("foursome_players").delete().eq("foursome_id", f.id).eq("player_id", p.id);
         if (error) return errToText(error);
         return syncTeamLabel([p.id], f.group_name, null);
-      }),
+      })),
 
     // Moves (or adds) a player into a group, taking them out of any other group this round.
     addMember: (playerId, f) =>
-      run(async () => {
+      groupChanged(run(async () => {
         const p = playerById.get(playerId);
         if (!p) return "That player no longer exists.";
         if (membersOf(f).length >= MAX_GROUP_SIZE && groupOfPlayer.get(playerId)?.id !== f.id) {
@@ -439,7 +448,7 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
         const ins = await supabase.from("foursome_players").insert({ foursome_id: f.id, player_id: playerId });
         if (ins.error) return errToText(ins.error);
         return syncTeamLabel([playerId], from ? from.group_name : null, f.group_name);
-      }),
+      })),
 
     moveMember: (p, toId) => {
       const to = groups.find((g) => g.id === toId);
@@ -448,13 +457,13 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
 
     deleteGroup: async (f, members) => {
       if (!confirm(`Delete "${f.group_name}"? Its ${members.length} player(s) stay in the event but won't be in a group.`)) return false;
-      return run(async () => {
+      return groupChanged(run(async () => {
         const a = await supabase.from("foursome_players").delete().eq("foursome_id", f.id);
         if (a.error) return errToText(a.error);
         const b = await supabase.from("foursomes").delete().eq("id", f.id);
         if (b.error) return errToText(b.error);
         return syncTeamLabel(members.map((p) => p.id), f.group_name, null);
-      }, "Group deleted ✅");
+      }, "Group deleted ✅"));
     },
 
     savePlayer: (p, v) =>
@@ -521,8 +530,18 @@ export function RosterEditor({ players, foursomes, foursomePlayers, rounds, acti
     <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
       <div style={styles.helpText}>
         Change a player or a group any time, even after the tournament has started. A player&apos;s scores stay with
-        them. Existing 2-man / 4-man game teams are not changed.
+        them. The games keep their own copy of the teams, so after moving players between groups use{" "}
+        <b>Game teams</b> below to update them.
       </div>
+
+      <GameTeamsUpdate
+        players={players}
+        foursomes={foursomes}
+        foursomePlayers={foursomePlayers}
+        roundId={roundId}
+        stale={teamsStale}
+        onDone={onChanged}
+      />
 
       {multiRound ? (
         <label style={styles.label}>
