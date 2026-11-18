@@ -6,7 +6,7 @@
 import { STROKE_INDEX, strokesOnHole } from "../../lib/course";
 import { isSharedBallFormat } from "../../lib/gameConfig";
 import { clampInt, hcpLabel, lastName, surname } from "../../lib/golf";
-import { buildPrintCards, teamCardLayout } from "../../lib/printCards";
+import { buildPrintCards, handicapRules, teamCardLayout } from "../../lib/printCards";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { FONT_DISPLAY } from "../../theme";
 
@@ -126,8 +126,8 @@ function CardFooter({ f }) {
  */
 export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fieldOffset }) {
   const layout = teamCardLayout(card);
+  const rules = handicapRules({ game, members: card.members, fieldOffset });
   const g = card.f || {};
-  const offset = clampInt(fieldOffset, 0);
   const who = (p) => `${surname(p.name)} (${hcpLabel(p.handicap)})`;
   const dotStr = (k) => (k > 0 ? "•".repeat(k) : k < 0 ? "+".repeat(-k) : "");
 
@@ -149,7 +149,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   const MARKER_BOX = 28;
   // a card with many rows (a 4-person team) trims its spacing a little so two still fit a sheet
   const tight = mainRows.length >= 5;
-  const CARD_FIXED = tight ? 226 : 246;
+  const CARD_FIXED = tight ? 246 : 266;
   const CARD_TARGET = 346;
   const boxH = Math.max(tight ? 18 : 20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / mainRows.length) - 2));
 
@@ -164,8 +164,12 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
           <div style={ps.wideMeta}>
             Group {g.group_name || ""} • {showTeeTime ? `Tee time ${formatTeeTime(g.tee_time)}` : `Starting hole ${g.starting_hole || ""}`} • Handicap:{" "}
             {game ? game.name : "Course Handicap"}
-            {offset !== 0 ? " • Field-Relative" : ""}
           </div>
+          {rules.length > 0 ? (
+            <div style={ps.wideRules}>
+              <b>Handicap rules:</b> {rules.join("  •  ")}
+            </div>
+          ) : null}
         </div>
         <img src={logoSrc} alt="" style={ps.wideLogo} />
       </div>
@@ -405,6 +409,7 @@ const ps = {
   wideCard: { border: "2px solid #000", padding: "26px 10px 20px", boxSizing: "border-box", breakInside: "avoid" },
   wideHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 },
   wideTitle: { fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2 },
+  wideRules: { fontSize: 9, lineHeight: 1.3, marginTop: 3 },
   wideMeta: { fontSize: 10.5, lineHeight: 1.3, marginTop: 2 },
   wideSide: { flex: "none", display: "flex", alignItems: "center", gap: 10 },
   wideLogo: { flex: "none", display: "block", height: 62, width: "auto", maxWidth: 110, objectFit: "contain" },
