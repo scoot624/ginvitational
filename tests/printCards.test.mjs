@@ -230,12 +230,12 @@ test('better ball: just the % of handicap, with a note only when more than one s
   assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_4', handicap_pct: 80, counting_rule: { scoresCounted: 3, slots: ['gross', 'gross', 'net'] } }), members: memA, fieldOffset: 0 }), ['Better ball 80% (best 3 added)']);
 });
 
-test('scramble and alternate shot: the blend and this team\'s own team handicap', () => {
+test('scramble and alternate shot: just the blend (the dots show the strokes)', () => {
   // 10 x 35% + 20 x 15% = 6.5 -> 7
-  assert.deepEqual(handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 0 }), ['Scramble 35% low + 15% high = team handicap 7']);
-  assert.deepEqual(handicapRules({ game: game({ format: 'alt_shot_2', handicap_allowance: [50, 50] }), members: memA, fieldOffset: 0 }), ['Alternate shot 50% low + 50% high = team handicap 15']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 0 }), ['Scramble 35% low + 15% high']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'alt_shot_2', handicap_allowance: [50, 50] }), members: memA, fieldOffset: 0 }), ['Alternate shot 50% low + 50% high']);
   const four = [P('a', 10), P('b', 20), P('c', 4), P('d', 8)];
-  assert.match(handicapRules({ game: game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] }), members: four, fieldOffset: 0 })[0], /^Scramble 40\/30\/20\/10% = team handicap \d+$/);
+  assert.match(handicapRules({ game: game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] }), members: four, fieldOffset: 0 })[0], /^Scramble 40\/30\/20\/10%$/);
 });
 
 test('multi-format round: one short item per part of the round, in hole order', () => {
@@ -248,16 +248,15 @@ test('multi-format round: one short item per part of the round, in hole order', 
     ],
   });
   assert.deepEqual(handicapRules({ game: g, members: memA, fieldOffset: 0 }), [
-    'Scramble 1–6: 35% low + 15% high (team 7)',
-    'Alternate Shot 7–12: 50% low + 50% high (team 15)',
+    'Scramble 1–6: 35% low + 15% high',
+    'Alternate Shot 7–12: 50% low + 50% high',
     'Better Ball 13–18: 100%',
   ]);
 });
 
-test('Field-Relative is one word at the end, and the team handicap uses it', () => {
+test('Field-Relative is one word at the end', () => {
   const rules = handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 4 });
-  // (10 - 4) x 35% + (20 - 4) x 15% = 2.1 + 2.4 = 4.5 -> 5 (rounds half up)
-  assert.deepEqual(rules, ['Scramble 35% low + 15% high = team handicap 5', 'Field-Relative']);
+  assert.deepEqual(rules, ['Scramble 35% low + 15% high', 'Field-Relative']);
   assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_2' }), members: memA, fieldOffset: -1 }), ['Better ball 100%', 'Field-Relative']);
 });
 
