@@ -7,11 +7,17 @@
 // per playing group, as it always has.
 
 import { PARS, STROKE_INDEX } from "./course.js";
-import { compositeSharedHandicap, computeGameRows, scrambleTeamHandicap, teamLabel } from "./gameCalc.js";
+import { buildHoleSegmentMap, compositeSharedHandicap, computeGameRows, scrambleTeamHandicap, teamLabel } from "./gameCalc.js";
 import { isSharedBallFormat, isTeamFormat } from "./gameConfig.js";
 import { clampInt } from "./golf.js";
 
 const MAX_COLUMNS = 4;
+
+/** A shared-ball game's name in short form for the team box: "Scramble", "Alt Shot". */
+function shortGameName(label) {
+  if (/alternate|alt/i.test(String(label || ""))) return "Alt Shot";
+  return String(label || "").split(" (")[0] || "Team ball";
+}
 
 /**
  * Returns the cards in print order:
@@ -46,7 +52,15 @@ export function buildPrintCards({ foursomes, players, foursomePlayers, game, gam
   const teamCard = (t, f) => {
     const members = membersOfTeam(t);
     const marks = marksByTeam.get(t.id) || {};
-    const holes = Array.from({ length: 18 }, (_, i) => marks[i + 1] || { shared: false, strokes: {} });
+    // which game each hole is (for the label in a team box): the segment's, or the whole game's
+    const gameAt = (h) => {
+      if (game.format === "composite") {
+        const seg = buildHoleSegmentMap(game.segments).get(h);
+        return seg && seg.formatType === "shared" ? shortGameName(seg.label) : null;
+      }
+      return isSharedBallFormat(game.format) ? (game.format === "alt_shot_2" ? "Alt Shot" : "Scramble") : null;
+    };
+    const holes = Array.from({ length: 18 }, (_, i) => ({ ...(marks[i + 1] || { shared: false, strokes: {} }), game: gameAt(i + 1) }));
     return { kind: "team", f, team: t, label: teamLabel(members, t.name), members, holes, anyShared: holes.some((h) => h.shared) };
   };
 
@@ -105,7 +119,7 @@ export function teamCardLayout(card) {
     player: p,
     cells: holes.map((h) => {
       if (!h.shared) return { box: true, dots: (h.strokes || {})[p.id] || 0, span: 1 };
-      return idx === 0 ? { box: true, dots: h.ballStrokes || 0, span: n } : { box: false, skip: true };
+      return idx === 0 ? { box: true, dots: h.ballStrokes || 0, span: n, tag: h.game || "Team ball" } : { box: false, skip: true };
     }),
     totals: anyShared ? "hatch" : "box",
   }));

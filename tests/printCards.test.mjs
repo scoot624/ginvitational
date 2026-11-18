@@ -278,3 +278,32 @@ test('no game, or an individual game: no rules to print', () => {
   assert.deepEqual(handicapRules({ game: null, members: memA, fieldOffset: 0 }), []);
   assert.deepEqual(handicapRules({ game: game({ format: 'individual_net' }), members: memA, fieldOffset: 0 }), []);
 });
+
+// ---- the game's name in a shared team box ----
+test('a shared team box carries the game\'s short name: Scramble or Alt Shot (and "Team ball" if it has no name)', () => {
+  const tagsOf = (g) => teamCardLayout(cardFor(g)).rows[0].cells.map((c) => c.tag || null);
+  assert.deepEqual(tagsOf(game({ format: 'scramble_2', handicap_allowance: [35, 15] })), Array(18).fill('Scramble'));
+  assert.deepEqual(tagsOf(game({ format: 'alt_shot_2', handicap_allowance: [35, 15] })), Array(18).fill('Alt Shot'));
+  assert.deepEqual(tagsOf(game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] })).slice(0, 2), ['Scramble', 'Scramble']);
+});
+
+test('multi-format: each stretch of shared holes is named for its own game; own-ball holes have no team box', () => {
+  const g = game({
+    format: 'composite',
+    segments: [
+      { holes: [1, 2, 3, 4, 5, 6], formatType: 'shared', label: 'Scramble', handicapAllowance: { lowPct: 35, highPct: 15 } },
+      { holes: [7, 8, 9, 10, 11, 12], formatType: 'shared', label: 'Alternate Shot', handicapAllowance: { lowPct: 50, highPct: 50 } },
+      { holes: [13, 14, 15, 16, 17, 18], formatType: 'individual', label: 'Better Ball (best score counts)', handicapPct: 100, countingRule: { scoresCounted: 1, slots: ['net'] } },
+    ],
+  });
+  const cells = teamCardLayout(cardFor(g)).rows[0].cells;
+  assert.deepEqual(cells.map((c) => (c.span > 1 ? c.tag : '-')), [...Array(6).fill('Scramble'), ...Array(6).fill('Alt Shot'), ...Array(6).fill('-')]);
+  // a segment label that has extra words after the name is cut back to the name
+  const g2 = game({ format: 'composite', segments: [{ holes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], formatType: 'shared', label: 'Scramble (35/15)', handicapAllowance: { lowPct: 35, highPct: 15 } }] });
+  assert.equal(teamCardLayout(cardFor(g2)).rows[0].cells[0].tag, 'Scramble');
+});
+
+test('better ball cards have no team box and so no game label', () => {
+  const lay = teamCardLayout(cardFor(game({ format: 'better_ball_2' })));
+  assert.ok(lay.rows.every((r) => r.cells.every((c) => !c.tag)));
+});
