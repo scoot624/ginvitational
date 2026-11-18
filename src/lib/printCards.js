@@ -9,7 +9,7 @@
 import { PARS, STROKE_INDEX } from "./course.js";
 import { compositeSharedHandicap, computeGameRows, scrambleTeamHandicap, teamLabel } from "./gameCalc.js";
 import { isSharedBallFormat, isTeamFormat } from "./gameConfig.js";
-import { clampInt, hcpLabel } from "./golf.js";
+import { clampInt } from "./golf.js";
 
 const MAX_COLUMNS = 4;
 
@@ -144,33 +144,32 @@ function holeRanges(holes) {
   return parts.join(", ");
 }
 
-/** How many scores count on an own-ball hole, in words: "best net score counts", "both net scores added"... */
-function countingText(rule, teamSize) {
-  const slots = (rule && Array.isArray(rule.slots) && rule.slots.length ? rule.slots : ["net"]).map(String);
-  const gross = slots.filter((s) => s === "gross").length;
-  const net = slots.length - gross;
-  if (slots.length === 1) return net ? "the best net score counts" : "the best gross score counts";
-  if (gross === 0) return net === 2 && teamSize === 2 ? "both net scores are added" : `the best ${net} net scores are added`;
-  return `the best ${[net ? `${net} net` : null, gross ? `${gross} gross` : null].filter(Boolean).join(" + ")} are added`;
+/** "(both added)" / "(best 3 added)" when more than one score counts on an own-ball hole; nothing for the usual best score. */
+function alsoCounts(rule, teamSize) {
+  const k = rule && Array.isArray(rule.slots) ? rule.slots.length : 1;
+  if (k <= 1) return "";
+  return k === 2 && teamSize === 2 ? " (both added)" : ` (best ${k} added)`;
 }
 
-/** "35% of the lower + 15% of the higher handicap", or "40% / 30% / 20% / 10% of the handicaps, lowest to highest" */
+/** "35% low + 15% high" for two players, "40/30/20/10%" (lowest to highest) for more */
 function blendText(pcts) {
-  const p = pcts.map((x) => `${clampInt(x, 0)}%`);
-  return p.length === 2 ? `${p[0]} of the lower + ${p[1]} of the higher handicap` : `${p.join(" / ")} of the handicaps, lowest to highest`;
+  const p = pcts.map((x) => clampInt(x, 0));
+  return p.length === 2 ? `${p[0]}% low + ${p[1]}% high` : `${p.join("/")}%`;
 }
 
 /**
- * The handicap rules for a team card, as short sentences (printed together under the card's heading), so the person
- * keeping score knows how this game uses handicaps: the % of handicap, the blended team handicap for a shared ball (with
- * this team's actual number), how the counting works, and whether Field-Relative is on. [] when there's no game.
+ * The handicap rules printed on a team card, kept to a few words each (joined with bullets in the heading):
+ *   Better ball 90%
+ *   Scramble 35% low + 15% high = team handicap 5
+ *   Scramble 1–6: 35% low + 15% high (team 4)   Alternate Shot 7–12: 50% low + 50% high (team 9)   Better Ball 13–18: 100%
+ *   Field-Relative
+ * [] when there's no game (or an individual one).
  */
 export function handicapRules({ game, members, fieldOffset }) {
   if (!game) return [];
   const off = clampInt(fieldOffset, 0);
   const n = (members || []).length;
   const out = [];
-  const sharedTeamHcp = (fn) => fn(members || [], off);
 
   if (game.format === "composite") {
     const segs = [...(game.segments || [])].sort((a, b) => Math.min(...a.holes) - Math.min(...b.holes));
@@ -178,22 +177,21 @@ export function handicapRules({ game, members, fieldOffset }) {
       const name = String(seg.label || "").split(" (")[0] || (seg.formatType === "shared" ? "Shared ball" : "Own ball");
       if (seg.formatType === "shared") {
         const a = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
-        out.push(`Holes ${holeRanges(seg.holes)} ${name}: ${blendText([a.lowPct, a.highPct])} (team handicap ${sharedTeamHcp((m, o) => compositeSharedHandicap(m, seg, o))})`);
+        out.push(`${name} ${holeRanges(seg.holes)}: ${blendText([a.lowPct, a.highPct])} (team ${compositeSharedHandicap(members || [], seg, off)})`);
       } else {
-        out.push(`Holes ${holeRanges(seg.holes)} ${name}: ${clampInt(seg.handicapPct, 100)}% of each player's handicap, ${countingText(seg.countingRule, n)}`);
+        out.push(`${name} ${holeRanges(seg.holes)}: ${clampInt(seg.handicapPct, 100)}%${alsoCounts(seg.countingRule, n)}`);
       }
     }
   } else if (isSharedBallFormat(game.format)) {
     const name = game.format === "alt_shot_2" ? "Alternate shot" : "Scramble";
     const pcts = Array.isArray(game.handicap_allowance) ? game.handicap_allowance : [];
-    out.push(`${name}: ${blendText(pcts)} (team handicap ${sharedTeamHcp((m, o) => scrambleTeamHandicap(m, game, o))})`);
+    out.push(`${name} ${blendText(pcts)} = team handicap ${scrambleTeamHandicap(members || [], game, off)}`);
   } else if (game.format === "better_ball_2" || game.format === "better_ball_4") {
-    out.push(`Better ball: ${clampInt(game.handicap_pct, 100)}% of each player's handicap, ${countingText(game.counting_rule, n)}`);
+    out.push(`Better ball ${clampInt(game.handicap_pct, 100)}%${alsoCounts(game.counting_rule, n)}`);
   } else {
     return [];
   }
 
-  if (off !== 0) out.push(`Field-Relative: handicaps are measured from the lowest in the field (${hcpLabel(off)})`);
-  out.push("A dot marks a hole where a stroke is received, hardest holes first (H.I)");
+  if (off !== 0) out.push("Field-Relative");
   return out;
 }

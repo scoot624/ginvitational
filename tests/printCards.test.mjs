@@ -219,30 +219,26 @@ test("every team card ends with a Marker's score row: a box on every hole plus i
   }
 });
 
-// ---- the handicap rules printed on a team card ----
+// ---- the handicap rules printed on a team card (a few words each) ----
 import { handicapRules } from '../src/lib/printCards.js';
 
 const memA = [P('a', 10), P('b', 20)];
-const DOTS = 'A dot marks a hole where a stroke is received, hardest holes first (H.I)';
 
-test('better ball: the % of handicap and how the counting works', () => {
-  assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_2', handicap_pct: 90 }), members: memA, fieldOffset: 0 }), [
-    "Better ball: 90% of each player's handicap, the best net score counts",
-    DOTS,
-  ]);
-  assert.match(handicapRules({ game: game({ format: 'better_ball_2', counting_rule: { scoresCounted: 2, slots: ['net', 'net'] } }), members: memA, fieldOffset: 0 })[0], /both net scores are added/);
-  assert.match(handicapRules({ game: game({ format: 'better_ball_4', counting_rule: { scoresCounted: 3, slots: ['gross', 'gross', 'net'] } }), members: memA, fieldOffset: 0 })[0], /best 1 net \+ 2 gross are added/);
+test('better ball: just the % of handicap, with a note only when more than one score counts', () => {
+  assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_2', handicap_pct: 90 }), members: memA, fieldOffset: 0 }), ['Better ball 90%']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_2', handicap_pct: 100, counting_rule: { scoresCounted: 2, slots: ['net', 'net'] } }), members: memA, fieldOffset: 0 }), ['Better ball 100% (both added)']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_4', handicap_pct: 80, counting_rule: { scoresCounted: 3, slots: ['gross', 'gross', 'net'] } }), members: memA, fieldOffset: 0 }), ['Better ball 80% (best 3 added)']);
 });
 
-test('scramble and alternate shot: the blend, with this team\'s own team handicap', () => {
+test('scramble and alternate shot: the blend and this team\'s own team handicap', () => {
   // 10 x 35% + 20 x 15% = 6.5 -> 7
-  assert.equal(handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 0 })[0], 'Scramble: 35% of the lower + 15% of the higher handicap (team handicap 7)');
-  assert.equal(handicapRules({ game: game({ format: 'alt_shot_2', handicap_allowance: [50, 50] }), members: memA, fieldOffset: 0 })[0], 'Alternate shot: 50% of the lower + 50% of the higher handicap (team handicap 15)');
+  assert.deepEqual(handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 0 }), ['Scramble 35% low + 15% high = team handicap 7']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'alt_shot_2', handicap_allowance: [50, 50] }), members: memA, fieldOffset: 0 }), ['Alternate shot 50% low + 50% high = team handicap 15']);
   const four = [P('a', 10), P('b', 20), P('c', 4), P('d', 8)];
-  assert.match(handicapRules({ game: game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] }), members: four, fieldOffset: 0 })[0], /^Scramble: 40% \/ 30% \/ 20% \/ 10% of the handicaps, lowest to highest \(team handicap \d+\)$/);
+  assert.match(handicapRules({ game: game({ format: 'scramble_4', handicap_allowance: [40, 30, 20, 10] }), members: four, fieldOffset: 0 })[0], /^Scramble 40\/30\/20\/10% = team handicap \d+$/);
 });
 
-test('multi-format round: one line per part of the round, in hole order, each with its own rule', () => {
+test('multi-format round: one short item per part of the round, in hole order', () => {
   const g = game({
     format: 'composite',
     segments: [
@@ -252,20 +248,30 @@ test('multi-format round: one line per part of the round, in hole order, each wi
     ],
   });
   assert.deepEqual(handicapRules({ game: g, members: memA, fieldOffset: 0 }), [
-    'Holes 1–6 Scramble: 35% of the lower + 15% of the higher handicap (team handicap 7)',
-    'Holes 7–12 Alternate Shot: 50% of the lower + 50% of the higher handicap (team handicap 15)',
-    "Holes 13–18 Better Ball: 100% of each player's handicap, the best net score counts",
-    DOTS,
+    'Scramble 1–6: 35% low + 15% high (team 7)',
+    'Alternate Shot 7–12: 50% low + 50% high (team 15)',
+    'Better Ball 13–18: 100%',
   ]);
 });
 
-test('field-relative handicaps are explained, and the team handicap uses them', () => {
+test('Field-Relative is one word at the end, and the team handicap uses it', () => {
   const rules = handicapRules({ game: game({ format: 'scramble_2', handicap_allowance: [35, 15] }), members: memA, fieldOffset: 4 });
   // (10 - 4) x 35% + (20 - 4) x 15% = 2.1 + 2.4 = 4.5 -> 5 (rounds half up)
-  assert.equal(rules[0], 'Scramble: 35% of the lower + 15% of the higher handicap (team handicap 5)');
-  assert.equal(rules[1], 'Field-Relative: handicaps are measured from the lowest in the field (4)');
-  // a plus handicap as the lowest in the field is written +1
-  assert.match(handicapRules({ game: game({ format: 'better_ball_2' }), members: memA, fieldOffset: -1 })[1], /\(\+1\)/);
+  assert.deepEqual(rules, ['Scramble 35% low + 15% high = team handicap 5', 'Field-Relative']);
+  assert.deepEqual(handicapRules({ game: game({ format: 'better_ball_2' }), members: memA, fieldOffset: -1 }), ['Better ball 100%', 'Field-Relative']);
+});
+
+test('the rules stay short: the longest realistic case (a three-part round with Field-Relative) is one printed line', () => {
+  const g = game({
+    format: 'composite',
+    segments: [
+      { holes: [1, 2, 3, 4, 5, 6], formatType: 'shared', label: 'Scramble', handicapAllowance: { lowPct: 35, highPct: 15 } },
+      { holes: [7, 8, 9, 10, 11, 12], formatType: 'shared', label: 'Alternate Shot', handicapAllowance: { lowPct: 50, highPct: 50 } },
+      { holes: [13, 14, 15, 16, 17, 18], formatType: 'individual', label: 'Total Score (both count, added together)', handicapPct: 100, countingRule: { scoresCounted: 2, slots: ['net', 'net'] } },
+    ],
+  });
+  const text = handicapRules({ game: g, members: memA, fieldOffset: 4 }).join('  •  ');
+  assert.ok(text.length < 170, text + ' (' + text.length + ' characters: more than one printed line)');
 });
 
 test('no game, or an individual game: no rules to print', () => {
