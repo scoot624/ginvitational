@@ -175,7 +175,7 @@ function blendText(pcts) {
  * The handicap rules printed on a team card, kept to a few words each (joined with bullets in the heading):
  *   Better ball 90%
  *   Scramble 35% low + 15% high = team handicap 5
- *   Scramble 1–6: 35% low + 15% high (team 4)   Alternate Shot 7–12: 50% low + 50% high (team 9)   Better Ball 13–18: 100%
+ *   Scramble 1–6: 35% low + 15% high (team hcp 4)   Alternate Shot 7–12: 50% low + 50% high (team hcp 9)   Better Ball 13–18: 100%
  *   Field-Relative
  * [] when there's no game (or an individual one).
  */
@@ -191,7 +191,7 @@ export function handicapRules({ game, members, fieldOffset }) {
       const name = String(seg.label || "").split(" (")[0] || (seg.formatType === "shared" ? "Shared ball" : "Own ball");
       if (seg.formatType === "shared") {
         const a = seg.handicapAllowance || { lowPct: 100, highPct: 0 };
-        out.push(`${name} ${holeRanges(seg.holes)}: ${blendText([a.lowPct, a.highPct])} (team ${compositeSharedHandicap(members || [], seg, off)})`);
+        out.push(`${name} ${holeRanges(seg.holes)}: ${blendText([a.lowPct, a.highPct])} (team hcp ${compositeSharedHandicap(members || [], seg, off)})`);
       } else {
         out.push(`${name} ${holeRanges(seg.holes)}: ${clampInt(seg.handicapPct, 100)}%${alsoCounts(seg.countingRule, n)}`);
       }

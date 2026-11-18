@@ -248,8 +248,8 @@ test('multi-format round: one short item per part of the round, in hole order', 
     ],
   });
   assert.deepEqual(handicapRules({ game: g, members: memA, fieldOffset: 0 }), [
-    'Scramble 1–6: 35% low + 15% high (team 7)',
-    'Alternate Shot 7–12: 50% low + 50% high (team 15)',
+    'Scramble 1–6: 35% low + 15% high (team hcp 7)',
+    'Alternate Shot 7–12: 50% low + 50% high (team hcp 15)',
     'Better Ball 13–18: 100%',
   ]);
 });
