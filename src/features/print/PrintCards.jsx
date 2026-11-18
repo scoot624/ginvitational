@@ -6,7 +6,7 @@
 import { STROKE_INDEX, strokesOnHole } from "../../lib/course";
 import { isSharedBallFormat } from "../../lib/gameConfig";
 import { clampInt, hcpLabel, lastName, surname } from "../../lib/golf";
-import { buildPrintCards, teamCardLayout } from "../../lib/printCards";
+import { buildPrintCards, handicapRules, teamCardLayout } from "../../lib/printCards";
 import { formatTeeTime } from "../../lib/teeSheet";
 import { FONT_DISPLAY } from "../../theme";
 
@@ -126,8 +126,8 @@ function CardFooter({ f }) {
  */
 export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fieldOffset }) {
   const layout = teamCardLayout(card);
+  const rules = handicapRules({ game, members: card.members, fieldOffset });
   const g = card.f || {};
-  const offset = clampInt(fieldOffset, 0);
   const who = (p) => `${surname(p.name)} (${hcpLabel(p.handicap)})`;
   const dotStr = (k) => (k > 0 ? "•".repeat(k) : k < 0 ? "+".repeat(-k) : "");
 
@@ -142,14 +142,14 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
   // Two cards share a landscape sheet, so each box is sized to make the pair fill most of it: whatever height is left after
-  // the header, the small rows, the signature line and the marker's strip is shared out between the rows to write in. A card with more rows
+  // the header, the small rows, the signature line and the marker's boxes is shared out between the rows to write in. A card with more rows
   // (a 4-person team) gets slightly shorter boxes. CARD_FIXED is the height of everything that isn't a write-in row.
   const mainRows = layout.rows.filter((r) => r.key !== "marker"); // the players' rows and the Team score row
   const markerRow = layout.rows.find((r) => r.key === "marker"); // drawn separately, at the bottom of the card
   const MARKER_BOX = 28;
   // a card with many rows (a 4-person team) trims its spacing a little so two still fit a sheet
   const tight = mainRows.length >= 5;
-  const CARD_FIXED = tight ? 250 : 270;
+  const CARD_FIXED = tight ? 246 : 266;
   const CARD_TARGET = 346;
   const boxH = Math.max(tight ? 18 : 20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / mainRows.length) - 2));
 
@@ -164,8 +164,12 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
           <div style={ps.wideMeta}>
             Group {g.group_name || ""} • {showTeeTime ? `Tee time ${formatTeeTime(g.tee_time)}` : `Starting hole ${g.starting_hole || ""}`} • Handicap:{" "}
             {game ? game.name : "Course Handicap"}
-            {offset !== 0 ? " • Field-Relative" : ""}
           </div>
+          {rules.length > 0 ? (
+            <div style={ps.wideRules}>
+              <b>Handicap rules:</b> {rules.join("  •  ")}
+            </div>
+          ) : null}
         </div>
         <img src={logoSrc} alt="" style={ps.wideLogo} />
       </div>
@@ -240,7 +244,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
         </div>
       </div>
 
-      {/* the marker's own strip, kept apart from the players' scores: same holes, one row of boxes */}
+      {/* the marker's own strip, kept apart from the players' scores: a single row of boxes lining up with the holes above */}
       <table style={{ ...ps.wideTable, marginTop: tight ? 8 : 12 }}>
         <colgroup>
           <col style={{ width: "13%" }} />
@@ -248,22 +252,13 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
             <col key={c.key} />
           ))}
         </colgroup>
-        <thead>
-          <tr>
-            <th style={ps.wLabelHead}>Hole</th>
-            {cols.map((c) => (
-              <th key={c.key} style={c.hole ? ps.wHead : { ...ps.wHead, ...ps.wTotalTint }}>
-                {c.hole || c.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
         <tbody>
           <tr>
             <td style={ps.wLabel}>{markerRow ? markerRow.label : "Marker's score"}</td>
             {cols.map((c) => (
               <td key={c.key} style={ps.wBox}>
                 <div style={{ ...ps.wWrite, height: MARKER_BOX }} />
+                {c.hole ? null : <div style={ps.wTag}>{c.label}</div>}
               </td>
             ))}
           </tr>
@@ -414,6 +409,7 @@ const ps = {
   wideCard: { border: "2px solid #000", padding: "26px 10px 20px", boxSizing: "border-box", breakInside: "avoid" },
   wideHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 },
   wideTitle: { fontFamily: FONT_DISPLAY, fontSize: 20, fontWeight: 600, lineHeight: 1.1, letterSpacing: -0.2 },
+  wideRules: { fontSize: 9, lineHeight: 1.3, marginTop: 3 },
   wideMeta: { fontSize: 10.5, lineHeight: 1.3, marginTop: 2 },
   wideSide: { flex: "none", display: "flex", alignItems: "center", gap: 10 },
   wideLogo: { flex: "none", display: "block", height: 62, width: "auto", maxWidth: 110, objectFit: "contain" },
