@@ -142,14 +142,19 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   ];
   const parSum = (from, to) => layout.parRow.slice(from, to).reduce((a, b) => a + b, 0);
   // Two cards share a landscape sheet, so each box is sized to make the pair fill most of it: whatever height is left after
-  // the header, the small rows and the signature line is shared out between the rows to write in. A card with more rows
+  // the header, the small rows, the signature line and the marker's strip is shared out between the rows to write in. A card with more rows
   // (a 4-person team) gets slightly shorter boxes. CARD_FIXED is the height of everything that isn't a write-in row.
-  const CARD_FIXED = 200;
-  const CARD_TARGET = 344;
-  const boxH = Math.max(20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / layout.rows.length) - 2));
+  const mainRows = layout.rows.filter((r) => r.key !== "marker"); // the players' rows and the Team score row
+  const markerRow = layout.rows.find((r) => r.key === "marker"); // drawn separately, at the bottom of the card
+  const MARKER_BOX = 28;
+  // a card with many rows (a 4-person team) trims its spacing a little so two still fit a sheet
+  const tight = mainRows.length >= 5;
+  const CARD_FIXED = tight ? 250 : 270;
+  const CARD_TARGET = 346;
+  const boxH = Math.max(tight ? 18 : 20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / mainRows.length) - 2));
 
   return (
-    <div style={ps.wideCard}>
+    <div style={tight ? { ...ps.wideCard, padding: "16px 10px 10px" } : ps.wideCard}>
       <div style={ps.wideHeader}>
         <div style={{ flex: "1 1 0", minWidth: 0 }}>
           <div style={ps.wideTitle}>{eventName || "The Ginvitational"}</div>
@@ -199,7 +204,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
               </td>
             ))}
           </tr>
-          {layout.rows.map((row) => (
+          {mainRows.map((row) => (
             <tr key={row.key}>
               <td style={ps.wLabel}>{row.player ? who(row.player) : row.label}</td>
               {cols.map((c) => {
@@ -220,7 +225,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
       </table>
 
       {/* the marker keeps the card, then the marker and the player sign it */}
-      <div style={ps.signRow}>
+      <div style={tight ? { ...ps.signRow, marginTop: 14 } : ps.signRow}>
         <div style={ps.signBlock}>
           <span>Marker's signature</span>
           <span style={ps.signLine} />
@@ -234,6 +239,36 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
           <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{g.code || ""}</span>
         </div>
       </div>
+
+      {/* the marker's own strip, kept apart from the players' scores: same holes, one row of boxes */}
+      <table style={{ ...ps.wideTable, marginTop: tight ? 8 : 12 }}>
+        <colgroup>
+          <col style={{ width: "13%" }} />
+          {cols.map((c) => (
+            <col key={c.key} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            <th style={ps.wLabelHead}>Hole</th>
+            {cols.map((c) => (
+              <th key={c.key} style={c.hole ? ps.wHead : { ...ps.wHead, ...ps.wTotalTint }}>
+                {c.hole || c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={ps.wLabel}>{markerRow ? markerRow.label : "Marker's score"}</td>
+            {cols.map((c) => (
+              <td key={c.key} style={ps.wBox}>
+                <div style={{ ...ps.wWrite, height: MARKER_BOX }} />
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -391,7 +426,7 @@ const ps = {
   wTotalTint: { background: "#eee", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact", fontWeight: 800 },
   wBox: { border: "1px solid #000", padding: 0, position: "relative" },
   wWrite: { height: 26, width: "100%" },
-  signRow: { display: "flex", gap: 28, marginTop: 14, fontSize: 10.5 },
+  signRow: { display: "flex", gap: 28, marginTop: 18, fontSize: 10.5 },
   signCode: { flex: "none", alignSelf: "flex-end", fontSize: 10.5, whiteSpace: "nowrap" },
   signBlock: { flex: "1 1 0", display: "flex", alignItems: "flex-end", gap: 6, whiteSpace: "nowrap", minWidth: 0 },
   signLine: { flex: "1 1 0", borderBottom: "1px solid #000", height: 16, minWidth: 0 },
