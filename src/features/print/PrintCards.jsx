@@ -149,7 +149,7 @@ export function PrintTeamCard({ card, showTeeTime, eventName, logoSrc, game, fie
   const MARKER_BOX = 28;
   // a card with many rows (a 4-person team) trims its spacing a little so two still fit a sheet
   const tight = mainRows.length >= 5;
-  const CARD_FIXED = tight ? 246 : 266;
+  const CARD_FIXED = tight ? 232 : 252;
   const CARD_TARGET = 346;
   const boxH = Math.max(tight ? 18 : 20, Math.min(46, Math.floor((CARD_TARGET - CARD_FIXED) / mainRows.length) - 2));
 
